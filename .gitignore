@@ -1,0 +1,9 @@
+scraper/venv/
+library/
+scraper/state/
+.playwright-mcp/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+

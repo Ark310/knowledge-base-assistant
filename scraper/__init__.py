@@ -1,0 +1,1 @@
+# Contoso KB scraper package
