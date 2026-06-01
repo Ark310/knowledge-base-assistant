@@ -9,15 +9,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
-from PySide6.QtGui import QTextCursor, QAction, QFont, QColor, QTextCharFormat
+from PySide6.QtGui import QTextCursor, QFont, QColor, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QCheckBox, QPlainTextEdit, QProgressBar, QFrame,
-    QToolBar, QStatusBar, QMessageBox,
+    QStatusBar, QMessageBox, QTabWidget,
 )
 
 from scraper.config import PRODUCTS, LOG_FILE
 from scraper.engine import Engine, EngineCallbacks, CancellationToken
+from scraper.kb_tab import KBTab
 
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
@@ -114,15 +115,34 @@ class MainWindow(QMainWindow):
         self._log("info", "Ready. Use the toolbar to validate, discover, or scrape.")
 
     def _build_ui(self):
-        central = QWidget(); self.setCentralWidget(central)
+        central = QWidget()
+        self.setCentralWidget(central)
         outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
 
-        tb = QToolBar(); tb.setMovable(False); self.addToolBar(tb)
-        self.act_validate = QAction("Validate", self); tb.addAction(self.act_validate)
-        self.act_discover = QAction("Discover / Refresh URLs", self); tb.addAction(self.act_discover)
-        self.act_indexes  = QAction("Rebuild Indexes", self); tb.addAction(self.act_indexes)
-        tb.addSeparator()
-        self.act_stop = QAction("⏹ STOP", self); tb.addAction(self.act_stop)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs)
+
+        self.tabs.addTab(self._build_v1_widget(), "v1 — Release Notes")
+        self.kb_tab = KBTab()
+        self.tabs.addTab(self.kb_tab, "v2 — Knowledge Base")
+
+        self.setStatusBar(QStatusBar())
+        self.statusBar().showMessage(f"Log file: {LOG_FILE}")
+
+    def _build_v1_widget(self) -> QWidget:
+        w = QWidget()
+        outer = QVBoxLayout(w)
+
+        btn_row = QHBoxLayout()
+        self.btn_validate = QPushButton("Validate")
+        self.btn_discover = QPushButton("Discover / Refresh URLs")
+        self.btn_indexes  = QPushButton("Rebuild Indexes")
+        self.btn_stop     = QPushButton("⏹ STOP")
+        for btn in (self.btn_validate, self.btn_discover, self.btn_indexes, self.btn_stop):
+            btn_row.addWidget(btn)
+        btn_row.addStretch()
+        outer.addLayout(btn_row)
 
         cards_row = QHBoxLayout()
         self.cards: dict[str, StatusCard] = {}
@@ -133,34 +153,38 @@ class MainWindow(QMainWindow):
         outer.addLayout(cards_row)
 
         self.lbl_progress = QLabel("Idle")
-        self.progress = QProgressBar(); self.progress.setRange(0, 100); self.progress.setValue(0)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
         outer.addWidget(self.lbl_progress)
         outer.addWidget(self.progress)
 
         bulk = QHBoxLayout()
         self.btn_scrape_all = QPushButton("Scrape ALL (incremental)")
         self.btn_force_all  = QPushButton("Force re-scrape ALL")
-        bulk.addWidget(self.btn_scrape_all); bulk.addWidget(self.btn_force_all); bulk.addStretch()
+        bulk.addWidget(self.btn_scrape_all)
+        bulk.addWidget(self.btn_force_all)
+        bulk.addStretch()
         outer.addLayout(bulk)
 
         outer.addWidget(QLabel("<b>Log</b>"))
-        self.log_pane = QPlainTextEdit(); self.log_pane.setReadOnly(True)
+        self.log_pane = QPlainTextEdit()
+        self.log_pane.setReadOnly(True)
         self.log_pane.setMaximumBlockCount(self.MAX_LOG_LINES)
         self.log_pane.setFont(QFont("Consolas", 9))
         outer.addWidget(self.log_pane, stretch=1)
 
-        self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage(f"Log file: {LOG_FILE}")
+        return w
 
     def _wire_signals(self):
         self.bridge.log_sig.connect(self._log)
         self.bridge.status_sig.connect(self._on_status)
         self.bridge.progress_sig.connect(self._on_progress)
 
-        self.act_validate.triggered.connect(lambda: self._start("validate"))
-        self.act_discover.triggered.connect(lambda: self._start("discover_and_update_config"))
-        self.act_indexes.triggered.connect(lambda: self._start("rebuild_indexes"))
-        self.act_stop.triggered.connect(self._stop)
+        self.btn_validate.clicked.connect(lambda: self._start("validate"))
+        self.btn_discover.clicked.connect(lambda: self._start("discover_and_update_config"))
+        self.btn_indexes.clicked.connect(lambda: self._start("rebuild_indexes"))
+        self.btn_stop.clicked.connect(self._stop)
         self.btn_scrape_all.clicked.connect(lambda: self._start("scrape_all", {"force": False}))
         self.btn_force_all.clicked.connect(lambda: self._start("scrape_all", {"force": True}))
 
@@ -191,13 +215,12 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
 
     def _set_running(self, running: bool):
-        for act in (self.act_validate, self.act_discover, self.act_indexes):
-            act.setEnabled(not running)
-        for btn in (self.btn_scrape_all, self.btn_force_all):
+        for btn in (self.btn_validate, self.btn_discover, self.btn_indexes,
+                    self.btn_scrape_all, self.btn_force_all):
             btn.setEnabled(not running)
         for card in self.cards.values():
             card.set_enabled(not running)
-        self.act_stop.setEnabled(running)
+        self.btn_stop.setEnabled(running)
 
     @Slot(str, str)
     def _log(self, level: str, msg: str):
