@@ -1,5 +1,16 @@
+import sys, tempfile
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
 from Dev.kb_chatbot.prompt import Attachment, build_messages
 from Dev.kb_chatbot.chunker import Chunk
+from Dev.kb_chatbot.retriever import Retriever, Filters, RetrievalResult
+from Dev.kb_chatbot.llm.fake_provider import FakeProvider
+from Dev.kb_chatbot.chat.session import Session
+from Dev.kb_chatbot.chat.orchestrator import handle_turn, Deps
+from Dev.kb_chatbot.ingest import ingest
+
+_FIX = Path(__file__).parent / "fixtures" / "tiny_library"
 
 
 def _chunk():
@@ -72,3 +83,44 @@ def test_multiple_attachments_mixed():
     assert "text-a" in text_block["text"]
     assert "text-c" in text_block["text"]
     assert len([b for b in content if b["type"] == "image"]) == 1
+
+
+# ── Orchestrator behavioral test: attachments flow through handle_turn ────────
+
+def test_attachment_filenames_recorded_on_answer_turn():
+    """Attachments in Deps reach build_messages (LLM receives an image block)
+    and the returned Turn records the filename."""
+    tmp = tempfile.mkdtemp()
+    ingest(_FIX, Path(tmp))
+    r = Retriever(Path(tmp), confidence_floor=0.0)
+    # Stub suggest() so the suggestion-footer logic is not a confounder
+    r.suggest = lambda query, top_k=5: []
+    # Stub retrieve() to return a deterministic result above the abstain floor
+    ctx = [Chunk(id="x", text="content",
+                 metadata={"title": "Booking a Spot Deal",
+                            "url": "https://help.contoso.example/spot",
+                            "product": "tradedesk", "category": "dealing"})]
+    r.retrieve = lambda q, f: RetrievalResult(chunks=ctx, rerank_top_score=0.9)
+
+    fake = FakeProvider(canned_text="You book via the dealing screen [Booking a Spot Deal](https://help.contoso.example/spot).")
+    att = Attachment(filename="screenshot.png", media_type="image/png",
+                     data=b"\x89PNG\r\n\x1a\n", is_image=True)
+    deps = Deps(retriever=r, llm=fake, usage_logger=lambda t: None,
+                attachments=[att])
+
+    session = Session.new()
+    turn = handle_turn("How do I book a spot deal in TradeDesk?", session,
+                       Filters(product="tradedesk"), "claude-haiku-4-5-20251001", deps=deps)
+
+    # The answer Turn must record the attachment filename
+    assert turn.attachments == ["screenshot.png"]
+
+    # The FakeProvider must have been called exactly once
+    assert len(fake.calls) == 1
+
+    # The message content reaching the LLM must be a list (image + text blocks)
+    last_user_msg = fake.calls[0]["messages"][-1]
+    assert isinstance(last_user_msg["content"], list), \
+        "Expected image content list; got plain string — attachments not passed to build_messages"
+    image_blocks = [b for b in last_user_msg["content"] if b.get("type") == "image"]
+    assert len(image_blocks) == 1, "Expected exactly 1 image block in the LLM message"

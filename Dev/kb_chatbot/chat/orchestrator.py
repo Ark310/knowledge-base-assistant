@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from Dev.kb_chatbot import config
@@ -103,6 +103,7 @@ class Deps:
     llm: LLMProvider
     usage_logger: Callable[[Turn], None] = lambda t: None
     clarifier: Optional[Callable[[str, list[Chunk]], str]] = None
+    attachments: list = field(default_factory=list)
 
 
 def handle_turn(user_msg: str, session: Session, filters: Filters,
@@ -134,6 +135,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
                 context_chunks=result.chunks,
                 history=history,
                 user_msg=user_msg + drift_note,
+                attachments=deps.attachments or [],
             )
             resp = deps.llm.chat(
                 messages=messages,
@@ -172,6 +174,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             tokens_in=resp.input_tokens,
             tokens_out=resp.output_tokens,
             latency_ms=resp.latency_ms,
+            attachments=[a.filename for a in (deps.attachments or [])],
         )
         session.add(turn)
         deps.usage_logger(turn)
