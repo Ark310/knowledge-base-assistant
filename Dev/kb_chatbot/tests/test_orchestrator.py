@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 import pytest
 
 from Dev.kb_chatbot.ingest import ingest
-from Dev.kb_chatbot.retriever import Retriever, Filters
+from Dev.kb_chatbot.retriever import Retriever, Filters, RetrievalResult
 from Dev.kb_chatbot.llm.fake_provider import FakeProvider
 from Dev.kb_chatbot.chat.session import Session
 from Dev.kb_chatbot.chat.orchestrator import (
@@ -128,35 +128,29 @@ def test_low_confidence_answer_appends_footer_when_suggestions_exist(deps_factor
     suggestion_chunks = [
         _make_chunk("Related Article", "https://help.contoso.example/related"),
     ]
-    # confidence_floor=0.0 so we get an answer; rerank score will be low on the tiny DB
-    d, _ = deps_factory(0.0, "The answer is here [TradeDesk · dealing · Booking a Spot Deal].",
-                         suggest_chunks=suggestion_chunks)
+    d, _ = deps_factory(0.0, "The answer is here.", suggest_chunks=suggestion_chunks)
+    # Stub retrieve() for a deterministic below-ceiling score
+    ctx = [_make_chunk("Booking a Spot Deal", "https://help.contoso.example/spot")]
+    d.retriever.retrieve = lambda q, f: RetrievalResult(chunks=ctx, rerank_top_score=0.35)
     session = Session.new()
     turn = handle_turn("tradedesk advanced topics overview details", session,
                         Filters(product="tradedesk"), "claude-haiku-4-5-20251001", deps=d)
-    # If it answered and confidence was below ceiling, footer should appear
-    if turn.kind == "answer" and "Not fully certain" in turn.content:
-        assert "https://help.contoso.example/related" in turn.content
-    else:
-        # Either high confidence (no footer expected) or not answered — both are acceptable
-        assert turn.kind in ("answer", "clarification", "abstain")
+    assert turn.kind == "answer"
+    assert "Not fully certain" in turn.content
+    assert "https://help.contoso.example/related" in turn.content
 
 
 def test_high_confidence_answer_no_footer(deps_factory):
     """Answer with rerank_top_score >= LOW_CONFIDENCE_CEILING → no footer."""
-    # Use the exact TradeDesk query that is well-indexed in tiny_library so score is high,
-    # with confidence_floor=0.0 to ensure we get an answer path
-    d, _ = deps_factory(0.0, "You book a spot deal via the TradeDesk dealing screen [TradeDesk · dealing · Booking a Spot Deal].",
+    d, _ = deps_factory(0.0, "You book a spot deal via the dealing screen.",
                          suggest_chunks=[
                              _make_chunk("Some Article", "https://help.contoso.example/art"),
                          ])
+    # Stub retrieve() for a deterministic above-ceiling score
+    ctx = [_make_chunk("Booking a Spot Deal", "https://help.contoso.example/spot")]
+    d.retriever.retrieve = lambda q, f: RetrievalResult(chunks=ctx, rerank_top_score=0.80)
     session = Session.new()
     turn = handle_turn("How do I book a spot deal in TradeDesk?", session,
                         Filters(product="tradedesk"), "claude-haiku-4-5-20251001", deps=d)
     assert turn.kind == "answer"
-    # If the rerank score was high (>= 0.45), footer must NOT be present
-    if "Not fully certain" in turn.content:
-        # Score was below ceiling — this is acceptable, footer is present with suggestions
-        pass
-    else:
-        assert "Not fully certain" not in turn.content
+    assert "Not fully certain" not in turn.content
