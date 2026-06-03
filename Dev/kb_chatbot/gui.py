@@ -77,13 +77,7 @@ class TurnWorker(QThread):
         except Exception as exc:
             log.exception("Turn failed")
             self.signals.failed.emit(str(exc))
-        finally:
-            try:
-                close = getattr(self.deps.retriever, "close", None)
-                if callable(close):
-                    close()
-            except Exception:
-                pass
+        # Note: retriever is shared across turns — do not close it here
 
 
 class IngestWorker(QThread):
@@ -103,6 +97,36 @@ class IngestWorker(QThread):
             self.finished.emit(report)
         except Exception as exc:
             log.exception("Ingest failed")
+            self.failed.emit(str(exc))
+
+
+class InitWorker(QThread):
+    """Loads ML models and warms up the Claude SDK client in the background.
+    Emits ready(retriever) when complete so the GUI can unlock the input."""
+    ready = Signal(object)   # emits the loaded Retriever
+    status = Signal(str)     # progress messages for the status bar
+    failed = Signal(str)
+
+    def __init__(self, settings):
+        super().__init__()
+        self.settings = settings
+
+    def run(self):
+        try:
+            self.status.emit("⟳ Initialising — loading models…")
+            retriever = Retriever(
+                config.CHROMA_DIR,
+                confidence_floor=self.settings.confidence_floor,
+            )
+            self.status.emit("⟳ Initialising — warming up Claude…")
+            try:
+                from Dev.kb_chatbot.prompt import build_system_prompt
+                ClaudeCodeProvider().warm_up(build_system_prompt(), self.settings.default_model)
+            except ClaudeCodeNotFoundError as exc:
+                log.warning("Skipping LLM warm-up: %s", exc)
+            self.ready.emit(retriever)
+        except Exception as exc:
+            log.exception("InitWorker failed")
             self.failed.emit(str(exc))
 
 
@@ -151,9 +175,14 @@ class MainWindow(QMainWindow):
         self.session = Session.new()
         self.worker: Optional[TurnWorker] = None
         self.ingest_worker: Optional[IngestWorker] = None
+        self._retriever: Optional[Retriever] = None
         self._today_queries = 0
         self._today_tokens = 0
         self._build_ui()
+        # Window shows immediately; models + LLM warm-up load in background
+        self._set_chat_enabled(False)
+        self.statusBar().showMessage("⟳ Initialising — please wait…")
+        self._start_init_worker()
 
     def _build_ui(self):
         central = QWidget(); self.setCentralWidget(central)
@@ -161,6 +190,7 @@ class MainWindow(QMainWindow):
 
         tb = QToolBar(); tb.setMovable(False); self.addToolBar(tb)
         self._act_reindex = QAction("Reindex", self); tb.addAction(self._act_reindex)
+        self._act_reindex.setToolTip("Run after adding new articles to the knowledge base")
         self._act_settings = QAction("Settings", self); tb.addAction(self._act_settings)
         self._act_clear = QAction("Clear chat", self); tb.addAction(self._act_clear)
         tb.addSeparator()
@@ -210,19 +240,29 @@ class MainWindow(QMainWindow):
         self._act_stop.triggered.connect(self._stop)
         self._act_logs.triggered.connect(self._open_logs)
         self._set_inputs_enabled(True)
-        self._append("system", "Ready. Type a question below.", "#1b5e20", "SYSTEM:")
-        # Pre-warm the persistent Claude Code SDK client in the background so
-        # the first real question doesn't pay the CLI cold-start cost.
-        self._warm_up_llm()
 
-    def _warm_up_llm(self):
-        try:
-            from Dev.kb_chatbot.prompt import build_system_prompt
-            ClaudeCodeProvider().warm_up(build_system_prompt(), self.settings.default_model)
-        except ClaudeCodeNotFoundError as exc:
-            log.warning("Skipping LLM warm-up: %s", exc)
-        except Exception:
-            log.exception("LLM warm-up failed (non-fatal)")
+    def _start_init_worker(self):
+        self._init_worker = InitWorker(self.settings)
+        self._init_worker.ready.connect(self._on_init_ready)
+        self._init_worker.status.connect(self.statusBar().showMessage)
+        self._init_worker.failed.connect(self._on_init_failed)
+        self._init_worker.start()
+
+    @Slot(object)
+    def _on_init_ready(self, retriever):
+        self._retriever = retriever
+        self._set_chat_enabled(True)
+        self.statusBar().showMessage("Ready")
+        self._append("system", "Ready. Type a question below.", "#1b5e20", "SYSTEM:")
+
+    @Slot(str)
+    def _on_init_failed(self, err):
+        self.statusBar().showMessage(f"Init failed: {err}")
+        self._append("system", f"Initialisation failed: {err}", "#c62828", "ERROR:")
+
+    def _set_chat_enabled(self, enabled: bool):
+        self.input.setEnabled(enabled)
+        self.send_btn.setEnabled(enabled)
 
     def _append(self, role, text, colour, tag):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -235,7 +275,7 @@ class MainWindow(QMainWindow):
 
     def _send(self):
         msg = self.input.text().strip()
-        if not msg or self.worker:
+        if not msg or self.worker or self._retriever is None:
             return
         self.input.clear()
         self._set_inputs_enabled(False)
@@ -243,18 +283,12 @@ class MainWindow(QMainWindow):
 
         try:
             llm = ClaudeCodeProvider()
-            retriever = Retriever(config.CHROMA_DIR, confidence_floor=self.settings.confidence_floor)
         except ClaudeCodeNotFoundError as exc:
             self._append("system", str(exc), "#c62828", "ERROR:")
             self._set_inputs_enabled(True)
             return
-        except Exception as exc:
-            self._append("system", f"Failed to initialise: {exc}", "#c62828", "ERROR:")
-            log.exception("Init failure on send")
-            self._set_inputs_enabled(True)
-            return
 
-        deps = Deps(retriever=retriever, llm=llm, usage_logger=_append_usage)
+        deps = Deps(retriever=self._retriever, llm=llm, usage_logger=_append_usage)
         filters = Filters(product=self.product_box.currentData() or None)
         model = self.model_box.currentData()
         self.worker = TurnWorker(msg, self.session, filters, model, deps)
@@ -298,6 +332,10 @@ class MainWindow(QMainWindow):
     def _clear_chat(self):
         self.chat_view.clear()
         self.session = Session.new()
+        try:
+            ClaudeCodeProvider.reset_conversation()
+        except Exception:
+            log.exception("LLM conversation reset failed (non-fatal)")
 
     def _open_logs(self):
         import subprocess
@@ -337,9 +375,9 @@ class MainWindow(QMainWindow):
         self.ingest_worker = None
         self._set_inputs_enabled(True)
 
-    def _set_inputs_enabled(self, enabled):
-        self.input.setEnabled(enabled)
-        self.send_btn.setEnabled(enabled)
+    def _set_inputs_enabled(self, enabled: bool):
+        if self._retriever is not None:  # chat stays locked until init completes
+            self._set_chat_enabled(enabled)
         for w in (self._act_reindex, self._act_settings, self._act_clear):
             w.setEnabled(enabled)
         self._act_stop.setEnabled(not enabled)
@@ -353,6 +391,13 @@ class MainWindow(QMainWindow):
                 event.ignore(); return
             if self.worker:
                 self.worker.cancel(); self.worker.wait(5_000)
+        if getattr(self, "_init_worker", None) and self._init_worker.isRunning():
+            self._init_worker.wait(2_000)
+        if self._retriever is not None:
+            try:
+                self._retriever.close()
+            except Exception:
+                pass
         try:
             self.session.save(config.CHATS_DIR)
         except Exception:
