@@ -414,13 +414,15 @@ class MainWindow(QMainWindow):
             self._append("system", f"Save failed: {exc}", "#c62828", "ERROR:")
             return
         self._feedback_bar.setVisible(False)
+        self._correction_panel.setVisible(False)
         self._append("system", "Marked as correct — saved to Learn KB. Run Reindex to make it searchable.",
                      "#1b5e20", "SYSTEM:")
 
     def _on_open_correction_editor(self):
-        if self._last_assistant_turn is not None:
-            self._correction_text.setPlainText(self._last_assistant_turn.content)
-            self._correction_title.setText(self._get_last_user_question()[:80])
+        if self._last_assistant_turn is None:
+            return
+        self._correction_text.setPlainText(self._last_assistant_turn.content)
+        self._correction_title.setText(self._get_last_user_question()[:80])
         self._correction_panel.setVisible(True)
 
     def _on_save_correction(self):
