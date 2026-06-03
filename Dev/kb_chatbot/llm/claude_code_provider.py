@@ -48,24 +48,17 @@ def _ensure_claude_available() -> str:
 
 
 def _build_user_prompt(messages: list[dict]) -> str:
-    """Flatten a message list into a single role-tagged string. Used as a
-    fallback when the persistent client is not the right call shape."""
+    """Format a full message list as a single role-tagged string for the SDK query."""
     parts = []
     for m in messages:
         role = m.get("role", "user").upper()
-        parts.append(f"{role}: {m.get('content', '')}")
+        content = m.get("content", "")
+        if isinstance(content, list):
+            # Multimodal: extract text blocks only for history formatting
+            text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
+            content = " ".join(text_parts)
+        parts.append(f"{role}: {content}")
     return "\n\n".join(parts)
-
-
-def _latest_user_text(messages: list[dict]) -> str:
-    """Return the most recent user message's content. With the persistent
-    ClaudeSDKClient, the SDK holds prior turns itself, so we only need to send
-    the new user message (which already contains the retrieved-context block
-    the orchestrator built)."""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            return m.get("content", "")
-    return _build_user_prompt(messages)
 
 
 # ── Async backend: one daemon thread runs one asyncio loop ───────────────────
@@ -166,12 +159,11 @@ class ClaudeCodeProvider(LLMProvider):
     # ── Chat ─────────────────────────────────────────────────────────────────
     def chat(self, *, messages, model, system_prompt, max_tokens=1024) -> LLMResponse:
         started = time.time()
-        prompt = _latest_user_text(messages)
         backend = ClaudeCodeProvider._backend
         if backend is None:
             raise RuntimeError("ClaudeCodeProvider backend not initialised")
         text, in_tok, out_tok = backend.submit(
-            self._query_persistent(prompt, model, system_prompt)
+            self._query_persistent(messages, model, system_prompt)
         )
         latency_ms = int((time.time() - started) * 1000)
         return LLMResponse(
@@ -204,8 +196,9 @@ class ClaudeCodeProvider(LLMProvider):
         cls._client_signature = signature
         log.info("ClaudeSDKClient booted (model=%s)", model)
 
-    async def _query_persistent(self, prompt: str, model: str, system_prompt: str) -> tuple[str, int, int]:
+    async def _query_persistent(self, messages: list[dict], model: str, system_prompt: str) -> tuple[str, int, int]:
         await self._ensure_client(system_prompt, model)
+        prompt = _build_user_prompt(messages)
         cls = ClaudeCodeProvider
         await cls._client.query(prompt)
 
