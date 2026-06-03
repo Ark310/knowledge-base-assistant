@@ -1,0 +1,10 @@
+{
+  "space_key": "W2",
+  "space_name": "Web 2.0 Knowledge Base",
+  "product": "web2",
+  "title": "Setting up a Recurring Payment",
+  "url": "http://example/web2/recurring",
+  "scraped_at": "2026-06-01T10:00:00",
+  "screenshot": "tiny.png",
+  "body_md": "# Setting up a Recurring Payment\n\nNavigate to Payments → Recurring. Choose the frequency and beneficiary.\n"
+}

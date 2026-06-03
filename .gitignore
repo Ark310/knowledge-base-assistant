@@ -7,3 +7,9 @@ __pycache__/
 *.pyo
 .pytest_cache/
 
+
+Dev/kb_chatbot/state/
+build/
+dist/
+*.spec
+Imgs for Dev*/

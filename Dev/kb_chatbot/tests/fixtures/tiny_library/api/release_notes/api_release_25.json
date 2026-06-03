@@ -1,0 +1,10 @@
+{
+  "space_key": "API25",
+  "space_name": "API 2.5 Release Notes",
+  "product": "api",
+  "title": "API 2.5 Release Notes — Version 2.5.0",
+  "url": "http://example/api/2.5.0",
+  "scraped_at": "2026-06-01T10:00:00",
+  "screenshot": "tiny.png",
+  "body_md": "# API 2.5 Release Notes\n\n## New endpoints\n\nThe `/v2/payments/quick` endpoint is now available for Quick Pay submissions.\n\n## Bug fixes\n\nFixed null handling in the `/v2/deals/booking` response.\n"
+}

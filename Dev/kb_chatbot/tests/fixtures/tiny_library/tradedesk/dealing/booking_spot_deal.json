@@ -1,0 +1,10 @@
+{
+  "space_key": "TD",
+  "space_name": "TradeDesk Knowledge Base",
+  "product": "tradedesk",
+  "title": "Booking a Spot Deal",
+  "url": "http://example/tradedesk/booking-spot-deal",
+  "scraped_at": "2026-06-01T10:00:00",
+  "screenshot": "tiny.png",
+  "body_md": "# Booking a Spot Deal\n\n## Prerequisites\n\nThe operator must have the Dealing role assigned.\n\n## Steps\n\n1. Open the Dealing tab.\n2. Press F2 to open the booking form.\n3. Fill in the counter-party and amount.\n4. Submit.\n"
+}

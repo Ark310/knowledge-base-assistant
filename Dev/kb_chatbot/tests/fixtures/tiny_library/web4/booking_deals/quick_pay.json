@@ -1,0 +1,10 @@
+{
+  "space_key": "W4",
+  "space_name": "Web 4.0 Knowledge Base",
+  "product": "web4",
+  "title": "Quick Pay and Payment Links",
+  "url": "http://example/web4/quick-pay",
+  "scraped_at": "2026-06-01T10:00:00",
+  "screenshot": "tiny.png",
+  "body_md": "# Quick Pay and Payment Links\n\nQuick Pay generates a payment link the recipient can use to authorise a one-off transfer without logging in.\n"
+}

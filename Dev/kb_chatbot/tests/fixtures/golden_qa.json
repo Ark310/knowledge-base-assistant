@@ -1,0 +1,35 @@
+[
+  {
+    "name": "tradedesk_booking_clear",
+    "user_msg": "How do I book a spot deal in TradeDesk?",
+    "filters": {},
+    "expect": "answer",
+    "must_retrieve_any_of": ["Booking a Spot Deal"]
+  },
+  {
+    "name": "saleshub_form_management",
+    "user_msg": "How do I build an onboarding form in SalesHub?",
+    "filters": {},
+    "expect": "answer",
+    "must_retrieve_any_of": ["Building a Customer Onboarding Form"]
+  },
+  {
+    "name": "web4_quick_pay",
+    "user_msg": "Tell me about Quick Pay in Web4",
+    "filters": {},
+    "expect": "answer",
+    "must_retrieve_any_of": ["Quick Pay and Payment Links"]
+  },
+  {
+    "name": "no_product_named_should_clarify",
+    "user_msg": "How do I do this?",
+    "filters": {},
+    "expect": "clarify_or_answer"
+  },
+  {
+    "name": "off_topic_abstain",
+    "user_msg": "What is the meaning of life?",
+    "filters": {},
+    "expect": "abstain"
+  }
+]

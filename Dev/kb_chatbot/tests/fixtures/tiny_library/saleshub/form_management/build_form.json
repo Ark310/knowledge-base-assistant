@@ -1,0 +1,10 @@
+{
+  "space_key": "SH",
+  "space_name": "SalesHub Knowledge Base",
+  "product": "saleshub",
+  "title": "Building a Customer Onboarding Form",
+  "url": "http://example/saleshub/forms",
+  "scraped_at": "2026-06-01T10:00:00",
+  "screenshot": "tiny.png",
+  "body_md": "# Building a Customer Onboarding Form\n\nUse the Form Builder to drag fields onto the canvas. IBAN fields trigger automatic validation against the configured registry.\n"
+}
