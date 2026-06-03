@@ -24,6 +24,15 @@ ABSTAIN_MESSAGE = (
     "a related keyword, or a how-to topic."
 )
 
+_DRIFT_PREVIOUS_FLOOR = 0.50   # previous turn must have been confident
+_DRIFT_CURRENT_CEILING = 0.20  # current turn must be very low
+
+DRIFT_NOTE = "\n\n[TOPIC SHIFT: The user has changed topics. Treat this as a fresh question. Do not reference prior context.]"
+
+
+def _is_topic_drift(previous: float, current: float) -> bool:
+    return previous >= _DRIFT_PREVIOUS_FLOOR and current < _DRIFT_CURRENT_CEILING
+
 
 def _mentions_product(text: str) -> bool:
     low = text.lower()
@@ -70,6 +79,12 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
 
     result = deps.retriever.retrieve(user_msg, filters)
 
+    # Topic-drift: inject note if confidence dropped sharply from previous turn
+    drift_note = ""
+    if _is_topic_drift(session.last_rerank_score, result.rerank_top_score):
+        drift_note = DRIFT_NOTE
+    session.last_rerank_score = result.rerank_top_score
+
     if not result.abstain_reason:
         if not (filters.product or _mentions_product(user_msg) or _recent_product_in_history(session)):
             quick = deps.retriever.retrieve_quick(user_msg, limit=10)
@@ -85,7 +100,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             messages = build_messages(
                 context_chunks=result.chunks,
                 history=session.history_for_llm(config.MAX_HISTORY_TURNS),
-                user_msg=user_msg,
+                user_msg=user_msg + drift_note,
             )
             resp = deps.llm.chat(
                 messages=messages,

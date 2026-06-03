@@ -45,7 +45,7 @@ def test_abstain_when_retrieval_below_floor(deps_factory):
 
 
 def test_hallucinated_citation_gets_stripped(deps_factory):
-    d, _ = deps_factory(0.0, "Some answer [TradeDesk · made-up · No Such Article].")
+    d, _ = deps_factory(0.0, "Some answer [No Such Article](https://help.contoso.example/display/FAKE).")
     session = Session.new()
     turn = handle_turn("anything about tradedesk dealing", session,
                         Filters(product="tradedesk"), "claude-haiku-4-5-20251001", deps=d)
