@@ -12,7 +12,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QTextCursor, QAction, QFont, QColor, QTextCharFormat, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -40,6 +40,7 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _TEXT_EXTS  = {".md", ".txt", ".json", ".log"}
 _ALL_EXTS   = _IMAGE_EXTS | _TEXT_EXTS
 _MAX_IMAGE_BYTES = 4 * 1024 * 1024   # 4 MB (Claude image limit)
+_MAX_TEXT_BYTES  = 1 * 1024 * 1024   # 1 MB cap for text files (prompt truncates at 20k chars)
 _MAX_ATTACHMENTS = 5
 _MEDIA_TYPES = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -252,6 +253,9 @@ class MainWindow(QMainWindow):
         self.input = QLineEdit()
         self.input.setPlaceholderText("Ask a question about the Contoso KB… (drag & drop files or Ctrl+V to attach)")
         self.input.returnPressed.connect(self._send)
+        # Catch Ctrl+V on the input box itself — QLineEdit consumes Paste before
+        # MainWindow.keyPressEvent would ever see it (the common typing-focus case)
+        self.input.installEventFilter(self)
         self._clip_btn = QPushButton("📎")
         self._clip_btn.setFixedWidth(36)
         self._clip_btn.setToolTip("Attach file (image or text)")
@@ -335,9 +339,9 @@ class MainWindow(QMainWindow):
         self._set_inputs_enabled(False)
         self._append("user", msg, "#0d47a1", "YOU:")
 
+        # Snapshot but don't clear yet — attachments are kept if the turn ends in
+        # clarification/abstain so the user can answer without re-attaching
         attachments = list(self._attachments)
-        self._attachments.clear()
-        self._refresh_attach_bar()
         if attachments:
             names = ", ".join(a.filename for a in attachments)
             self._append("system", f"Attached: {names}", "#555555", "FILES:")
@@ -366,6 +370,13 @@ class MainWindow(QMainWindow):
         elif turn.kind == "clarification":
             colour, tag = "#ef6c00", "CLARIFY:"
         self._append("ai", turn.content, colour, tag)
+        if self._attachments:
+            if turn.kind == "answer":
+                self._attachments.clear()
+                self._refresh_attach_bar()
+            else:
+                self._append("system", "Attachments kept — they'll be sent with your next message.",
+                             "#555555", "FILES:")
         self._today_queries += 1
         self._today_tokens += turn.tokens_in + turn.tokens_out
         self.statusBar().showMessage(
@@ -408,6 +419,9 @@ class MainWindow(QMainWindow):
         is_image = ext in _IMAGE_EXTS
         if is_image and len(data) > _MAX_IMAGE_BYTES:
             self._append("system", f"{path.name} exceeds 4 MB limit — not attached.", "#c62828", "SYSTEM:")
+            return
+        if not is_image and len(data) > _MAX_TEXT_BYTES:
+            self._append("system", f"{path.name} exceeds 1 MB limit — not attached.", "#c62828", "SYSTEM:")
             return
         att = Attachment(filename=path.name,
                          media_type=_MEDIA_TYPES.get(ext, "text/plain"),
@@ -454,17 +468,34 @@ class MainWindow(QMainWindow):
             local = url.toLocalFile()
             if local:
                 self._add_attachment_path(Path(local))
+        event.acceptProposedAction()
 
-    # ── Clipboard paste (Ctrl+V anywhere in the window) ──────────────────────
+    # ── Clipboard paste (Ctrl+V) ─────────────────────────────────────────────
+    def eventFilter(self, obj, event):
+        # QLineEdit consumes Ctrl+V before MainWindow.keyPressEvent fires, so an
+        # event filter on the input box is needed for the focused-while-typing case.
+        if (obj is self.input and event.type() == QEvent.KeyPress
+                and event.matches(QKeySequence.Paste)):
+            if self._try_paste_clipboard_image():
+                return True  # consumed — don't let QLineEdit also paste
+        return super().eventFilter(obj, event)
+
     def keyPressEvent(self, event):
-        if event.matches(QKeySequence.Paste):
-            mime = QApplication.clipboard().mimeData()
-            if mime.hasImage():
-                img = QApplication.clipboard().image()
-                if not img.isNull():
-                    self._attach_clipboard_image(img)
-                    return
+        # Fallback for paste when focus is elsewhere in the window
+        if event.matches(QKeySequence.Paste) and self._try_paste_clipboard_image():
+            return
         super().keyPressEvent(event)
+
+    def _try_paste_clipboard_image(self) -> bool:
+        """Attach the clipboard image if there is one. Returns True if attached."""
+        mime = QApplication.clipboard().mimeData()
+        if not mime.hasImage():
+            return False
+        img = QApplication.clipboard().image()
+        if img.isNull():
+            return False
+        self._attach_clipboard_image(img)
+        return True
 
     def _attach_clipboard_image(self, img):
         from Dev.kb_chatbot.prompt import Attachment
