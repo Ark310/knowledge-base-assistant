@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QTextBrowser, QLineEdit, QToolBar,
     QStatusBar, QMessageBox, QDialog, QDialogButtonBox, QFormLayout,
-    QFileDialog, QProgressBar,
+    QFileDialog, QProgressBar, QPlainTextEdit, QInputDialog,
 )
 
 from Dev.kb_chatbot import config, settings as settings_mod
@@ -149,6 +149,7 @@ class InitWorker(QThread):
 class SettingsDialog(QDialog):
     def __init__(self, parent, current):
         super().__init__(parent)
+        self._current = current
         self.setWindowTitle("Settings")
         self.resize(560, 180)
         form = QFormLayout(self)
@@ -179,6 +180,7 @@ class SettingsDialog(QDialog):
             library_path=Path(self.lib_edit.text()),
             default_model=self.model_box.currentData(),
             confidence_floor=config.CONFIDENCE_FLOOR,
+            learn_mode_hash=self._current.learn_mode_hash,
         )
 
 
@@ -195,6 +197,8 @@ class MainWindow(QMainWindow):
         self._today_queries = 0
         self._today_tokens = 0
         self._attachments: list = []
+        self._learn_mode = False
+        self._last_assistant_turn: Optional[Turn] = None
         self._build_ui()
         # Window shows immediately; models + LLM warm-up load in background
         self._set_chat_enabled(False)
@@ -213,6 +217,12 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         self._act_stop = QAction("⏹ STOP", self); tb.addAction(self._act_stop)
         self._act_logs = QAction("View logs", self); tb.addAction(self._act_logs)
+        tb.addSeparator()
+        self._act_learn = QAction("Learn Mode", self)
+        tb.addAction(self._act_learn)
+        self._act_exit_learn = QAction("Exit Learn Mode", self)
+        self._act_exit_learn.setVisible(False)
+        tb.addAction(self._act_exit_learn)
 
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Product:"))
@@ -240,6 +250,27 @@ class MainWindow(QMainWindow):
 
         self.progress = QProgressBar(); self.progress.setVisible(False)
         outer.addWidget(self.progress)
+
+        # Learn Mode feedback bar — appears under answers while Learn Mode is on
+        self._feedback_bar = QWidget()
+        fb_layout = QHBoxLayout(self._feedback_bar)
+        fb_layout.setContentsMargins(4, 4, 4, 4)
+        self._btn_mark_correct = QPushButton("✓ Mark as Correct")
+        self._btn_mark_correct.setStyleSheet("background:#e8f5e9; color:#2e7d32;")
+        self._btn_correct_add = QPushButton("✎ Correct / Add to KB")
+        self._btn_correct_add.setStyleSheet("background:#fff8e1; color:#f57f17;")
+        fb_layout.addWidget(self._btn_mark_correct)
+        fb_layout.addWidget(self._btn_correct_add)
+        fb_layout.addStretch()
+        self._feedback_bar.setVisible(False)
+        outer.addWidget(self._feedback_bar)
+        self._btn_mark_correct.clicked.connect(self._on_mark_correct)
+        self._btn_correct_add.clicked.connect(self._on_open_correction_editor)
+
+        # Inline correction editor — hidden panel
+        self._correction_panel = self._build_correction_panel()
+        self._correction_panel.setVisible(False)
+        outer.addWidget(self._correction_panel)
 
         # Attachment bar — hidden until files are attached
         self._attach_bar = QWidget()
@@ -277,7 +308,154 @@ class MainWindow(QMainWindow):
         self._act_clear.triggered.connect(self._clear_chat)
         self._act_stop.triggered.connect(self._stop)
         self._act_logs.triggered.connect(self._open_logs)
+        self._act_learn.triggered.connect(self._enter_learn_mode)
+        self._act_exit_learn.triggered.connect(self._exit_learn_mode)
         self._set_inputs_enabled(True)
+
+    def _build_correction_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setStyleSheet("background:#fffde7; border:1px solid #f9a825; border-radius:4px;")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        layout.addWidget(QLabel("Correct or extend the answer below:"))
+        self._correction_text = QPlainTextEdit()
+        self._correction_text.setFixedHeight(120)
+        layout.addWidget(self._correction_text)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Title:"))
+        self._correction_title = QLineEdit()
+        self._correction_title.setPlaceholderText("Short article title, e.g. How to reverse a posted deal")
+        row1.addWidget(self._correction_title)
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Product:"))
+        self._correction_product = QComboBox()
+        for p in config.PRODUCTS:
+            self._correction_product.addItem(config.PRODUCT_DISPLAY.get(p, p), p)
+        row2.addWidget(self._correction_product)
+        row2.addWidget(QLabel("Topic:"))
+        self._correction_topic = QLineEdit()
+        self._correction_topic.setPlaceholderText("e.g. Dealing, Finance")
+        row2.addWidget(self._correction_topic)
+        layout.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Source URL (optional):"))
+        self._correction_url = QLineEdit()
+        self._correction_url.setPlaceholderText("https://help.contoso.example/display/…")
+        row3.addWidget(self._correction_url)
+        layout.addLayout(row3)
+
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("Save to KB")
+        save_btn.setStyleSheet("background:#4caf50; color:white;")
+        save_btn.clicked.connect(self._on_save_correction)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(lambda: self._correction_panel.setVisible(False))
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+        return panel
+
+    # ── Learn Mode ────────────────────────────────────────────────────────────
+    def _enter_learn_mode(self):
+        from Dev.kb_chatbot.settings import check_learn_password
+        pwd, ok = QInputDialog.getText(
+            self, "Learn Mode", "Enter password:", QLineEdit.Password
+        )
+        if not ok:
+            return
+        if not check_learn_password(pwd, self.settings.learn_mode_hash):
+            with open(config.USAGE_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"kind": "learn_mode_failed_auth",
+                                    "ts": datetime.now().isoformat()}) + "\n")
+            QMessageBox.warning(self, "Access Denied", "Incorrect password.")
+            return
+        self._learn_mode = True
+        self._act_learn.setVisible(False)
+        self._act_exit_learn.setVisible(True)
+        self._append("system",
+                     "Learn Mode active. Feedback controls appear after each answer.",
+                     "#f57f17", "SYSTEM:")
+        # If there's already an answer on screen, allow feedback on it immediately
+        if self._last_assistant_turn is not None and self._last_assistant_turn.kind == "answer":
+            self._feedback_bar.setVisible(True)
+
+    def _exit_learn_mode(self):
+        self._learn_mode = False
+        self._act_learn.setVisible(True)
+        self._act_exit_learn.setVisible(False)
+        self._feedback_bar.setVisible(False)
+        self._correction_panel.setVisible(False)
+        self._append("system", "Learn Mode exited.", "#1b5e20", "SYSTEM:")
+
+    def _on_mark_correct(self):
+        if self._last_assistant_turn is None:
+            return
+        from Dev.kb_chatbot.chat.learn_writer import write_learned_entry
+        question = self._get_last_user_question()
+        title = (question[:80] if question else
+                 self._last_assistant_turn.content[:80])
+        try:
+            write_learned_entry(
+                library_path=self.settings.library_path,
+                product="other",
+                topic="verified",
+                title=f"Verified: {title}",
+                body_md=self._last_assistant_turn.content,
+                url="",
+                original_question=question,
+            )
+        except Exception as exc:
+            self._append("system", f"Save failed: {exc}", "#c62828", "ERROR:")
+            return
+        self._feedback_bar.setVisible(False)
+        self._append("system", "Marked as correct — saved to Learn KB. Run Reindex to make it searchable.",
+                     "#1b5e20", "SYSTEM:")
+
+    def _on_open_correction_editor(self):
+        if self._last_assistant_turn is not None:
+            self._correction_text.setPlainText(self._last_assistant_turn.content)
+            self._correction_title.setText(self._get_last_user_question()[:80])
+        self._correction_panel.setVisible(True)
+
+    def _on_save_correction(self):
+        from Dev.kb_chatbot.chat.learn_writer import write_learned_entry
+        body = self._correction_text.toPlainText().strip()
+        title = self._correction_title.text().strip()
+        if not body:
+            QMessageBox.warning(self, "Empty", "Please enter the corrected answer text.")
+            return
+        if not title:
+            QMessageBox.warning(self, "Missing title", "Please enter a short title.")
+            return
+        try:
+            write_learned_entry(
+                library_path=self.settings.library_path,
+                product=self._correction_product.currentData(),
+                topic=self._correction_topic.text().strip() or "general",
+                title=title,
+                body_md=body,
+                url=self._correction_url.text().strip(),
+                original_question=self._get_last_user_question(),
+            )
+        except Exception as exc:
+            self._append("system", f"Save failed: {exc}", "#c62828", "ERROR:")
+            return
+        self._correction_panel.setVisible(False)
+        self._feedback_bar.setVisible(False)
+        self._append("system", "Saved to Learn KB. Run Reindex to make it searchable.",
+                     "#1b5e20", "SYSTEM:")
+
+    def _get_last_user_question(self) -> str:
+        for turn in reversed(self.session.turns):
+            if turn.get("role") == "user":
+                return turn.get("content", "")
+        return ""
 
     def _start_init_worker(self):
         self._init_worker = InitWorker(self.settings)
@@ -377,6 +555,12 @@ class MainWindow(QMainWindow):
             else:
                 self._append("system", "Attachments kept — they'll be sent with your next message.",
                              "#555555", "FILES:")
+        self._last_assistant_turn = turn
+        if self._learn_mode and turn.kind == "answer":
+            self._feedback_bar.setVisible(True)
+            self._correction_panel.setVisible(False)
+        else:
+            self._feedback_bar.setVisible(False)
         self._today_queries += 1
         self._today_tokens += turn.tokens_in + turn.tokens_out
         self.statusBar().showMessage(
@@ -532,6 +716,9 @@ class MainWindow(QMainWindow):
     def _clear_chat(self):
         self.chat_view.clear()
         self.session = Session.new()
+        self._last_assistant_turn = None
+        self._feedback_bar.setVisible(False)
+        self._correction_panel.setVisible(False)
         try:
             ClaudeCodeProvider.reset_conversation()
         except Exception:

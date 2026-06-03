@@ -155,3 +155,13 @@ def test_topic_slugified_for_directory():
             title="T", body_md="b", url="", original_question="q",
         )
         assert out_path.parent.name == "deal_entry_reversals"
+
+
+# ── Task 14: GUI wiring regression tests ─────────────────────────────────────
+
+def test_settings_dialog_preserves_learn_mode_hash():
+    """SettingsDialog.values() must carry learn_mode_hash through (regression)."""
+    import inspect
+    from Dev.kb_chatbot import gui
+    src = inspect.getsource(gui.SettingsDialog.values)
+    assert "learn_mode_hash" in src
