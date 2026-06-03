@@ -20,6 +20,7 @@ class Turn:
     tokens_out: int = 0
     latency_ms: int = 0
     ts: str = field(default_factory=lambda: datetime.now().isoformat())
+    attachments: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -29,6 +30,7 @@ class Turn:
 class Session:
     id: str
     turns: list[dict] = field(default_factory=list)
+    last_rerank_score: float = 0.0
 
     @classmethod
     def new(cls) -> "Session":
