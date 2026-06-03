@@ -251,6 +251,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_init_ready(self, retriever):
         self._retriever = retriever
+        self.send_btn.setText("Send")
         self._set_chat_enabled(True)
         self.statusBar().showMessage("Ready")
         self._append("system", "Ready. Type a question below.", "#1b5e20", "SYSTEM:")
@@ -259,6 +260,9 @@ class MainWindow(QMainWindow):
     def _on_init_failed(self, err):
         self.statusBar().showMessage(f"Init failed: {err}")
         self._append("system", f"Initialisation failed: {err}", "#c62828", "ERROR:")
+        # Repurpose Send as a retry button so the user isn't locked out forever
+        self.send_btn.setText("Retry init")
+        self.send_btn.setEnabled(True)
 
     def _set_chat_enabled(self, enabled: bool):
         self.input.setEnabled(enabled)
@@ -274,8 +278,16 @@ class MainWindow(QMainWindow):
         self.chat_view.ensureCursorVisible()
 
     def _send(self):
+        if self._retriever is None:
+            # Send doubles as "Retry init" after a failed initialisation
+            if self.send_btn.text() == "Retry init":
+                self.send_btn.setText("Send")
+                self.send_btn.setEnabled(False)
+                self.statusBar().showMessage("⟳ Initialising — please wait…")
+                self._start_init_worker()
+            return
         msg = self.input.text().strip()
-        if not msg or self.worker or self._retriever is None:
+        if not msg or self.worker:
             return
         self.input.clear()
         self._set_inputs_enabled(False)
