@@ -1,9 +1,11 @@
-"""V2.2 KB Chatbot GUI. No API key. Claude Code preflight on startup."""
+"""V2.3 KB Chatbot GUI. No API key. Claude Code preflight on startup."""
 from __future__ import annotations
 import sys
 import json
 import logging
 import shutil
+import html as html_module
+import re as re_module
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -11,10 +13,10 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
-from PySide6.QtGui import QTextCursor, QAction, QFont, QColor, QTextCharFormat
+from PySide6.QtGui import QTextCursor, QAction, QFont, QColor, QTextCharFormat, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QComboBox, QPlainTextEdit, QLineEdit, QToolBar,
+    QLabel, QPushButton, QComboBox, QTextBrowser, QLineEdit, QToolBar,
     QStatusBar, QMessageBox, QDialog, QDialogButtonBox, QFormLayout,
     QFileDialog, QProgressBar,
 )
@@ -33,6 +35,19 @@ logging.basicConfig(
     handlers=[logging.FileHandler(config.LOG_FILE, encoding="utf-8")],
 )
 log = logging.getLogger("kb_chatbot.gui")
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+_TEXT_EXTS  = {".md", ".txt", ".json", ".log"}
+_ALL_EXTS   = _IMAGE_EXTS | _TEXT_EXTS
+_MAX_IMAGE_BYTES = 4 * 1024 * 1024   # 4 MB (Claude image limit)
+_MAX_ATTACHMENTS = 5
+_MEDIA_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp",
+}
+
+# Matches [Title](https://...) — mirrors citations._CITE_RE, handles parenthesised URLs
+_LINK_RE = re_module.compile(r'\[([^\]]+)\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)')
 
 
 def _append_usage(turn: Turn) -> None:
@@ -178,6 +193,7 @@ class MainWindow(QMainWindow):
         self._retriever: Optional[Retriever] = None
         self._today_queries = 0
         self._today_tokens = 0
+        self._attachments: list = []
         self._build_ui()
         # Window shows immediately; models + LLM warm-up load in background
         self._set_chat_enabled(False)
@@ -215,21 +231,39 @@ class MainWindow(QMainWindow):
         filter_row.addStretch()
         outer.addLayout(filter_row)
 
-        self.chat_view = QPlainTextEdit(); self.chat_view.setReadOnly(True)
+        self.chat_view = QTextBrowser()
         self.chat_view.setFont(QFont("Consolas", 10))
+        self.chat_view.setOpenExternalLinks(True)
+        self.chat_view.setReadOnly(True)
         outer.addWidget(self.chat_view, stretch=1)
 
         self.progress = QProgressBar(); self.progress.setVisible(False)
         outer.addWidget(self.progress)
 
+        # Attachment bar — hidden until files are attached
+        self._attach_bar = QWidget()
+        attach_layout = QHBoxLayout(self._attach_bar)
+        attach_layout.setContentsMargins(4, 2, 4, 2)
+        attach_layout.setSpacing(6)
+        self._attach_bar.setVisible(False)
+        outer.addWidget(self._attach_bar)
+
         input_row = QHBoxLayout()
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Ask a question about the Contoso KB…")
+        self.input.setPlaceholderText("Ask a question about the Contoso KB… (drag & drop files or Ctrl+V to attach)")
         self.input.returnPressed.connect(self._send)
+        self._clip_btn = QPushButton("📎")
+        self._clip_btn.setFixedWidth(36)
+        self._clip_btn.setToolTip("Attach file (image or text)")
+        self._clip_btn.clicked.connect(self._open_file_picker)
         self.send_btn = QPushButton("Send")
         self.send_btn.clicked.connect(self._send)
-        input_row.addWidget(self.input); input_row.addWidget(self.send_btn)
+        input_row.addWidget(self.input)
+        input_row.addWidget(self._clip_btn)
+        input_row.addWidget(self.send_btn)
         outer.addLayout(input_row)
+
+        self.setAcceptDrops(True)
 
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage(f"Log: {config.LOG_FILE}")
@@ -268,13 +302,21 @@ class MainWindow(QMainWindow):
         self.input.setEnabled(enabled)
         self.send_btn.setEnabled(enabled)
 
-    def _append(self, role, text, colour, tag):
+    def _append(self, role: str, text: str, colour: str, tag: str):
         ts = datetime.now().strftime("%H:%M:%S")
-        cursor = self.chat_view.textCursor()
-        fmt = QTextCharFormat(); fmt.setForeground(QColor(colour))
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(f"{ts} {tag:9s} {text}\n\n", fmt)
-        self.chat_view.setTextCursor(cursor)
+        safe_text = html_module.escape(text)
+        if role == "ai":
+            # Convert [Title](url) markdown links to HTML hyperlinks
+            safe_text = _LINK_RE.sub(r'<a href="\2">\1</a>', safe_text)
+        safe_text = safe_text.replace("\n", "<br>")
+        block = (
+            f'<p style="margin:4px 0; font-family:Consolas,monospace; font-size:10pt;">'
+            f'<span style="color:#555;">{ts}</span> '
+            f'<b style="color:{colour};">{html_module.escape(tag)}</b> '
+            f'<span style="color:{colour};">{safe_text}</span>'
+            f'</p>'
+        )
+        self.chat_view.append(block)
         self.chat_view.ensureCursorVisible()
 
     def _send(self):
@@ -293,6 +335,13 @@ class MainWindow(QMainWindow):
         self._set_inputs_enabled(False)
         self._append("user", msg, "#0d47a1", "YOU:")
 
+        attachments = list(self._attachments)
+        self._attachments.clear()
+        self._refresh_attach_bar()
+        if attachments:
+            names = ", ".join(a.filename for a in attachments)
+            self._append("system", f"Attached: {names}", "#555555", "FILES:")
+
         try:
             llm = ClaudeCodeProvider()
         except ClaudeCodeNotFoundError as exc:
@@ -300,7 +349,8 @@ class MainWindow(QMainWindow):
             self._set_inputs_enabled(True)
             return
 
-        deps = Deps(retriever=self._retriever, llm=llm, usage_logger=_append_usage)
+        deps = Deps(retriever=self._retriever, llm=llm, usage_logger=_append_usage,
+                    attachments=attachments)
         filters = Filters(product=self.product_box.currentData() or None)
         model = self.model_box.currentData()
         self.worker = TurnWorker(msg, self.session, filters, model, deps)
@@ -329,6 +379,113 @@ class MainWindow(QMainWindow):
         self._append("system", f"Error: {err}", "#c62828", "ERROR:")
         self.worker = None
         self._set_inputs_enabled(True)
+
+    # ── Attachments ──────────────────────────────────────────────────────────
+    def _open_file_picker(self):
+        if len(self._attachments) >= _MAX_ATTACHMENTS:
+            return
+        exts = " ".join(f"*{e}" for e in sorted(_ALL_EXTS))
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Attach file", "", f"Supported files ({exts})"
+        )
+        for p in paths:
+            self._add_attachment_path(Path(p))
+
+    def _add_attachment_path(self, path: Path):
+        from Dev.kb_chatbot.prompt import Attachment
+        if len(self._attachments) >= _MAX_ATTACHMENTS:
+            self._append("system", f"Maximum {_MAX_ATTACHMENTS} attachments per message.", "#c62828", "SYSTEM:")
+            return
+        ext = path.suffix.lower()
+        if ext not in _ALL_EXTS:
+            self._append("system", f"Unsupported file type: {ext or path.name}", "#c62828", "SYSTEM:")
+            return
+        try:
+            data = path.read_bytes()
+        except Exception as exc:
+            self._append("system", f"Could not read {path.name}: {exc}", "#c62828", "SYSTEM:")
+            return
+        is_image = ext in _IMAGE_EXTS
+        if is_image and len(data) > _MAX_IMAGE_BYTES:
+            self._append("system", f"{path.name} exceeds 4 MB limit — not attached.", "#c62828", "SYSTEM:")
+            return
+        att = Attachment(filename=path.name,
+                         media_type=_MEDIA_TYPES.get(ext, "text/plain"),
+                         data=data, is_image=is_image)
+        self._attachments.append(att)
+        self._refresh_attach_bar()
+
+    def _refresh_attach_bar(self):
+        layout = self._attach_bar.layout()
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for i, att in enumerate(self._attachments):
+            chip = QWidget()
+            row = QHBoxLayout(chip)
+            row.setContentsMargins(4, 2, 4, 2)
+            row.setSpacing(3)
+            lbl = QLabel(f"📎 {att.filename}")
+            lbl.setStyleSheet("background:#e3f2fd; border-radius:4px; padding:2px 6px;")
+            rm_btn = QPushButton("×")
+            rm_btn.setFixedSize(20, 20)
+            rm_btn.setStyleSheet("border:none; color:#555;")
+            rm_btn.clicked.connect(lambda _=False, idx=i: self._remove_attachment(idx))
+            row.addWidget(lbl)
+            row.addWidget(rm_btn)
+            layout.addWidget(chip)
+        layout.addStretch()
+        self._attach_bar.setVisible(bool(self._attachments))
+        self._clip_btn.setEnabled(len(self._attachments) < _MAX_ATTACHMENTS)
+
+    def _remove_attachment(self, idx: int):
+        if 0 <= idx < len(self._attachments):
+            self._attachments.pop(idx)
+            self._refresh_attach_bar()
+
+    # ── Drag and Drop ────────────────────────────────────────────────────────
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            local = url.toLocalFile()
+            if local:
+                self._add_attachment_path(Path(local))
+
+    # ── Clipboard paste (Ctrl+V anywhere in the window) ──────────────────────
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.Paste):
+            mime = QApplication.clipboard().mimeData()
+            if mime.hasImage():
+                img = QApplication.clipboard().image()
+                if not img.isNull():
+                    self._attach_clipboard_image(img)
+                    return
+        super().keyPressEvent(event)
+
+    def _attach_clipboard_image(self, img):
+        from Dev.kb_chatbot.prompt import Attachment
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+        if len(self._attachments) >= _MAX_ATTACHMENTS:
+            self._append("system", f"Maximum {_MAX_ATTACHMENTS} attachments per message.", "#c62828", "SYSTEM:")
+            return
+        byte_array = QByteArray()
+        buffer = QBuffer(byte_array)
+        buffer.open(QIODevice.WriteOnly)
+        img.save(buffer, "PNG")
+        buffer.close()
+        data = bytes(byte_array)
+        if len(data) > _MAX_IMAGE_BYTES:
+            self._append("system", "Pasted image exceeds 4 MB limit — not attached.", "#c62828", "SYSTEM:")
+            return
+        n = sum(1 for a in self._attachments if a.filename.startswith("clipboard"))
+        att = Attachment(filename=f"clipboard_{n + 1}.png", media_type="image/png",
+                         data=data, is_image=True)
+        self._attachments.append(att)
+        self._refresh_attach_bar()
 
     def _stop(self):
         if self.worker:
