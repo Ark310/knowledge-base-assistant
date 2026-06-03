@@ -11,7 +11,7 @@ from Dev.kb_chatbot.llm.fake_provider import FakeProvider
 from Dev.kb_chatbot.chat.session import Session
 from Dev.kb_chatbot.chat.orchestrator import (
     handle_turn, Deps, ABSTAIN_MESSAGE, SHORT_QUERY_CLARIFICATION,
-    LOW_CONFIDENCE_CEILING,
+    LOW_CONFIDENCE_CEILING, LOW_CONFIDENCE_FOOTER,
 )
 from Dev.kb_chatbot.chunker import Chunk
 
@@ -33,7 +33,7 @@ def deps_factory():
              quick_chunks=None):
         r = Retriever(Path(tmp), confidence_floor=confidence_floor)
         # Stub suggest() so legacy tests are not affected by new suggestion logic
-        r.suggest = lambda query, top_k=5, threshold=0.10: (suggest_chunks or [])
+        r.suggest = lambda query, top_k=5: (suggest_chunks or [])
         # Optionally stub retrieve_quick to control clarification-from-quick path
         if quick_chunks is not None:
             r.retrieve_quick = lambda query, limit=10: quick_chunks
@@ -136,7 +136,8 @@ def test_low_confidence_answer_appends_footer_when_suggestions_exist(deps_factor
     turn = handle_turn("tradedesk advanced topics overview details", session,
                         Filters(product="tradedesk"), "claude-haiku-4-5-20251001", deps=d)
     assert turn.kind == "answer"
-    assert "Not fully certain" in turn.content
+    footer_sentinel = LOW_CONFIDENCE_FOOTER.format(suggestions="").strip().splitlines()[-1]
+    assert footer_sentinel in turn.content
     assert "https://help.contoso.example/related" in turn.content
 
 
@@ -153,4 +154,5 @@ def test_high_confidence_answer_no_footer(deps_factory):
     turn = handle_turn("How do I book a spot deal in TradeDesk?", session,
                         Filters(product="tradedesk"), "claude-haiku-4-5-20251001", deps=d)
     assert turn.kind == "answer"
-    assert "Not fully certain" not in turn.content
+    footer_sentinel = LOW_CONFIDENCE_FOOTER.format(suggestions="").strip().splitlines()[-1]
+    assert footer_sentinel not in turn.content

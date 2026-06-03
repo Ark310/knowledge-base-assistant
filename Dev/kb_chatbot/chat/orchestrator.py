@@ -156,8 +156,9 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
 
         vr = validate_citations(resp.text, result.chunks)
         answer_text = vr.stripped_text
+        # Footer fires for scores in [CONFIDENCE_FLOOR, LOW_CONFIDENCE_CEILING)
         if result.rerank_top_score < LOW_CONFIDENCE_CEILING:
-            suggestion_block = format_suggestions(deps.retriever.suggest(user_msg))
+            suggestion_block = format_suggestions(deps.retriever.suggest(user_msg, top_k=3))
             if suggestion_block:
                 answer_text += LOW_CONFIDENCE_FOOTER.format(suggestions=suggestion_block)
         turn = Turn(
@@ -195,7 +196,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
         deps.usage_logger(turn)
         return turn
 
-    suggestion_block = format_suggestions(deps.retriever.suggest(user_msg))
+    suggestion_block = format_suggestions(deps.retriever.suggest(user_msg, top_k=3))
     content = (ABSTAIN_WITH_SUGGESTIONS_TEMPLATE.format(suggestions=suggestion_block)
                if suggestion_block else ABSTAIN_MESSAGE)
     turn = Turn(role="assistant", kind="abstain", content=content)
