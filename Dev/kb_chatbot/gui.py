@@ -370,9 +370,12 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         if not check_learn_password(pwd, self.settings.learn_mode_hash):
-            with open(config.USAGE_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"kind": "learn_mode_failed_auth",
-                                    "ts": datetime.now().isoformat()}) + "\n")
+            try:
+                with open(config.USAGE_FILE, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"kind": "learn_mode_failed_auth",
+                                        "ts": datetime.now().isoformat()}) + "\n")
+            except Exception:
+                log.exception("Failed to log learn-mode auth failure")
             QMessageBox.warning(self, "Access Denied", "Incorrect password.")
             return
         self._learn_mode = True
