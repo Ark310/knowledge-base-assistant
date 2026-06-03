@@ -98,6 +98,23 @@ class Retriever:
         query_vec = self._embed(query)
         return self._query_chroma(query_vec, Filters(), limit)
 
+    def suggest(self, query: str, top_k: int = 5, threshold: float = 0.10) -> list[Chunk]:
+        """Low-threshold retrieval for article suggestions when confidence is low.
+        Uses vector similarity only (no reranking) to keep latency minimal.
+        Returns up to top_k chunks deduplicated by title."""
+        query_vec = self._embed(query)
+        candidates = self._query_chroma(query_vec, Filters(), top_k * 2)
+        seen_titles: set[str] = set()
+        results: list[Chunk] = []
+        for chunk in candidates:
+            title = chunk.metadata.get("title", "")
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                results.append(chunk)
+            if len(results) >= top_k:
+                break
+        return results
+
     def close(self) -> None:
         try:
             self.client.close()
