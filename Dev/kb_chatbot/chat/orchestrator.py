@@ -13,7 +13,7 @@ from Dev.kb_chatbot.chunker import Chunk
 from Dev.kb_chatbot.citations import validate as validate_citations
 from Dev.kb_chatbot.llm.base import LLMProvider
 from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeNotFoundError
-from Dev.kb_chatbot.prompt import build_system_prompt, build_messages
+from Dev.kb_chatbot.prompt import build_system_prompt, build_messages, format_suggestions
 from Dev.kb_chatbot.retriever import Retriever, Filters
 
 log = logging.getLogger("kb_chatbot.orchestrator")
@@ -23,6 +23,38 @@ ABSTAIN_MESSAGE = (
     "Want to refine the question? Try naming a product (API, TradeDesk, SalesHub, Web2, Web4, Other), "
     "a related keyword, or a how-to topic."
 )
+
+ABSTAIN_WITH_SUGGESTIONS_TEMPLATE = """\
+I don't have enough information in the knowledge base to answer this confidently.
+
+Here are some articles that might be related — do any of these match what you're looking for?
+
+{suggestions}
+
+If none of these help, try rephrasing your question or use Learn Mode to add the missing information."""
+
+LOW_CONFIDENCE_FOOTER = """\
+
+
+---
+*Not fully certain this covers your question. You might also check:*
+{suggestions}"""
+
+SHORT_QUERY_CLARIFICATION = (
+    "Could you give me a bit more context? For example, which product are you asking about "
+    "(TradeDesk, API, Web2, Web4, or SalesHub) and what you're trying to do?"
+)
+
+_SHORT_QUERY_WORD_LIMIT = 4
+LOW_CONFIDENCE_CEILING = 0.45
+
+
+def _is_short_unspecified_query(text: str) -> bool:
+    words = text.strip().split()
+    if len(words) >= _SHORT_QUERY_WORD_LIMIT:
+        return False
+    return not _mentions_product(text)
+
 
 _DRIFT_PREVIOUS_FLOOR = 0.50   # previous turn must have been confident
 _DRIFT_CURRENT_CEILING = 0.20  # current turn must be very low
@@ -123,9 +155,14 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             return turn
 
         vr = validate_citations(resp.text, result.chunks)
+        answer_text = vr.stripped_text
+        if result.rerank_top_score < LOW_CONFIDENCE_CEILING:
+            suggestion_block = format_suggestions(deps.retriever.suggest(user_msg))
+            if suggestion_block:
+                answer_text += LOW_CONFIDENCE_FOOTER.format(suggestions=suggestion_block)
         turn = Turn(
             role="assistant",
-            content=vr.stripped_text,
+            content=answer_text,
             kind="answer",
             citations=[{"raw": c.raw, "verified": True} for c in vr.verified]
                       + [{"raw": c.raw, "verified": False} for c in vr.unverified],
@@ -151,7 +188,17 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             deps.usage_logger(turn)
             return turn
 
-    turn = Turn(role="assistant", kind="abstain", content=ABSTAIN_MESSAGE)
+    if _is_short_unspecified_query(user_msg):
+        turn = Turn(role="assistant", kind="clarification",
+                    content=SHORT_QUERY_CLARIFICATION)
+        session.add(turn)
+        deps.usage_logger(turn)
+        return turn
+
+    suggestion_block = format_suggestions(deps.retriever.suggest(user_msg))
+    content = (ABSTAIN_WITH_SUGGESTIONS_TEMPLATE.format(suggestions=suggestion_block)
+               if suggestion_block else ABSTAIN_MESSAGE)
+    turn = Turn(role="assistant", kind="abstain", content=content)
     session.add(turn)
     deps.usage_logger(turn)
     return turn
