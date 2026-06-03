@@ -1,5 +1,5 @@
-﻿"""V2.2 per-turn pipeline. Retrieval-first -> confidence gate -> clarification fallback for
-borderline-score queries -> LLM call -> citation validation."""
+﻿"""V2.3 per-turn pipeline. Retrieval-first -> confidence gate -> topic-drift detection ->
+clarification fallback for borderline-score queries -> LLM call -> citation validation."""
 from __future__ import annotations
 import logging
 import time
@@ -75,6 +75,7 @@ class Deps:
 
 def handle_turn(user_msg: str, session: Session, filters: Filters,
                 default_model: str, *, deps: Deps) -> Turn:
+    history = session.history_for_llm(config.MAX_HISTORY_TURNS)
     session.add_user(user_msg)
 
     result = deps.retriever.retrieve(user_msg, filters)
@@ -99,7 +100,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
         try:
             messages = build_messages(
                 context_chunks=result.chunks,
-                history=session.history_for_llm(config.MAX_HISTORY_TURNS),
+                history=history,
                 user_msg=user_msg + drift_note,
             )
             resp = deps.llm.chat(

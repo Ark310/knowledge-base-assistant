@@ -5,7 +5,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 import pytest
 
 from Dev.kb_chatbot.llm.claude_code_provider import (
-    ClaudeCodeProvider, ClaudeCodeNotFoundError, _ensure_claude_available, _build_user_prompt,
+    ClaudeCodeProvider, ClaudeCodeNotFoundError, _ensure_claude_available,
+    _latest_user_content, _flatten_content,
 )
 
 
@@ -23,13 +24,24 @@ def test_ensure_returns_path_when_present(monkeypatch):
     assert _ensure_claude_available() == r"C:\fake\bin\claude.exe"
 
 
-def test_build_user_prompt_flattens_messages():
+def test_latest_user_content_returns_last_user():
     msgs = [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
         {"role": "user", "content": "what's quick pay?"},
     ]
-    out = _build_user_prompt(msgs)
-    assert "USER: hello" in out
-    assert "ASSISTANT: hi" in out
-    assert out.endswith("USER: what's quick pay?")
+    out = _latest_user_content(msgs)
+    assert "what's quick pay?" in out
+    assert "hello" not in out
+
+
+def test_flatten_content_str_passthrough():
+    assert _flatten_content("hello world") == "hello world"
+
+
+def test_flatten_content_list():
+    content = [
+        {"type": "image", "source": {}},
+        {"type": "text", "text": "describe this"},
+    ]
+    assert _flatten_content(content) == "describe this"

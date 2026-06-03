@@ -47,18 +47,21 @@ def _ensure_claude_available() -> str:
     return path
 
 
-def _build_user_prompt(messages: list[dict]) -> str:
-    """Format a full message list as a single role-tagged string for the SDK query."""
-    parts = []
-    for m in messages:
-        role = m.get("role", "user").upper()
-        content = m.get("content", "")
-        if isinstance(content, list):
-            # Multimodal: extract text blocks only for history formatting
-            text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
-            content = " ".join(text_parts)
-        parts.append(f"{role}: {content}")
-    return "\n\n".join(parts)
+def _latest_user_content(messages: list[dict]):
+    """Return the most recent user message's content (str, or list of content
+    blocks for multimodal turns). The persistent ClaudeSDKClient holds prior
+    turns itself, so only the newest user message is sent per query."""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            return m.get("content", "")
+    return ""
+
+
+def _flatten_content(content) -> str:
+    """Text-only view of a message content value (for token estimates/logging)."""
+    if isinstance(content, list):
+        return " ".join(b.get("text", "") for b in content if b.get("type") == "text")
+    return str(content)
 
 
 # ── Async backend: one daemon thread runs one asyncio loop ───────────────────
@@ -149,6 +152,19 @@ class ClaudeCodeProvider(LLMProvider):
                 cls._backend = None
 
     @classmethod
+    def reset_conversation(cls) -> None:
+        """Tear down the persistent client so the next call starts a fresh
+        conversation. Cheap relative to app lifetime; called on Clear chat."""
+        with cls._lock:
+            if cls._client is not None and cls._backend is not None:
+                try:
+                    cls._backend.submit(cls._aexit_client())
+                except Exception:
+                    log.exception("Error closing ClaudeSDKClient on reset")
+                cls._client = None
+                cls._client_signature = ()
+
+    @classmethod
     async def _aexit_client(cls) -> None:
         if cls._client is not None:
             try:
@@ -163,7 +179,7 @@ class ClaudeCodeProvider(LLMProvider):
         if backend is None:
             raise RuntimeError("ClaudeCodeProvider backend not initialised")
         text, in_tok, out_tok = backend.submit(
-            self._query_persistent(messages, model, system_prompt)
+            self._query_persistent(_latest_user_content(messages), model, system_prompt)
         )
         latency_ms = int((time.time() - started) * 1000)
         return LLMResponse(
@@ -196,19 +212,32 @@ class ClaudeCodeProvider(LLMProvider):
         cls._client_signature = signature
         log.info("ClaudeSDKClient booted (model=%s)", model)
 
-    async def _query_persistent(self, messages: list[dict], model: str, system_prompt: str) -> tuple[str, int, int]:
+    async def _query_persistent(self, content, model: str, system_prompt: str) -> tuple[str, int, int]:
         await self._ensure_client(system_prompt, model)
-        prompt = _build_user_prompt(messages)
         cls = ClaudeCodeProvider
-        await cls._client.query(prompt)
+
+        if isinstance(content, list):
+            # Multimodal: stream via AsyncIterable of dicts matching the exact
+            # shape that query() uses for string prompts (verified in client.py
+            # lines 297-304: type/message/parent_tool_use_id/session_id).
+            async def _stream():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": content},
+                    "parent_tool_use_id": None,
+                    "session_id": "default",
+                }
+            await cls._client.query(_stream())
+        else:
+            await cls._client.query(content)
 
         text_parts: list[str] = []
         in_tok = 0
         out_tok = 0
         async for message in cls._client.receive_response():
-            content = getattr(message, "content", None)
-            if content:
-                for block in content:
+            msg_content = getattr(message, "content", None)
+            if msg_content:
+                for block in msg_content:
                     block_text = getattr(block, "text", None)
                     if block_text:
                         text_parts.append(block_text)
@@ -219,6 +248,7 @@ class ClaudeCodeProvider(LLMProvider):
 
         text = "".join(text_parts).strip()
         if not in_tok and not out_tok:
-            in_tok = max(1, len(prompt) // 4)
+            prompt_text = _flatten_content(content)
+            in_tok = max(1, len(prompt_text) // 4)
             out_tok = max(1, len(text) // 4)
         return text, in_tok, out_tok
