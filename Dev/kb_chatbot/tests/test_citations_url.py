@@ -41,3 +41,12 @@ def test_validate_verified_citation_not_replaced():
     result = validate(answer, [chunk])
     assert "[unverified]" not in result.stripped_text
     assert "Book a Retail Deal" in result.stripped_text
+
+
+def test_citation_url_with_parentheses_parses_fully():
+    url = "https://help.contoso.example/display/TD/Booking+(Retail)"
+    chunk = _make_chunk("Booking a Retail Deal", url)
+    answer = f"Do this. [Booking a Retail Deal]({url})"
+    result = validate(answer, [chunk])
+    assert len(result.verified) == 1
+    assert result.verified[0].url == url

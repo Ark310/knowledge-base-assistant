@@ -59,6 +59,6 @@ def test_validator_url_match_ignores_title_mismatch():
     # URL match is the authority — same URL, different title still verifies
     url = "https://help.contoso.example/display/SH/welcome"
     retrieved = [_chunk("saleshub", "", "Welcome", url=url)]
-    answer = f"Hi [Welcome](https://help.contoso.example/display/SH/welcome)."
+    answer = f"Hi [Getting Started]({url})."  # citation title differs from chunk title "Welcome"
     result = validate(answer, retrieved)
     assert result.all_verified is True

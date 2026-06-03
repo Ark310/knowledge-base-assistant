@@ -10,7 +10,7 @@ from Dev.kb_chatbot.chunker import Chunk
 log = logging.getLogger("kb_chatbot.citations")
 
 # Matches [Title](https://...)
-_CITE_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\)]+)\)")
+_CITE_RE = re.compile(r"\[([^\]]+)\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)")
 
 
 @dataclass
