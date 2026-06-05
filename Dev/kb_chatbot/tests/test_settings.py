@@ -39,3 +39,60 @@ def test_partial_file_falls_back_to_defaults():
         assert loaded.default_model == "claude-sonnet-4-6"
         assert loaded.library_path == config.LIBRARY_DEFAULT
         assert loaded.confidence_floor == config.CONFIDENCE_FLOOR
+
+
+def test_default_model_is_sonnet():
+    from Dev.kb_chatbot import config
+    assert config.DEFAULT_MODEL == "claude-sonnet-4-6"
+
+
+def test_settings_has_model_explicitly_set_field():
+    from Dev.kb_chatbot.settings import Settings
+    assert "model_explicitly_set" in Settings.__dataclass_fields__
+
+
+def test_migrate_upgrades_implicit_haiku():
+    from Dev.kb_chatbot import config
+    from Dev.kb_chatbot.settings import Settings, migrate_default_model
+    s = Settings(library_path=config.LIBRARY_DEFAULT,
+                 default_model="claude-haiku-4-5-20251001",
+                 confidence_floor=config.CONFIDENCE_FLOOR,
+                 model_explicitly_set=False)
+    assert migrate_default_model(s) is True
+    assert s.default_model == "claude-sonnet-4-6"
+
+
+def test_migrate_keeps_explicit_haiku():
+    from Dev.kb_chatbot import config
+    from Dev.kb_chatbot.settings import Settings, migrate_default_model
+    s = Settings(library_path=config.LIBRARY_DEFAULT,
+                 default_model="claude-haiku-4-5-20251001",
+                 confidence_floor=config.CONFIDENCE_FLOOR,
+                 model_explicitly_set=True)
+    assert migrate_default_model(s) is False
+    assert s.default_model == "claude-haiku-4-5-20251001"
+
+
+def test_migrate_noop_for_sonnet():
+    from Dev.kb_chatbot import config
+    from Dev.kb_chatbot.settings import Settings, migrate_default_model
+    s = Settings(library_path=config.LIBRARY_DEFAULT,
+                 default_model="claude-sonnet-4-6",
+                 confidence_floor=config.CONFIDENCE_FLOOR,
+                 model_explicitly_set=False)
+    assert migrate_default_model(s) is False
+
+
+def test_model_explicitly_set_round_trips():
+    import tempfile
+    from pathlib import Path
+    from Dev.kb_chatbot import config
+    from Dev.kb_chatbot.settings import Settings, save_settings, load_settings
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "settings.json"
+        s = Settings(library_path=config.LIBRARY_DEFAULT,
+                     default_model="claude-haiku-4-5-20251001",
+                     confidence_floor=config.CONFIDENCE_FLOOR,
+                     model_explicitly_set=True)
+        save_settings(s, p)
+        assert load_settings(p).model_explicitly_set is True

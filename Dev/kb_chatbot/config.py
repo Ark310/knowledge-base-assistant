@@ -22,7 +22,7 @@ SETTINGS_FILE   = STATE_DIR / "settings.json"
 EMBED_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-DEFAULT_MODEL  = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL  = "claude-sonnet-4-6"
 AVAILABLE_MODELS = {
     "Haiku (fast / cheap)": "claude-haiku-4-5-20251001",
     "Sonnet (smarter)":     "claude-sonnet-4-6",

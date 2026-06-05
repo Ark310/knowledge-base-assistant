@@ -20,6 +20,7 @@ class Settings:
     default_model: str
     confidence_floor: float
     learn_mode_hash: str = field(default_factory=lambda: DEFAULT_LEARN_MODE_HASH)
+    model_explicitly_set: bool = False
 
 
 def check_learn_password(candidate: str, stored_hash: str) -> bool:
@@ -46,6 +47,7 @@ def load_settings(path: Path = config.SETTINGS_FILE) -> Settings:
         default_model=data.get("default_model", defaults.default_model),
         confidence_floor=float(data.get("confidence_floor", defaults.confidence_floor)),
         learn_mode_hash=data.get("learn_mode_hash", DEFAULT_LEARN_MODE_HASH),
+        model_explicitly_set=bool(data.get("model_explicitly_set", False)),
     )
 
 
@@ -53,3 +55,17 @@ def save_settings(settings: Settings, path: Path = config.SETTINGS_FILE) -> None
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {**asdict(settings), "library_path": str(settings.library_path)}
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+_OLD_HAIKU_DEFAULT = "claude-haiku-4-5-20251001"
+
+
+def migrate_default_model(settings: Settings) -> bool:
+    """One-time upgrade: implicit Haiku default -> current (Sonnet) default.
+    Returns True if the model was changed (caller announces + persists)."""
+    if settings.model_explicitly_set:
+        return False
+    if settings.default_model != _OLD_HAIKU_DEFAULT:
+        return False
+    settings.default_model = config.DEFAULT_MODEL
+    return True
