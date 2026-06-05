@@ -126,7 +126,7 @@ def _default_clarifier(user_msg: str, quick: list[Chunk]) -> str:
             f"Which one are you asking about — {pretty}?")
 
 
-_REWRITE_MODEL_NAME = "claude-haiku-4-5-20251001"
+from Dev.kb_chatbot.chat.query_rewriter import REWRITE_MODEL as _REWRITE_MODEL_NAME
 
 
 @dataclass

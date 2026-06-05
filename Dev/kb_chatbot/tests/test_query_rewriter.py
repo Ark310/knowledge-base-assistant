@@ -1,10 +1,22 @@
 from Dev.kb_chatbot.chat.query_rewriter import (
-    build_rewrite_prompt, RewriteResult, REWRITE_MODEL, _clean_response,
+    build_rewrite_prompt, RewriteResult, REWRITE_MODEL, _clean_response, _usage_value,
 )
 
 
 def test_rewrite_model_is_haiku():
     assert "haiku" in REWRITE_MODEL
+
+
+def test_usage_value_reads_dict():
+    # SDK usage payloads are plain dicts — regression guard for the getattr bug
+    assert _usage_value({"input_tokens": 1234, "output_tokens": 56}, "input_tokens") == 1234
+    assert _usage_value({"input_tokens": 1234, "output_tokens": 56}, "output_tokens") == 56
+
+
+def test_usage_value_handles_none_and_missing():
+    assert _usage_value(None, "input_tokens") == 0
+    assert _usage_value({}, "input_tokens") == 0
+    assert _usage_value({"input_tokens": None}, "input_tokens") == 0
 
 
 def test_prompt_includes_history_and_message():

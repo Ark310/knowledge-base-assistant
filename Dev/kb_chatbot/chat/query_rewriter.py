@@ -49,6 +49,14 @@ def build_rewrite_prompt(user_msg: str, history: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _usage_value(usage, key: str) -> int:
+    """Read a token count from the SDK usage payload, which is a plain dict
+    (dict[str, Any] | None) — attribute access would silently return 0."""
+    if isinstance(usage, dict):
+        return int(usage.get(key, 0) or 0)
+    return int(getattr(usage, key, 0) or 0)
+
+
 def _clean_response(text: str) -> str:
     stripped = text.strip()
     if not stripped:
@@ -86,8 +94,10 @@ async def _run_query(prompt: str) -> tuple[str, int, int]:
                     text_parts.append(bt)
         usage = getattr(message, "usage", None)
         if usage:
-            tin = max(tin, getattr(usage, "input_tokens", 0) or 0)
-            tout = max(tout, getattr(usage, "output_tokens", 0) or 0)
+            # The final ResultMessage carries authoritative cumulative totals;
+            # max() keeps the largest seen across all message types.
+            tin = max(tin, _usage_value(usage, "input_tokens"))
+            tout = max(tout, _usage_value(usage, "output_tokens"))
     text = "".join(text_parts)
     if not tin and not tout:
         tin = max(1, len(prompt) // 4)

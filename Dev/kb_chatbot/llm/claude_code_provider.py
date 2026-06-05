@@ -64,6 +64,14 @@ def _flatten_content(content) -> str:
     return str(content)
 
 
+def _usage_value(usage, key: str) -> int:
+    """Read a token count from the SDK usage payload, which is a plain dict
+    (dict[str, Any] | None) — attribute access would silently return 0."""
+    if isinstance(usage, dict):
+        return int(usage.get(key, 0) or 0)
+    return int(getattr(usage, key, 0) or 0)
+
+
 # ── Async backend: one daemon thread runs one asyncio loop ───────────────────
 class _AsyncBackend:
     """Owns an asyncio event loop on a dedicated daemon thread. Submit
@@ -243,8 +251,8 @@ class ClaudeCodeProvider(LLMProvider):
                         text_parts.append(block_text)
             usage = getattr(message, "usage", None)
             if usage:
-                in_tok = max(in_tok, getattr(usage, "input_tokens", in_tok) or in_tok)
-                out_tok = max(out_tok, getattr(usage, "output_tokens", out_tok) or out_tok)
+                in_tok = max(in_tok, _usage_value(usage, "input_tokens"))
+                out_tok = max(out_tok, _usage_value(usage, "output_tokens"))
 
         text = "".join(text_parts).strip()
         if not in_tok and not out_tok:
