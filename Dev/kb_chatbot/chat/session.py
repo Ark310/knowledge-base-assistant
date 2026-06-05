@@ -46,6 +46,20 @@ class Session:
         kept = self.turns[-max_turns * 2 :] if max_turns > 0 else []
         return [{"role": t["role"], "content": t["content"]} for t in kept if t["role"] in ("user", "assistant")]
 
+    def last_user_question(self) -> str:
+        """Newest user message content, or '' if none."""
+        for t in reversed(self.turns):
+            if t.get("role") == "user":
+                return t.get("content", "")
+        return ""
+
+    def last_assistant_kind(self) -> str:
+        """Kind of the newest assistant turn ('answer'/'clarification'/'abstain'), or ''."""
+        for t in reversed(self.turns):
+            if t.get("role") == "assistant":
+                return t.get("kind", "")
+        return ""
+
     def save(self, dir_path: Path) -> Path:
         dir_path.mkdir(parents=True, exist_ok=True)
         path = dir_path / f"{self.id}.json"
