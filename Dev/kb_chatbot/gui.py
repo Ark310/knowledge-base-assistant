@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QTextBrowser, QLineEdit, QToolBar,
     QStatusBar, QMessageBox, QDialog, QDialogButtonBox, QFormLayout,
     QFileDialog, QProgressBar, QPlainTextEdit, QInputDialog,
+    QTableWidget, QTableWidgetItem,
 )
 
 from Dev.kb_chatbot import config, settings as settings_mod
@@ -232,9 +233,16 @@ class SettingsDialog(QDialog):
             self.model_box.setCurrentIndex(idx)
         form.addRow("Library path:", lib_w)
         form.addRow("Default model:", self.model_box)
+        self.usage_btn = QPushButton("View Token Usage…")
+        self.usage_btn.clicked.connect(self._open_usage)
+        form.addRow(self.usage_btn)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
         form.addRow(bb)
+
+    def _open_usage(self):
+        session_start = getattr(self.parent(), "_session_start_ts", "")
+        TokenUsageDialog(self, session_start).exec()
 
     def _pick_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Pick library directory", self.lib_edit.text())
@@ -247,7 +255,72 @@ class SettingsDialog(QDialog):
             default_model=self.model_box.currentData(),
             confidence_floor=config.CONFIDENCE_FLOOR,
             learn_mode_hash=self._current.learn_mode_hash,
+            model_explicitly_set=True,
         )
+
+
+class TokenUsageDialog(QDialog):
+    """Read-only token usage + API-equivalent cost breakdown from usage.jsonl."""
+
+    _MODEL_DISPLAY = {
+        "claude-haiku-4-5-20251001": "Haiku",
+        "claude-sonnet-4-6": "Sonnet",
+    }
+
+    def __init__(self, parent, session_start: str):
+        super().__init__(parent)
+        from Dev.kb_chatbot import usage_stats
+        self.setWindowTitle("Token Usage")
+        self.resize(640, 480)
+        layout = QVBoxLayout(self)
+
+        records = usage_stats.load_usage(config.USAGE_FILE)
+        s = usage_stats.summarize(records, session_start=session_start)
+
+        def fmt(n: int) -> str:
+            return f"{n:,}"
+
+        avg_in = s.total_in // s.total_queries if s.total_queries else 0
+        avg_out = s.total_out // s.total_queries if s.total_queries else 0
+        avg_cost = s.total_cost / s.total_queries if s.total_queries else 0.0
+        summary = QLabel(
+            f"<b>All time:</b> {fmt(s.total_in)} in · {fmt(s.total_out)} out · ≈ ${s.total_cost:.2f}<br>"
+            f"<b>This session:</b> {fmt(s.session_in)} in · {fmt(s.session_out)} out · ≈ ${s.session_cost:.4f}<br>"
+            f"<b>Per query avg:</b> {fmt(avg_in)} in · {fmt(avg_out)} out · ≈ ${avg_cost:.4f}<br>"
+            f"<b>Queries:</b> {s.total_queries} all-time · {s.session_queries} this session"
+        )
+        layout.addWidget(summary)
+
+        table = QTableWidget()
+        table.setColumnCount(6)
+        table.setHorizontalHeaderLabels(["Time", "Kind", "Model", "In", "Out", "Cost"])
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        rows = list(reversed(records))  # newest first
+        table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            ts = (r.get("ts") or "")[11:19]  # HH:MM:SS
+            model = self._MODEL_DISPLAY.get(r.get("model") or "", r.get("model") or "—")
+            cost = usage_stats.cost_for(r)
+            for col, val in enumerate([ts, r.get("kind", ""), model,
+                                       fmt(r.get("tokens_in", 0) or 0),
+                                       fmt(r.get("tokens_out", 0) or 0),
+                                       f"${cost:.4f}"]):
+                table.setItem(i, col, QTableWidgetItem(str(val)))
+        table.resizeColumnsToContents()
+        layout.addWidget(table, stretch=1)
+
+        footer = QLabel(
+            "Rates: Haiku $1/$5 · Sonnet $3/$15 per MTok (API-equivalent) — "
+            "Anthropic published pricing, June 2026. Edit config.COST_TABLE if rates change."
+        )
+        footer.setStyleSheet("color:#777; font-size:9pt;")
+        footer.setWordWrap(True)
+        layout.addWidget(footer)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.reject)
+        bb.clicked.connect(self.accept)
+        layout.addWidget(bb)
 
 
 class MainWindow(QMainWindow):
@@ -256,6 +329,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Contoso KB Chatbot")
         self.resize(1100, 780)
         self.settings = settings_mod.load_settings()
+        self._model_migrated = settings_mod.migrate_default_model(self.settings)
+        if self._model_migrated:
+            settings_mod.save_settings(self.settings)
+        self._session_start_ts = datetime.now().isoformat()
         self.session = Session.new()
         self.worker: Optional[TurnWorker] = None
         self.ingest_worker: Optional[IngestWorker] = None
@@ -557,6 +634,11 @@ class MainWindow(QMainWindow):
         self._set_chat_enabled(True)
         self.statusBar().showMessage("Ready")
         self._append("system", "Ready. Type a question below.", "#1b5e20", "SYSTEM:")
+        if self._model_migrated:
+            self._append("system",
+                "Default model upgraded to Sonnet for better accuracy — "
+                "change it back anytime in the dropdown.", "#1b5e20", "SYSTEM:")
+            self._model_migrated = False
 
     @Slot(str)
     def _on_init_failed(self, err):

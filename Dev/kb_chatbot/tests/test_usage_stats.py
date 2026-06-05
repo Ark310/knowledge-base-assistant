@@ -88,3 +88,19 @@ def test_summarize_zero_token_rows_not_counted_as_queries():
 def test_summarize_empty():
     s = summarize([], session_start="2026-06-05T10:00:00")
     assert s == UsageSummary(0, 0, 0.0, 0, 0, 0, 0.0, 0)
+
+
+def test_gui_wires_usage_dialog():
+    """SettingsDialog must expose the usage button; TokenUsageDialog must exist."""
+    import inspect
+    from Dev.kb_chatbot import gui
+    assert hasattr(gui, "TokenUsageDialog")
+    src = inspect.getsource(gui.SettingsDialog.__init__)
+    assert "View Token Usage" in src
+
+
+def test_gui_settings_dialog_marks_model_explicit():
+    import inspect
+    from Dev.kb_chatbot import gui
+    src = inspect.getsource(gui.SettingsDialog.values)
+    assert "model_explicitly_set=True" in src
