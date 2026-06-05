@@ -11,6 +11,8 @@ from rank_bm25 import BM25Okapi
 
 log = logging.getLogger("kb_chatbot.lexical")
 
+# ASCII-only tokenization is intentional: the KB is English plus error codes.
+# Accented forms still self-match because the index and query tokenize identically.
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -35,18 +37,26 @@ class LexicalIndex:
     @classmethod
     def build(cls, items: list[tuple[str, str]]) -> "LexicalIndex":
         ids = [cid for cid, _ in items]
-        return cls(ids, [tokenize(text) for _, text in items])
+        idx = cls(ids, [tokenize(text) for _, text in items])
+        log.debug("BM25 build: %d docs", len(ids))
+        return idx
 
     def query(self, text: str, top_n: int) -> list[str]:
-        """Ranked ids for the query; zero-score matches are dropped."""
+        """Ranked ids for the query; only docs containing >=1 query token are returned."""
         if self._bm25 is None:
             return []
         tokens = tokenize(text)
         if not tokens:
             return []
         scores = self._bm25.get_scores(tokens)
-        ranked = sorted(zip(self.ids, scores), key=lambda t: t[1], reverse=True)
-        return [cid for cid, score in ranked[:top_n] if score > 0.0]
+        token_set = set(tokens)
+        matches = [
+            (cid, score)
+            for cid, score, freqs in zip(self.ids, scores, self._bm25.doc_freqs)
+            if token_set & freqs.keys()
+        ]
+        matches.sort(key=lambda t: t[1], reverse=True)
+        return [cid for cid, _ in matches[:top_n]]
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

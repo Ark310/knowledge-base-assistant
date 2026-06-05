@@ -1,4 +1,4 @@
-import sys, tempfile
+import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
@@ -43,3 +43,13 @@ def test_corpus_hash_is_order_independent_and_content_sensitive():
 def test_build_empty_corpus_is_safe():
     idx = LexicalIndex.build([])
     assert idx.query("anything", top_n=5) == []
+
+
+def test_common_term_with_nonpositive_idf_still_matches():
+    # 'spot' appears in 1 of 2 docs -> IDF = 0 in BM25Okapi; presence filter
+    # must still return the containing doc (zero-score filter regression).
+    idx = LexicalIndex.build([
+        ("d1", "spot deal booking"),
+        ("d2", "form management basics"),
+    ])
+    assert idx.query("spot", top_n=2) == ["d1"]
