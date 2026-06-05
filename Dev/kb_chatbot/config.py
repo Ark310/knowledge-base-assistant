@@ -18,6 +18,13 @@ LOG_FILE        = STATE_DIR / "run.log"
 USAGE_FILE      = STATE_DIR / "usage.jsonl"
 SETTINGS_FILE   = STATE_DIR / "settings.json"
 
+# ── Bundled data (synonyms etc.) ──────────────────────────────────────────────
+if getattr(sys, "frozen", False):
+    DATA_DIR = Path(getattr(sys, "_MEIPASS", ".")) / "kb_chatbot_data"
+else:
+    DATA_DIR = Path(__file__).parent / "data"
+SYNONYMS_FILE = DATA_DIR / "synonyms.yaml"
+
 # ── Model defaults ────────────────────────────────────────────────────────────
 EMBED_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"

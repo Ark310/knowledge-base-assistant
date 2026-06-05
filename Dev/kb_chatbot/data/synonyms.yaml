@@ -1,0 +1,16 @@
+# Contoso domain synonym groups. Each group is a list of equivalent terms;
+# matching any term in a query appends the others to the BM25 search only.
+groups:
+  - [deal, trade]
+  - [post, book]
+  - [beneficiary, payee]
+  - [counterparty, counter-party]
+  - [fx, foreign exchange]
+  - [rate, exchange rate, fx rate]
+  - [wire, wire transfer, payment]
+  - [settle, settlement]
+  - [drawdown, draw down]
+  - [forward, forward contract]
+  - [spot, spot deal]
+  - [saleshub, saleshub]
+  - [tradedesk, tradedesk]
