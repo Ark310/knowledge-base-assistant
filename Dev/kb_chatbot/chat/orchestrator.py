@@ -66,6 +66,32 @@ def _is_topic_drift(previous: float, current: float) -> bool:
     return previous >= _DRIFT_PREVIOUS_FLOOR and current < _DRIFT_CURRENT_CEILING
 
 
+_FOLLOW_UP_WORD_LIMIT = 5
+
+
+def _extract_single_product(text: str) -> Optional[str]:
+    """Product slug if the text names exactly one product, else None."""
+    low = text.lower()
+    found = [p for p in config.PRODUCTS if p in low]
+    return found[0] if len(found) == 1 else None
+
+
+def _build_retrieval_query(session: Session, user_msg: str) -> tuple[str, Optional[str]]:
+    """Fuse short replies with the prior question so retrieval sees full context.
+
+    Returns (retrieval_query, extracted_product). Must be called BEFORE
+    session.add_user(user_msg) so last_user_question() is the prior question.
+    The raw user_msg is what the LLM sees; fusion affects retrieval only."""
+    prev_q = session.last_user_question()
+    if not prev_q:
+        return user_msg, None
+    if session.last_assistant_kind() == "clarification":
+        return f"{prev_q} {user_msg}", _extract_single_product(user_msg)
+    if len(user_msg.strip().split()) < _FOLLOW_UP_WORD_LIMIT:
+        return f"{prev_q} {user_msg}", None
+    return user_msg, None
+
+
 def _mentions_product(text: str) -> bool:
     low = text.lower()
     return any(p in low for p in config.PRODUCTS)
@@ -109,9 +135,15 @@ class Deps:
 def handle_turn(user_msg: str, session: Session, filters: Filters,
                 default_model: str, *, deps: Deps) -> Turn:
     history = session.history_for_llm(config.MAX_HISTORY_TURNS)
+    retrieval_query, extracted_product = _build_retrieval_query(session, user_msg)
+    fused = retrieval_query != user_msg
+    if extracted_product and not filters.product:
+        filters = Filters(product=extracted_product,
+                          version_min=filters.version_min,
+                          version_max=filters.version_max)
     session.add_user(user_msg)
 
-    result = deps.retriever.retrieve(user_msg, filters)
+    result = deps.retriever.retrieve(retrieval_query, filters)
 
     # Topic-drift: inject note if confidence dropped sharply from previous turn
     drift_note = ""
@@ -121,7 +153,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
 
     if not result.abstain_reason:
         if not (filters.product or _mentions_product(user_msg) or _recent_product_in_history(session)):
-            quick = deps.retriever.retrieve_quick(user_msg, limit=10)
+            quick = deps.retriever.retrieve_quick(retrieval_query, limit=10)
             if _needs_clarification_from_quick(quick):
                 clar_fn = deps.clarifier or _default_clarifier
                 turn = Turn(role="assistant", content=clar_fn(user_msg, quick),
@@ -160,7 +192,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
         answer_text = vr.stripped_text
         # Footer fires for scores in [CONFIDENCE_FLOOR, LOW_CONFIDENCE_CEILING)
         if result.rerank_top_score < LOW_CONFIDENCE_CEILING:
-            suggestion_block = format_suggestions(deps.retriever.suggest(user_msg, top_k=3))
+            suggestion_block = format_suggestions(deps.retriever.suggest(retrieval_query, top_k=3))
             if suggestion_block:
                 answer_text += LOW_CONFIDENCE_FOOTER.format(suggestions=suggestion_block)
         turn = Turn(
@@ -183,7 +215,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
     if result.rerank_top_score > config.CLARIFY_SCORE_FLOOR and not (
         filters.product or _mentions_product(user_msg) or _recent_product_in_history(session)
     ):
-        quick = deps.retriever.retrieve_quick(user_msg, limit=10)
+        quick = deps.retriever.retrieve_quick(retrieval_query, limit=10)
         if _needs_clarification_from_quick(quick):
             clar_fn = deps.clarifier or _default_clarifier
             turn = Turn(role="assistant", content=clar_fn(user_msg, quick),
@@ -192,14 +224,14 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             deps.usage_logger(turn)
             return turn
 
-    if _is_short_unspecified_query(user_msg):
+    if not fused and _is_short_unspecified_query(user_msg):
         turn = Turn(role="assistant", kind="clarification",
                     content=SHORT_QUERY_CLARIFICATION)
         session.add(turn)
         deps.usage_logger(turn)
         return turn
 
-    suggestion_block = format_suggestions(deps.retriever.suggest(user_msg, top_k=3))
+    suggestion_block = format_suggestions(deps.retriever.suggest(retrieval_query, top_k=3))
     content = (ABSTAIN_WITH_SUGGESTIONS_TEMPLATE.format(suggestions=suggestion_block)
                if suggestion_block else ABSTAIN_MESSAGE)
     turn = Turn(role="assistant", kind="abstain", content=content)
