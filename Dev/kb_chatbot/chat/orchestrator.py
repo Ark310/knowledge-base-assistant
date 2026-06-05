@@ -2,6 +2,7 @@
 clarification fallback for borderline-score queries -> LLM call -> citation validation."""
 from __future__ import annotations
 import logging
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -70,9 +71,11 @@ _FOLLOW_UP_WORD_LIMIT = 5
 
 
 def _extract_single_product(text: str) -> Optional[str]:
-    """Product slug if the text names exactly one product, else None."""
+    """Product slug if the text names exactly one product as a whole word, else None.
+    Word boundaries matter: 'rapid' must not match 'api', 'another' must not match 'other'."""
     low = text.lower()
-    found = [p for p in config.PRODUCTS if p in low]
+    found = [p for p in config.PRODUCTS
+             if re.search(r"\b" + re.escape(p) + r"\b", low)]
     return found[0] if len(found) == 1 else None
 
 

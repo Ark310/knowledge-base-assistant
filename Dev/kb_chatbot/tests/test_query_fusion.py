@@ -55,6 +55,13 @@ def test_extract_multiple_products_returns_none():
     assert _extract_single_product("tradedesk or web2?") is None
 
 
+def test_extract_requires_whole_word():
+    # 'rapid' must not match 'api'; 'another' must not match 'other'
+    assert _extract_single_product("rapid deal entry") is None
+    assert _extract_single_product("try another approach") is None
+    assert _extract_single_product("capital markets") is None
+
+
 def test_fusion_raw_passthrough_no_history():
     s = Session.new()
     q, product = _build_retrieval_query(s, "How do I post a deal?")
