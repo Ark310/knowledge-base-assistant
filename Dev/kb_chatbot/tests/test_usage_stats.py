@@ -37,6 +37,11 @@ def test_cost_for_missing_model_is_zero():
     assert cost_for({"tokens_in": 100, "tokens_out": 100}) == 0.0
 
 
+def test_cost_for_null_tokens_is_zero_not_crash():
+    # JSON null values come through as None — must not TypeError
+    assert cost_for({"model": HAIKU, "tokens_in": None, "tokens_out": None}) == 0.0
+
+
 def test_load_skips_malformed_lines():
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "usage.jsonl"

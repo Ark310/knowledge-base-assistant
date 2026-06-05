@@ -32,8 +32,9 @@ def cost_for(record: dict) -> float:
     rates = config.COST_TABLE.get(record.get("model") or "")
     if not rates:
         return 0.0
-    return (record.get("tokens_in", 0) * rates["in"]
-            + record.get("tokens_out", 0) * rates["out"]) / 1_000_000
+    # `or 0` guards explicit JSON nulls, not just missing keys
+    return ((record.get("tokens_in") or 0) * rates["in"]
+            + (record.get("tokens_out") or 0) * rates["out"]) / 1_000_000
 
 
 def load_usage(path: Path) -> list[dict]:
