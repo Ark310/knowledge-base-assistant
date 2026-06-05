@@ -1,0 +1,3 @@
+# New dependencies introduced by the v3 retrieval overhaul.
+# Install into scraper\venv: python -m pip install -r Dev/kb_chatbot/requirements-v3.txt
+rank-bm25==0.2.2
