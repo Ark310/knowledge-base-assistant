@@ -126,6 +126,9 @@ def _default_clarifier(user_msg: str, quick: list[Chunk]) -> str:
             f"Which one are you asking about — {pretty}?")
 
 
+_REWRITE_MODEL_NAME = "claude-haiku-4-5-20251001"
+
+
 @dataclass
 class Deps:
     retriever: Retriever
@@ -133,6 +136,8 @@ class Deps:
     usage_logger: Callable[[Turn], None] = lambda t: None
     clarifier: Optional[Callable[[str, list[Chunk]], str]] = None
     attachments: list = field(default_factory=list)
+    rewriter: Optional[Callable[[str, list], object]] = None
+    on_progress: Callable[[str], None] = lambda stage: None
 
 
 def handle_turn(user_msg: str, session: Session, filters: Filters,
@@ -147,6 +152,20 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
     session.add_user(user_msg)
 
     result = deps.retriever.retrieve(retrieval_query, filters)
+
+    # Escalation: one stateless LLM rewrite when post-fusion retrieval abstains
+    # and there is conversation context to rewrite from.
+    if result.abstain_reason and deps.rewriter is not None and history:
+        deps.on_progress("rephrase")
+        rw = deps.rewriter(user_msg, history)
+        if rw is not None:
+            deps.usage_logger(Turn(
+                role="system", kind="rewrite", content=rw.query,
+                model=_REWRITE_MODEL_NAME, tokens_in=rw.tokens_in,
+                tokens_out=rw.tokens_out, latency_ms=rw.latency_ms,
+            ))
+            retrieval_query = rw.query
+            result = deps.retriever.retrieve(retrieval_query, filters)
 
     # Topic-drift: inject note if confidence dropped sharply from previous turn
     drift_note = ""
