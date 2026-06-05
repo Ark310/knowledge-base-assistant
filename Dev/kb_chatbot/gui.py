@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import json
 import logging
+import random
 import shutil
 import html as html_module
 import re as re_module
@@ -12,7 +13,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from PySide6.QtCore import QEvent, QObject, QThread, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QTextCursor, QAction, QFont, QColor, QTextCharFormat, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from Dev.kb_chatbot import config, settings as settings_mod
+from Dev.kb_chatbot.chat.query_rewriter import rewrite_query
 from Dev.kb_chatbot.chat.orchestrator import Deps, handle_turn
 from Dev.kb_chatbot.chat.session import Session, Turn
 from Dev.kb_chatbot.ingest import ingest
@@ -50,6 +52,15 @@ _MEDIA_TYPES = {
 # Matches [Title](https://...) — mirrors citations._CITE_RE, handles parenthesised URLs
 _LINK_RE = re_module.compile(r'\[([^\]]+)\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)')
 
+THINKING_WORDS = [
+    "Pondering", "Rummaging the KB", "Connecting dots", "Cross-referencing",
+    "Consulting the archives", "Reticulating splines", "Reading the manuals",
+    "Chasing citations", "Untangling deals", "Asking the librarian",
+    "Double-checking sources", "Brewing an answer",
+]
+INIT_WORDS = ["Waking up the librarian", "Stretching the neural nets", "Dusting off the archives"]
+REPHRASE_TEXT = "Rephrasing your question for a better search"
+
 
 def _append_usage(turn: Turn) -> None:
     config.STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -66,6 +77,7 @@ def _append_usage(turn: Turn) -> None:
 class WorkerSignals(QObject):
     finished = Signal(object)
     failed = Signal(str)
+    progress = Signal(str)
 
 
 class TurnWorker(QThread):
@@ -146,6 +158,60 @@ class InitWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class ThinkingIndicator(QLabel):
+    """Claude-style animated status: '✦ <word>…' with cycling words and pulsing dots."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("color:#7e57c2; font-style:italic; padding:2px 8px;")
+        self.setVisible(False)
+        self._words: list[str] = []
+        self._word_idx = 0
+        self._dots = 1
+        self._pinned: Optional[str] = None
+        self._word_timer = QTimer(self)
+        self._word_timer.setInterval(2500)
+        self._word_timer.timeout.connect(self._next_word)
+        self._dot_timer = QTimer(self)
+        self._dot_timer.setInterval(400)
+        self._dot_timer.timeout.connect(self._pulse)
+
+    def start(self, words: list[str]):
+        self._words = list(words)
+        random.shuffle(self._words)
+        self._word_idx = 0
+        self._dots = 1
+        self._pinned = None
+        self._render()
+        self.setVisible(True)
+        self._word_timer.start()
+        self._dot_timer.start()
+
+    def pin(self, text: str):
+        """Hold one status (e.g. the rewrite stage) instead of cycling."""
+        self._pinned = text
+        self._render()
+
+    def stop(self):
+        self._word_timer.stop()
+        self._dot_timer.stop()
+        self.setVisible(False)
+
+    def _next_word(self):
+        if self._pinned is None and self._words:
+            self._word_idx = (self._word_idx + 1) % len(self._words)
+            self._render()
+
+    def _pulse(self):
+        self._dots = self._dots % 3 + 1
+        self._render()
+
+    def _render(self):
+        word = self._pinned if self._pinned is not None else (
+            self._words[self._word_idx] if self._words else "Thinking")
+        self.setText(f"✦ {word}{'.' * self._dots}")
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent, current):
         super().__init__(parent)
@@ -202,7 +268,10 @@ class MainWindow(QMainWindow):
         self._build_ui()
         # Window shows immediately; models + LLM warm-up load in background
         self._set_chat_enabled(False)
-        self.statusBar().showMessage("⟳ Initialising — please wait…")
+        self._init_thinking = ThinkingIndicator()
+        self.statusBar().addWidget(self._init_thinking)
+        self._init_thinking.start(INIT_WORDS)
+        self.input.setPlaceholderText("Getting ready — one moment…")
         self._start_init_worker()
 
     def _build_ui(self):
@@ -247,6 +316,9 @@ class MainWindow(QMainWindow):
         self.chat_view.setOpenExternalLinks(True)
         self.chat_view.setReadOnly(True)
         outer.addWidget(self.chat_view, stretch=1)
+
+        self._thinking = ThinkingIndicator()
+        outer.addWidget(self._thinking)
 
         self.progress = QProgressBar(); self.progress.setVisible(False)
         outer.addWidget(self.progress)
@@ -465,12 +537,21 @@ class MainWindow(QMainWindow):
     def _start_init_worker(self):
         self._init_worker = InitWorker(self.settings)
         self._init_worker.ready.connect(self._on_init_ready)
-        self._init_worker.status.connect(self.statusBar().showMessage)
+        self._init_worker.status.connect(self._on_init_status)
         self._init_worker.failed.connect(self._on_init_failed)
         self._init_worker.start()
 
+    @Slot(str)
+    def _on_init_status(self, msg: str):
+        if "Claude" in msg:
+            self._init_thinking.pin("Warming up Claude")
+
     @Slot(object)
     def _on_init_ready(self, retriever):
+        self._init_thinking.stop()
+        self.statusBar().removeWidget(self._init_thinking)
+        self.input.setPlaceholderText(
+            "Ask a question about the Contoso KB… (drag & drop files or Ctrl+V to attach)")
         self._retriever = retriever
         self.send_btn.setText("Send")
         self._set_chat_enabled(True)
@@ -479,6 +560,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_init_failed(self, err):
+        self._init_thinking.stop()
         self.statusBar().showMessage(f"Init failed: {err}")
         self._append("system", f"Initialisation failed: {err}", "#c62828", "ERROR:")
         # Repurpose Send as a retry button so the user isn't locked out forever
@@ -537,16 +619,25 @@ class MainWindow(QMainWindow):
             return
 
         deps = Deps(retriever=self._retriever, llm=llm, usage_logger=_append_usage,
-                    attachments=attachments)
+                    attachments=attachments, rewriter=rewrite_query)
         filters = Filters(product=self.product_box.currentData() or None)
         model = self.model_box.currentData()
         self.worker = TurnWorker(msg, self.session, filters, model, deps)
         self.worker.signals.finished.connect(self._on_turn_done)
         self.worker.signals.failed.connect(self._on_turn_failed)
+        self.worker.signals.progress.connect(self._on_turn_progress)
+        deps.on_progress = self.worker.signals.progress.emit
+        self._thinking.start(THINKING_WORDS)
         self.worker.start()
+
+    @Slot(str)
+    def _on_turn_progress(self, stage: str):
+        if stage == "rephrase":
+            self._thinking.pin(REPHRASE_TEXT)
 
     @Slot(object)
     def _on_turn_done(self, turn):
+        self._thinking.stop()
         colour = "#212121"; tag = "AI:"
         if turn.kind == "abstain":
             colour, tag = "#5d4037", "ABSTAIN:"
@@ -576,6 +667,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_turn_failed(self, err):
+        self._thinking.stop()
         self._append("system", f"Error: {err}", "#c62828", "ERROR:")
         self.worker = None
         self._set_inputs_enabled(True)
