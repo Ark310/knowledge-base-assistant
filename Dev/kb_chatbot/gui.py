@@ -318,8 +318,7 @@ class TokenUsageDialog(QDialog):
         layout.addWidget(footer)
 
         bb = QDialogButtonBox(QDialogButtonBox.Close)
-        bb.rejected.connect(self.reject)
-        bb.clicked.connect(self.accept)
+        bb.rejected.connect(self.reject)  # Close has RejectRole — single, correct wiring
         layout.addWidget(bb)
 
 
