@@ -594,7 +594,7 @@ class MainWindow(QMainWindow):
             if self.send_btn.text() == "Retry init":
                 self.send_btn.setText("Send")
                 self.send_btn.setEnabled(False)
-                self.statusBar().showMessage("⟳ Initialising — please wait…")
+                self._init_thinking.start(INIT_WORDS)
                 self._start_init_worker()
             return
         msg = self.input.text().strip()
