@@ -86,3 +86,26 @@ def test_missing_pickle_triggers_rebuild(chroma_dir):
 def test_results_capped_at_top_k_rerank(hybrid):
     r = hybrid.retrieve("payment processing", Filters())
     assert len(r.chunks) <= hybrid.top_k_rerank
+
+
+def test_reranks_full_union_not_truncated_to_top_k_retrieve(chroma_dir):
+    # Regression: the fused union of vector+BM25 lanes must ALL reach the
+    # reranker. With a tiny top_k_retrieve the union exceeds it; truncating the
+    # fused list pre-rerank would silently drop candidates a lane surfaced
+    # (this measurably dropped recall on the golden set).
+    r = Retriever(chroma_dir, confidence_floor=0.0, top_k_retrieve=2)
+    try:
+        seen: dict[str, int] = {}
+        orig = r.reranker.predict
+
+        def spy(pairs, *a, **k):
+            seen["n"] = len(pairs)
+            return orig(pairs, *a, **k)
+
+        r.reranker.predict = spy
+        # A query spanning several distinct fixture docs across both lanes so
+        # the vector top-2 and BM25 top-2 don't collapse to the same 2 ids.
+        r.retrieve("ERR-7741 corporate deal IBAN form recurring payment", Filters())
+        assert seen["n"] > 2  # union reranked, not truncated back to top_k_retrieve=2
+    finally:
+        r.close()

@@ -133,7 +133,13 @@ class Retriever:
             if lex_ids:
                 rankings.append(lex_ids)
 
-        fused_ids = rrf_fuse(rankings, k=config.RRF_K)[: self.top_k_retrieve]
+        # Rerank the FULL fused union of both lanes — do NOT re-truncate to
+        # top_k_retrieve here. Truncating would discard candidates a lane
+        # surfaced before the reranker (the real selector) ever scores them;
+        # measured on the golden set, that silently dropped vector hits that
+        # BM25 candidates had pushed past rank top_k_retrieve. The union is
+        # naturally bounded by the per-lane caps (<= 2 * top_k_retrieve).
+        fused_ids = rrf_fuse(rankings, k=config.RRF_K)
         candidates = [chunk_map[i] for i in fused_ids if i in chunk_map]
         if not candidates:
             return RetrievalResult(abstain_reason="no_relevant_kb_match")
