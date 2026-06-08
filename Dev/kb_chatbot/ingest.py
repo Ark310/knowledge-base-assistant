@@ -13,6 +13,7 @@ from sentence_transformers import SentenceTransformer
 
 from Dev.kb_chatbot import config
 from Dev.kb_chatbot.chunker import build_article_chunks, Chunk
+from Dev.kb_chatbot.lexical import LexicalIndex
 
 log = logging.getLogger("kb_chatbot.ingest")
 
@@ -90,6 +91,13 @@ def ingest(
             metadatas=[c.metadata for c in batch],
         )
         on_progress(min(i + len(batch), total), total)
+
+    # Build the BM25 sidecar from the COLLECTION (not just this batch) so the
+    # lexical index always mirrors chroma exactly, even after partial re-ingests.
+    stored = collection.get(include=["documents"])
+    lexical = LexicalIndex.build(list(zip(stored["ids"], stored["documents"])))
+    lexical.save(chroma_path / config.BM25_FILE)
+    log.info("BM25 index: %d docs → %s", len(stored["ids"]), config.BM25_FILE)
 
     report.chunks_created = total
     report.duration_s = time.time() - started

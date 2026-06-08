@@ -49,6 +49,7 @@ CONFIDENCE_FLOOR    = 0.30
 CLARIFY_SCORE_FLOOR = -5.0
 MAX_HISTORY_TURNS   = 6
 CHUNK_TARGET_WORDS  = 500
+BM25_FILE           = "bm25.pkl"     # lives inside the chroma dir
 
 # ── Cost estimation (USD per million tokens) ──────────────────────────────────
 # Used by llm.base.estimate_cost. Claude Code subprocess doesn't bill per-call,
