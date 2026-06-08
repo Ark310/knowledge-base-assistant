@@ -27,7 +27,9 @@ SYNONYMS_FILE = DATA_DIR / "synonyms.yaml"
 
 # ── Model defaults ────────────────────────────────────────────────────────────
 EMBED_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
-RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+# v3: bge-reranker-base lifted golden-set recall@8 0.816 -> 0.908 vs ms-marco.
+# Outputs 0-1 sigmoid scores (not raw logits), so CONFIDENCE_FLOOR is on that scale.
+RERANKER_MODEL = "BAAI/bge-reranker-base"
 
 DEFAULT_MODEL  = "claude-haiku-4-5-20251001"
 AVAILABLE_MODELS = {
@@ -45,8 +47,8 @@ PRODUCT_DISPLAY = {
 # ── Retrieval defaults ────────────────────────────────────────────────────────
 TOP_K_RETRIEVE      = 30
 TOP_K_RERANK        = 8
-CONFIDENCE_FLOOR    = 0.30
-CLARIFY_SCORE_FLOOR = -5.0
+CONFIDENCE_FLOOR    = 0.05          # bge-reranker-base scale; calibrated on golden set
+CLARIFY_SCORE_FLOOR = 0.01          # bge sigmoid scale: above pure-gibberish (~0), below vague-query signal
 MAX_HISTORY_TURNS   = 6
 CHUNK_TARGET_WORDS  = 500
 BM25_FILE           = "bm25.pkl"     # lives inside the chroma dir
