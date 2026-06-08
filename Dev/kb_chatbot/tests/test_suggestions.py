@@ -70,7 +70,7 @@ def _make_retriever_with_mock_chroma(chunks):
     with patch("Dev.kb_chatbot.retriever.chromadb.PersistentClient"), \
          patch("Dev.kb_chatbot.retriever.SentenceTransformer"), \
          patch("Dev.kb_chatbot.retriever.CrossEncoder"):
-        r = Retriever(Path("fake_chroma"))
+        r = Retriever(Path("fake_chroma"), use_bm25=False)
     r._embed = lambda text: [0.1] * 384
     r._query_chroma = MagicMock(return_value=chunks)
     return r

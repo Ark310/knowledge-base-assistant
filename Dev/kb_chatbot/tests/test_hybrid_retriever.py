@@ -37,9 +37,18 @@ def test_exact_error_code_is_retrieved(hybrid):
     assert "Resolving Sweep Error ERR-7741" in titles
 
 
-def test_product_filter_applies_to_lexical_results_too(hybrid):
-    r = hybrid.retrieve("ERR-7741 sweep failure", Filters(product="saleshub"))
-    assert all(c.metadata["product"] == "saleshub" for c in r.chunks)
+def test_product_filter_includes_matching_and_excludes_wrong_product(hybrid):
+    # The ERR-7741 article is a web2 doc with a strong, distinctive BM25 hit.
+    # With product=web2 it must come through; with product=saleshub it must be
+    # filtered out of the BM25 lane entirely (and no web2 chunk may leak).
+    in_web2 = hybrid.retrieve("ERR-7741 sweep failure", Filters(product="web2"))
+    assert in_web2.chunks, "expected the web2 ERR-7741 article to be retrieved"
+    assert "Resolving Sweep Error ERR-7741" in [c.metadata["title"] for c in in_web2.chunks]
+    assert all(c.metadata["product"] == "web2" for c in in_web2.chunks)
+
+    in_sales = hybrid.retrieve("ERR-7741 sweep failure", Filters(product="saleshub"))
+    assert all(c.metadata["product"] == "saleshub" for c in in_sales.chunks)
+    assert "Resolving Sweep Error ERR-7741" not in [c.metadata["title"] for c in in_sales.chunks]
 
 
 def test_contract_unchanged_vector_only(chroma_dir):
