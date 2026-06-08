@@ -21,13 +21,16 @@ def load_synonyms(path: Path) -> list[list[str]]:
     except Exception as exc:
         log.warning("Failed to parse %s: %s — expansion disabled", path, exc)
         return []
-    groups = (data or {}).get("groups")
+    if not isinstance(data, dict):
+        log.warning("Synonyms file %s is not a mapping — expansion disabled", path)
+        return []
+    groups = data.get("groups")
     if not isinstance(groups, list):
         log.warning("Synonyms file %s has no 'groups' list — expansion disabled", path)
         return []
     out: list[list[str]] = []
     for g in groups:
-        if isinstance(g, list) and len(g) >= 2 and all(isinstance(t, str) for t in g):
+        if isinstance(g, list) and len(g) >= 2 and all(isinstance(t, str) and t.strip() for t in g):
             out.append([t.strip().lower() for t in g])
         else:
             log.warning("Skipping malformed synonym group: %r", g)

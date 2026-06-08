@@ -43,3 +43,15 @@ def test_load_synonyms_malformed_returns_empty(tmp_path):
 
 def test_load_synonyms_missing_file_returns_empty(tmp_path):
     assert load_synonyms(tmp_path / "absent.yaml") == []
+
+
+def test_load_synonyms_top_level_list_returns_empty(tmp_path):
+    f = tmp_path / "list.yaml"
+    f.write_text("- a\n- b\n", encoding="utf-8")
+    assert load_synonyms(f) == []
+
+
+def test_load_synonyms_top_level_scalar_returns_empty(tmp_path):
+    f = tmp_path / "scalar.yaml"
+    f.write_text("just a string\n", encoding="utf-8")
+    assert load_synonyms(f) == []
