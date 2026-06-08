@@ -1,6 +1,7 @@
 """V2.2 static defaults + freeze-aware paths. No persisted settings live here."""
 from __future__ import annotations
 from pathlib import Path
+from typing import Optional
 import sys
 
 # ── Freeze-aware base paths ───────────────────────────────────────────────────
@@ -22,11 +23,54 @@ SETTINGS_FILE   = STATE_DIR / "settings.json"
 EMBED_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-DEFAULT_MODEL  = "claude-sonnet-4-6"
-AVAILABLE_MODELS = {
-    "Haiku (fast / cheap)": "claude-haiku-4-5-20251001",
-    "Sonnet (smarter)":     "claude-sonnet-4-6",
+DEFAULT_PROVIDER = "claude"
+
+PROVIDERS = {
+    "claude": {
+        "display": "Claude",
+        "default_model": "claude-sonnet-4-6",
+        "models": {
+            "Haiku (fast / cheap)": "claude-haiku-4-5-20251001",
+            "Sonnet (smarter)":     "claude-sonnet-4-6",
+        },
+    },
+    "openai": {
+        "display": "ChatGPT",
+        "default_model": "gpt-5.5",
+        "models": {
+            "GPT-5.5 (smartest)":  "gpt-5.5",
+            "GPT-5.4 (mid)":       "gpt-5.4",
+            "GPT-5.4-mini (fast)": "gpt-5.4-mini",
+        },
+    },
 }
+
+# Backward-compatible aliases (Claude provider) so existing imports keep working
+DEFAULT_MODEL    = PROVIDERS["claude"]["default_model"]
+AVAILABLE_MODELS = PROVIDERS["claude"]["models"]
+
+MODEL_DISPLAY = {
+    "claude-haiku-4-5-20251001": "Haiku",
+    "claude-sonnet-4-6":         "Sonnet",
+    "gpt-5.5":                   "GPT-5.5",
+    "gpt-5.4":                   "GPT-5.4",
+    "gpt-5.4-mini":              "GPT-5.4-mini",
+}
+
+
+def models_for(provider_id: str) -> dict:
+    return PROVIDERS.get(provider_id, PROVIDERS[DEFAULT_PROVIDER])["models"]
+
+
+def default_model_for(provider_id: str) -> str:
+    return PROVIDERS.get(provider_id, PROVIDERS[DEFAULT_PROVIDER])["default_model"]
+
+
+def provider_of_model(model_id: str) -> Optional[str]:
+    for pid, prov in PROVIDERS.items():
+        if model_id in prov["models"].values():
+            return pid
+    return None
 
 # ── Products (six) ────────────────────────────────────────────────────────────
 PRODUCTS = ("api", "tradedesk", "saleshub", "web2", "web4", "other")
@@ -50,4 +94,7 @@ CHUNK_TARGET_WORDS  = 500
 COST_TABLE: dict[str, dict[str, float]] = {
     "claude-haiku-4-5-20251001": {"in": 1.00, "out": 5.00},
     "claude-sonnet-4-6":         {"in": 3.00, "out": 15.00},
+    "gpt-5.5":                   {"in": 5.00, "out": 30.00},
+    "gpt-5.4":                   {"in": 2.50, "out": 15.00},
+    "gpt-5.4-mini":              {"in": 0.75, "out": 4.50},
 }

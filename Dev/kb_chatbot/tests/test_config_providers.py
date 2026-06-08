@@ -1,0 +1,48 @@
+from Dev.kb_chatbot import config
+
+
+def test_providers_have_claude_and_openai():
+    assert set(config.PROVIDERS) == {"claude", "openai"}
+
+
+def test_default_provider_is_claude():
+    assert config.DEFAULT_PROVIDER == "claude"
+
+
+def test_backward_compat_aliases():
+    assert config.DEFAULT_MODEL == config.PROVIDERS["claude"]["default_model"]
+    assert config.AVAILABLE_MODELS == config.PROVIDERS["claude"]["models"]
+
+
+def test_every_model_has_cost_and_display():
+    for prov in config.PROVIDERS.values():
+        for model_id in prov["models"].values():
+            assert model_id in config.COST_TABLE, f"{model_id} missing from COST_TABLE"
+            assert model_id in config.MODEL_DISPLAY, f"{model_id} missing from MODEL_DISPLAY"
+
+
+def test_openai_models_present():
+    ids = set(config.PROVIDERS["openai"]["models"].values())
+    assert ids == {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}
+
+
+def test_openai_costs():
+    assert config.COST_TABLE["gpt-5.5"] == {"in": 5.00, "out": 30.00}
+    assert config.COST_TABLE["gpt-5.4"] == {"in": 2.50, "out": 15.00}
+    assert config.COST_TABLE["gpt-5.4-mini"] == {"in": 0.75, "out": 4.50}
+
+
+def test_models_for():
+    assert config.models_for("openai") == config.PROVIDERS["openai"]["models"]
+    assert config.models_for("nope") == config.PROVIDERS["claude"]["models"]
+
+
+def test_default_model_for():
+    assert config.default_model_for("openai") == "gpt-5.5"
+    assert config.default_model_for("claude") == "claude-sonnet-4-6"
+
+
+def test_provider_of_model():
+    assert config.provider_of_model("gpt-5.4-mini") == "openai"
+    assert config.provider_of_model("claude-sonnet-4-6") == "claude"
+    assert config.provider_of_model("mystery") is None
