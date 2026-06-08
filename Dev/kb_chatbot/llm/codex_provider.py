@@ -41,16 +41,27 @@ def _ensure_codex_available() -> str:
     return path
 
 
+_login_ok_cache = False  # once True, stay True for the session (avoid re-probing)
+
+
 def codex_login_ok() -> bool:
-    """True if `codex login status` reports an authenticated account."""
+    """True if `codex login status` reports an authenticated account. Runs a
+    subprocess, so the first success is cached for the session — the common
+    'already logged in' path then costs nothing on the GUI thread. Only a true
+    result is cached; a false result is always re-probed so logging in
+    mid-session is picked up."""
+    global _login_ok_cache
+    if _login_ok_cache:
+        return True
     if not shutil.which("codex"):
         return False
     try:
         r = subprocess.run(["codex", "login", "status"],
-                           capture_output=True, text=True, timeout=20)
+                           capture_output=True, text=True, timeout=10)
     except Exception:
         return False
-    return r.returncode == 0
+    _login_ok_cache = r.returncode == 0
+    return _login_ok_cache
 
 
 def _flatten_messages(system_prompt: str, messages: list[dict]) -> str:

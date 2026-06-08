@@ -113,5 +113,24 @@ def test_ensure_codex_available_raises_when_missing(monkeypatch):
 
 
 def test_codex_login_ok_false_when_missing(monkeypatch):
+    monkeypatch.setattr(cp, "_login_ok_cache", False)
     monkeypatch.setattr(cp.shutil, "which", lambda name: None)
     assert cp.codex_login_ok() is False
+
+
+def test_codex_login_ok_caches_success(monkeypatch):
+    monkeypatch.setattr(cp, "_login_ok_cache", False)
+    monkeypatch.setattr(cp.shutil, "which", lambda name: "/usr/bin/codex")
+    calls = {"n": 0}
+
+    class _Proc:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        calls["n"] += 1
+        return _Proc()
+
+    monkeypatch.setattr(cp.subprocess, "run", fake_run)
+    assert cp.codex_login_ok() is True
+    assert cp.codex_login_ok() is True   # second call served from cache
+    assert calls["n"] == 1                # subprocess ran only once
