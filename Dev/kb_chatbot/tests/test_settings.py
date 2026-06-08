@@ -96,3 +96,51 @@ def test_model_explicitly_set_round_trips():
                      model_explicitly_set=True)
         save_settings(s, p)
         assert load_settings(p).model_explicitly_set is True
+
+
+def test_settings_has_default_provider_field():
+    from Dev.kb_chatbot.settings import Settings
+    assert "default_provider" in Settings.__dataclass_fields__
+
+
+def test_default_provider_defaults_to_claude_when_absent():
+    import tempfile
+    from pathlib import Path
+    from Dev.kb_chatbot.settings import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        loaded = load_settings(Path(d) / "missing.json")
+        assert loaded.default_provider == "claude"
+
+
+def test_default_provider_round_trips():
+    import tempfile
+    from pathlib import Path
+    from Dev.kb_chatbot import config
+    from Dev.kb_chatbot.settings import Settings, save_settings, load_settings
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "settings.json"
+        s = Settings(library_path=config.LIBRARY_DEFAULT, default_model="gpt-5.5",
+                     confidence_floor=config.CONFIDENCE_FLOOR,
+                     default_provider="openai", model_explicitly_set=True)
+        save_settings(s, p)
+        loaded = load_settings(p)
+        assert loaded.default_provider == "openai"
+        assert loaded.default_model == "gpt-5.5"
+
+
+def test_validation_resets_mismatched_model(tmp_path):
+    import json
+    from pathlib import Path
+    from Dev.kb_chatbot import config
+    from Dev.kb_chatbot.settings import load_settings
+    p = Path(tmp_path) / "settings.json"
+    p.write_text(json.dumps({
+        "library_path": str(config.LIBRARY_DEFAULT),
+        "default_provider": "openai",
+        "default_model": "claude-sonnet-4-6",
+        "confidence_floor": config.CONFIDENCE_FLOOR,
+        "model_explicitly_set": True,
+    }), encoding="utf-8")
+    loaded = load_settings(p)
+    assert loaded.default_provider == "openai"
+    assert loaded.default_model == "gpt-5.5"  # reset to openai's default

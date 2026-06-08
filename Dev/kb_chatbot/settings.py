@@ -21,6 +21,7 @@ class Settings:
     confidence_floor: float
     learn_mode_hash: str = field(default_factory=lambda: DEFAULT_LEARN_MODE_HASH)
     model_explicitly_set: bool = False
+    default_provider: str = "claude"
 
 
 def check_learn_password(candidate: str, stored_hash: str) -> bool:
@@ -42,13 +43,18 @@ def load_settings(path: Path = config.SETTINGS_FILE) -> Settings:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return defaults
-    return Settings(
+    s = Settings(
         library_path=Path(data.get("library_path", str(defaults.library_path))),
         default_model=data.get("default_model", defaults.default_model),
         confidence_floor=float(data.get("confidence_floor", defaults.confidence_floor)),
         learn_mode_hash=data.get("learn_mode_hash", DEFAULT_LEARN_MODE_HASH),
         model_explicitly_set=bool(data.get("model_explicitly_set", False)),
+        default_provider=data.get("default_provider", config.DEFAULT_PROVIDER),
     )
+    # Guard against a corrupt/hand-edited model/provider mismatch.
+    if config.provider_of_model(s.default_model) != s.default_provider:
+        s.default_model = config.default_model_for(s.default_provider)
+    return s
 
 
 def save_settings(settings: Settings, path: Path = config.SETTINGS_FILE) -> None:
