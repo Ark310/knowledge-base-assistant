@@ -1,4 +1,4 @@
-"""V2.3 KB Chatbot GUI. No API key. Claude Code preflight on startup."""
+"""V2.5 KB Chatbot GUI. No API key. Claude Code preflight on startup."""
 from __future__ import annotations
 import sys
 import json
@@ -237,13 +237,17 @@ class SettingsDialog(QDialog):
         self.lib_btn.clicked.connect(self._pick_dir)
         lib_row = QHBoxLayout(); lib_row.addWidget(self.lib_edit); lib_row.addWidget(self.lib_btn)
         lib_w = QWidget(); lib_w.setLayout(lib_row)
+        self.provider_box = QComboBox()
+        for pid, prov in config.PROVIDERS.items():
+            self.provider_box.addItem(prov["display"], pid)
+        ppidx = self.provider_box.findData(getattr(current, "default_provider", "claude"))
+        if ppidx >= 0:
+            self.provider_box.setCurrentIndex(ppidx)
         self.model_box = QComboBox()
-        for label, ident in config.AVAILABLE_MODELS.items():
-            self.model_box.addItem(label, ident)
-        idx = self.model_box.findData(current.default_model)
-        if idx >= 0:
-            self.model_box.setCurrentIndex(idx)
+        self._fill_models(getattr(current, "default_provider", "claude"), current.default_model)
+        self.provider_box.currentIndexChanged.connect(self._on_dialog_provider_changed)
         form.addRow("Library path:", lib_w)
+        form.addRow("Default AI provider:", self.provider_box)
         form.addRow("Default model:", self.model_box)
         self.usage_btn = QPushButton("View Token Usage…")
         self.usage_btn.clicked.connect(self._open_usage)
@@ -261,6 +265,18 @@ class SettingsDialog(QDialog):
         if d:
             self.lib_edit.setText(d)
 
+    def _fill_models(self, provider_id: str, select_model: str = ""):
+        self.model_box.blockSignals(True)
+        self.model_box.clear()
+        for label, ident in config.models_for(provider_id).items():
+            self.model_box.addItem(label, ident)
+        idx = self.model_box.findData(select_model or config.default_model_for(provider_id))
+        self.model_box.setCurrentIndex(idx if idx >= 0 else 0)
+        self.model_box.blockSignals(False)
+
+    def _on_dialog_provider_changed(self, _index: int):
+        self._fill_models(self.provider_box.currentData())
+
     def values(self):
         return settings_mod.Settings(
             library_path=Path(self.lib_edit.text()),
@@ -268,16 +284,12 @@ class SettingsDialog(QDialog):
             confidence_floor=config.CONFIDENCE_FLOOR,
             learn_mode_hash=self._current.learn_mode_hash,
             model_explicitly_set=True,
+            default_provider=self.provider_box.currentData(),
         )
 
 
 class TokenUsageDialog(QDialog):
     """Read-only token usage + API-equivalent cost breakdown from usage.jsonl."""
-
-    _MODEL_DISPLAY = {
-        "claude-haiku-4-5-20251001": "Haiku",
-        "claude-sonnet-4-6": "Sonnet",
-    }
 
     def __init__(self, parent, session_start: str):
         super().__init__(parent)
@@ -311,7 +323,7 @@ class TokenUsageDialog(QDialog):
         table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             ts = (r.get("ts") or "")[11:19]  # HH:MM:SS
-            model = self._MODEL_DISPLAY.get(r.get("model") or "", r.get("model") or "—")
+            model = config.MODEL_DISPLAY.get(r.get("model") or "", r.get("model") or "—")
             cost = usage_stats.cost_for(r)
             for col, val in enumerate([ts, r.get("kind", ""), model,
                                        fmt(r.get("tokens_in", 0) or 0),
@@ -322,8 +334,9 @@ class TokenUsageDialog(QDialog):
         layout.addWidget(table, stretch=1)
 
         footer = QLabel(
-            "Rates: Haiku $1/$5 · Sonnet $3/$15 per MTok (API-equivalent) — "
-            "Anthropic published pricing, June 2026. Edit config.COST_TABLE if rates change."
+            "Rates: API-equivalent, Anthropic & OpenAI published pricing (June 2026). "
+            "ChatGPT counts include Codex's agent overhead, so they read higher than Claude. "
+            "Edit config.COST_TABLE if rates change."
         )
         footer.setStyleSheet("color:#777; font-size:9pt;")
         footer.setWordWrap(True)

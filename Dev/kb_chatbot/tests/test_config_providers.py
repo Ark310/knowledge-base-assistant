@@ -46,3 +46,26 @@ def test_provider_of_model():
     assert config.provider_of_model("gpt-5.4-mini") == "openai"
     assert config.provider_of_model("claude-sonnet-4-6") == "claude"
     assert config.provider_of_model("mystery") is None
+
+
+def test_gui_settings_dialog_persists_provider():
+    import inspect
+    from Dev.kb_chatbot import gui
+    src = inspect.getsource(gui.SettingsDialog.values)
+    assert "default_provider=" in src
+
+
+def test_gui_has_provider_factory_and_dropdown():
+    import inspect
+    from Dev.kb_chatbot import gui
+    assert hasattr(gui, "build_provider")
+    src = inspect.getsource(gui.MainWindow._build_ui)
+    assert "AI Provider" in src
+
+
+def test_token_usage_dialog_uses_shared_display_map():
+    import inspect
+    from Dev.kb_chatbot import gui
+    src = inspect.getsource(gui.TokenUsageDialog)
+    assert "config.MODEL_DISPLAY" in src
+    assert "_MODEL_DISPLAY" not in src  # the hardcoded dict is gone
