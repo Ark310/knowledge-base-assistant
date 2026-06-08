@@ -35,6 +35,7 @@ class RewriteResult:
     tokens_in: int
     tokens_out: int
     latency_ms: int
+    model: str = ""
 
 
 def build_rewrite_prompt(user_msg: str, history: list[dict]) -> str:
@@ -77,7 +78,8 @@ def rewrite_query(user_msg: str, history: list[dict]) -> Optional[RewriteResult]
     if not query:
         return None
     return RewriteResult(query=query, tokens_in=tin, tokens_out=tout,
-                         latency_ms=int((time.time() - started) * 1000))
+                         latency_ms=int((time.time() - started) * 1000),
+                         model=REWRITE_MODEL)
 
 
 async def _run_query(prompt: str) -> tuple[str, int, int]:
@@ -103,3 +105,39 @@ async def _run_query(prompt: str) -> tuple[str, int, int]:
         tin = max(1, len(prompt) // 4)
         tout = max(1, len(text) // 4)
     return text, tin, tout
+
+
+REWRITE_MODEL_OPENAI = "gpt-5.4-mini"
+
+
+def _run_codex_exec_for_rewrite(prompt: str, model: str) -> tuple[str, int, int]:
+    """Thin indirection over CodexProvider._run_codex_exec so tests can stub it
+    without importing the codex module."""
+    from Dev.kb_chatbot.llm.codex_provider import _run_codex_exec
+    return _run_codex_exec(prompt, model)
+
+
+def rewrite_query_codex(user_msg: str, history: list[dict]) -> Optional[RewriteResult]:
+    """OpenAI rewrite path: one stateless `codex exec` with gpt-5.4-mini. codex
+    has no separate system channel, so the rewrite system prompt is prepended.
+    Returns None on any failure (escalation is best-effort)."""
+    started = time.time()
+    prompt = REWRITE_SYSTEM_PROMPT + "\n\n" + build_rewrite_prompt(user_msg, history)
+    try:
+        text, tin, tout = _run_codex_exec_for_rewrite(prompt, REWRITE_MODEL_OPENAI)
+    except Exception:
+        log.exception("Codex query rewrite failed (non-fatal)")
+        return None
+    query = _clean_response(text)
+    if not query:
+        return None
+    return RewriteResult(query=query, tokens_in=tin, tokens_out=tout,
+                         latency_ms=int((time.time() - started) * 1000),
+                         model=REWRITE_MODEL_OPENAI)
+
+
+def make_rewriter(provider_id: str):
+    """Return the rewrite callable for the active provider."""
+    if provider_id == "openai":
+        return rewrite_query_codex
+    return rewrite_query

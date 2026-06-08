@@ -161,7 +161,8 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
         if rw is not None:
             deps.usage_logger(Turn(
                 role="system", kind="rewrite", content=rw.query,
-                model=_REWRITE_MODEL_NAME, tokens_in=rw.tokens_in,
+                model=getattr(rw, "model", "") or _REWRITE_MODEL_NAME,
+                tokens_in=rw.tokens_in,
                 tokens_out=rw.tokens_out, latency_ms=rw.latency_ms,
             ))
             retrieval_query = rw.query

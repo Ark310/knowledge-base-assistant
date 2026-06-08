@@ -173,3 +173,43 @@ def test_progress_callback_invoked_on_rewrite():
     handle_turn("some unfindable question here", _session_with_history(), Filters(),
                 "claude-haiku-4-5-20251001", deps=deps)
     assert "rephrase" in stages
+
+
+def test_rewrite_result_has_model_field_default_empty():
+    from Dev.kb_chatbot.chat.query_rewriter import RewriteResult
+    r = RewriteResult(query="q", tokens_in=1, tokens_out=1, latency_ms=1)
+    assert r.model == ""
+
+
+def test_make_rewriter_claude():
+    from Dev.kb_chatbot.chat.query_rewriter import make_rewriter, rewrite_query
+    assert make_rewriter("claude") is rewrite_query
+
+
+def test_make_rewriter_openai():
+    from Dev.kb_chatbot.chat.query_rewriter import make_rewriter, rewrite_query_codex
+    assert make_rewriter("openai") is rewrite_query_codex
+
+
+def test_make_rewriter_unknown_defaults_to_claude():
+    from Dev.kb_chatbot.chat.query_rewriter import make_rewriter, rewrite_query
+    assert make_rewriter("nope") is rewrite_query
+
+
+def test_rewrite_query_codex_returns_result(monkeypatch):
+    from Dev.kb_chatbot.chat import query_rewriter as qr
+    monkeypatch.setattr(qr, "_run_codex_exec_for_rewrite",
+                        lambda prompt, model: ("reverse posted deal tradedesk", 120, 8))
+    out = qr.rewrite_query_codex("undo it", [{"role": "user", "content": "post a deal"}])
+    assert out is not None
+    assert out.query == "reverse posted deal tradedesk"
+    assert out.model == "gpt-5.4-mini"
+    assert out.tokens_in == 120 and out.tokens_out == 8
+
+
+def test_rewrite_query_codex_none_on_failure(monkeypatch):
+    from Dev.kb_chatbot.chat import query_rewriter as qr
+    def boom(prompt, model):
+        raise RuntimeError("codex down")
+    monkeypatch.setattr(qr, "_run_codex_exec_for_rewrite", boom)
+    assert qr.rewrite_query_codex("undo it", [{"role": "user", "content": "x"}]) is None
