@@ -1,0 +1,10 @@
+{
+  "space_key": "WEB2",
+  "space_name": "Web2 Knowledge Base",
+  "product": "web2",
+  "title": "Resolving Sweep Error ERR-7741",
+  "url": "http://example/web2/err-7741-sweep",
+  "scraped_at": "2026-06-01T10:00:00",
+  "screenshot": "tiny.png",
+  "body_md": "# Resolving Sweep Error ERR-7741\n\n## Symptom\n\nA recurring payment sweep aborts and the journal shows code ERR-7741.\n\n## Cause\n\nThe nostro account mapping is missing for the settlement currency.\n\n## Fix\n\n1. Open Administration > Nostro Mapping.\n2. Add a mapping for the affected currency.\n3. Re-run the sweep batch.\n"
+}

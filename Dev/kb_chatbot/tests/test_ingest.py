@@ -10,7 +10,7 @@ FIX = Path(__file__).parent / "fixtures" / "tiny_library"
 def test_ingest_reports_article_count():
     with tempfile.TemporaryDirectory() as tmp:
         report = ingest(FIX, Path(tmp))
-        assert report.articles_seen == 6
+        assert report.articles_seen == 7
 
 
 def test_ingest_creates_chunks():
@@ -23,7 +23,9 @@ def test_ingest_per_product_counts():
     with tempfile.TemporaryDirectory() as tmp:
         report = ingest(FIX, Path(tmp))
         assert set(report.products.keys()) == {"api", "tradedesk", "saleshub", "web2", "web4", "other"}
-        assert all(v == 1 for v in report.products.values())
+        assert report.products == {
+            "api": 1, "tradedesk": 1, "saleshub": 1, "web2": 2, "web4": 1, "other": 1,
+        }
 
 
 def test_ingest_idempotent():

@@ -50,6 +50,9 @@ CLARIFY_SCORE_FLOOR = -5.0
 MAX_HISTORY_TURNS   = 6
 CHUNK_TARGET_WORDS  = 500
 BM25_FILE           = "bm25.pkl"     # lives inside the chroma dir
+HYBRID_BM25         = True           # BM25 + vector with RRF fusion
+QUERY_EXPANSION     = True           # synonym expansion on the BM25 query
+RRF_K               = 60
 
 # ── Cost estimation (USD per million tokens) ──────────────────────────────────
 # Used by llm.base.estimate_cost. Claude Code subprocess doesn't bill per-call,
