@@ -24,11 +24,12 @@ from PySide6.QtWidgets import (
 )
 
 from Dev.kb_chatbot import config, settings as settings_mod
-from Dev.kb_chatbot.chat.query_rewriter import rewrite_query
+from Dev.kb_chatbot.chat.query_rewriter import make_rewriter
 from Dev.kb_chatbot.chat.orchestrator import Deps, handle_turn
 from Dev.kb_chatbot.chat.session import Session, Turn
 from Dev.kb_chatbot.ingest import ingest
 from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeProvider, ClaudeCodeNotFoundError
+from Dev.kb_chatbot.llm.codex_provider import CodexProvider, CodexNotFoundError, codex_login_ok
 from Dev.kb_chatbot.retriever import Retriever, Filters
 
 config.STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,6 +62,13 @@ THINKING_WORDS = [
 ]
 INIT_WORDS = ["Waking up the librarian", "Stretching the neural nets", "Dusting off the archives"]
 REPHRASE_TEXT = "Rephrasing your question for a better search"
+
+
+def build_provider(provider_id: str):
+    """Construct the LLM provider for the given provider id."""
+    if provider_id == "openai":
+        return CodexProvider()
+    return ClaudeCodeProvider()
 
 
 def _append_usage(turn: Turn) -> None:
@@ -147,11 +155,15 @@ class InitWorker(QThread):
                 config.CHROMA_DIR,
                 confidence_floor=self.settings.confidence_floor,
             )
-            self.status.emit("⟳ Initialising — warming up Claude…")
+            provider_id = getattr(self.settings, "default_provider", "claude")
+            display = config.PROVIDERS.get(provider_id, config.PROVIDERS["claude"])["display"]
+            self.status.emit(f"⟳ Initialising — warming up {display}…")
             try:
-                from Dev.kb_chatbot.prompt import build_system_prompt
-                ClaudeCodeProvider().warm_up(build_system_prompt(), self.settings.default_model)
-            except ClaudeCodeNotFoundError as exc:
+                if provider_id == "claude":
+                    from Dev.kb_chatbot.prompt import build_system_prompt
+                    ClaudeCodeProvider().warm_up(build_system_prompt(), self.settings.default_model)
+                # Codex exec is cold-start per call — nothing to warm.
+            except (ClaudeCodeNotFoundError, CodexNotFoundError) as exc:
                 log.warning("Skipping LLM warm-up: %s", exc)
             self.ready.emit(retriever)
         except Exception as exc:
@@ -339,6 +351,7 @@ class MainWindow(QMainWindow):
         self._today_queries = 0
         self._today_tokens = 0
         self._attachments: list = []
+        self._suppress_dropdown_notices = True   # silenced until first real user change
         self._learn_mode = False
         self._last_assistant_turn: Optional[Turn] = None
         self._build_ui()
@@ -376,13 +389,18 @@ class MainWindow(QMainWindow):
         for p in config.PRODUCTS:
             self.product_box.addItem(config.PRODUCT_DISPLAY.get(p, p), p)
         filter_row.addWidget(self.product_box)
+        filter_row.addWidget(QLabel("AI Provider:"))
+        self.provider_box = QComboBox()
+        for pid, prov in config.PROVIDERS.items():
+            self.provider_box.addItem(prov["display"], pid)
+        pidx = self.provider_box.findData(self.settings.default_provider)
+        if pidx >= 0:
+            self.provider_box.setCurrentIndex(pidx)
+        filter_row.addWidget(self.provider_box)
+
         filter_row.addWidget(QLabel("Model:"))
         self.model_box = QComboBox()
-        for label, ident in config.AVAILABLE_MODELS.items():
-            self.model_box.addItem(label, ident)
-        idx = self.model_box.findData(self.settings.default_model)
-        if idx >= 0:
-            self.model_box.setCurrentIndex(idx)
+        self._populate_model_box(self.settings.default_provider, self.settings.default_model)
         filter_row.addWidget(self.model_box)
         filter_row.addStretch()
         outer.addLayout(filter_row)
@@ -458,6 +476,8 @@ class MainWindow(QMainWindow):
         self._act_logs.triggered.connect(self._open_logs)
         self._act_learn.triggered.connect(self._enter_learn_mode)
         self._act_exit_learn.triggered.connect(self._exit_learn_mode)
+        self.provider_box.currentIndexChanged.connect(self._on_provider_changed)
+        self.model_box.currentIndexChanged.connect(self._on_model_changed)
         self._set_inputs_enabled(True)
 
     def _build_correction_panel(self) -> QWidget:
@@ -619,8 +639,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_init_status(self, msg: str):
-        if "Claude" in msg:
-            self._init_thinking.pin("Warming up Claude")
+        if "warming up" in msg.lower():
+            self._init_thinking.pin(msg.split("—", 1)[-1].strip().rstrip("…"))
 
     @Slot(object)
     def _on_init_ready(self, retriever):
@@ -669,6 +689,39 @@ class MainWindow(QMainWindow):
         self.chat_view.append(block)
         self.chat_view.ensureCursorVisible()
 
+    def _populate_model_box(self, provider_id: str, select_model: str = ""):
+        """Fill the model dropdown for a provider. Silent — blocks signals and
+        sets the suppress flag so programmatic repopulation posts no notice."""
+        self._suppress_dropdown_notices = True
+        self.model_box.blockSignals(True)
+        self.model_box.clear()
+        for label, ident in config.models_for(provider_id).items():
+            self.model_box.addItem(label, ident)
+        target = select_model or config.default_model_for(provider_id)
+        idx = self.model_box.findData(target)
+        self.model_box.setCurrentIndex(idx if idx >= 0 else 0)
+        self.model_box.blockSignals(False)
+        self._suppress_dropdown_notices = False
+
+    @Slot(int)
+    def _on_provider_changed(self, _index: int):
+        provider_id = self.provider_box.currentData()
+        self._populate_model_box(provider_id)
+        display = config.PROVIDERS[provider_id]["display"]
+        self._append("system", f"⇄ Switched to {display} — model set to {self.model_box.currentText()}",
+                     "#6a1b9a", "PROVIDER:")
+        if provider_id == "openai" and not codex_login_ok():
+            self._append("system",
+                "Codex CLI is not ready. Install it and run `codex login`, then try again.",
+                "#c62828", "ERROR:")
+
+    @Slot(int)
+    def _on_model_changed(self, _index: int):
+        if self._suppress_dropdown_notices:
+            return
+        self._append("system", f"⇄ Model changed to {self.model_box.currentText()}",
+                     "#6a1b9a", "PROVIDER:")
+
     def _send(self):
         if self._retriever is None:
             # Send doubles as "Retry init" after a failed initialisation
@@ -692,15 +745,22 @@ class MainWindow(QMainWindow):
             names = ", ".join(a.filename for a in attachments)
             self._append("system", f"Attached: {names}", "#555555", "FILES:")
 
+        provider_id = self.provider_box.currentData()
+        if provider_id == "openai" and not codex_login_ok():
+            self._append("system",
+                "Codex CLI is not ready. Install it and run `codex login`, then try again.",
+                "#c62828", "ERROR:")
+            self._set_inputs_enabled(True)
+            return
         try:
-            llm = ClaudeCodeProvider()
-        except ClaudeCodeNotFoundError as exc:
+            llm = build_provider(provider_id)
+        except (ClaudeCodeNotFoundError, CodexNotFoundError) as exc:
             self._append("system", str(exc), "#c62828", "ERROR:")
             self._set_inputs_enabled(True)
             return
 
         deps = Deps(retriever=self._retriever, llm=llm, usage_logger=_append_usage,
-                    attachments=attachments, rewriter=rewrite_query)
+                    attachments=attachments, rewriter=make_rewriter(provider_id))
         filters = Filters(product=self.product_box.currentData() or None)
         model = self.model_box.currentData()
         self.worker = TurnWorker(msg, self.session, filters, model, deps)
@@ -974,7 +1034,12 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-def _preflight_claude_code() -> Optional[str]:
+def _preflight_provider(provider_id: str) -> Optional[str]:
+    if provider_id == "openai":
+        if codex_login_ok():
+            return None
+        return ("Codex CLI is required for ChatGPT.\n\n"
+                "Install the Codex CLI and run `codex login`, then re-launch.")
     if shutil.which("claude"):
         return None
     return ("Claude Code is required.\n\n"
@@ -985,9 +1050,10 @@ def _preflight_claude_code() -> Optional[str]:
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Contoso KB Chatbot")
-    err = _preflight_claude_code()
+    saved = settings_mod.load_settings()
+    err = _preflight_provider(saved.default_provider)
     if err:
-        QMessageBox.critical(None, "Claude Code missing", err)
+        QMessageBox.critical(None, "AI provider not ready", err)
         sys.exit(1)
     win = MainWindow()
     win.show()
