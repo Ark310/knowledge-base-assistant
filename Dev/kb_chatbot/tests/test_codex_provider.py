@@ -3,6 +3,31 @@ import json
 from Dev.kb_chatbot.llm import codex_provider as cp
 
 
+def test_codex_argv_wraps_windows_cmd_shim(monkeypatch):
+    # npm installs codex as codex.CMD on Windows; CreateProcess can't launch a
+    # .CMD directly, so it must be routed through `cmd /c`.
+    monkeypatch.setattr(cp.sys, "platform", "win32")
+    monkeypatch.setattr(cp.shutil, "which", lambda name: r"C:\npm\codex.CMD")
+    argv = cp._codex_argv(["login", "status"])
+    assert argv == ["cmd", "/c", r"C:\npm\codex.CMD", "login", "status"]
+
+
+def test_codex_argv_plain_exe_not_wrapped(monkeypatch):
+    monkeypatch.setattr(cp.sys, "platform", "linux")
+    monkeypatch.setattr(cp.shutil, "which", lambda name: "/usr/bin/codex")
+    argv = cp._codex_argv(["exec", "-"])
+    assert argv == ["/usr/bin/codex", "exec", "-"]
+
+
+def test_codex_argv_raises_when_missing(monkeypatch):
+    monkeypatch.setattr(cp.shutil, "which", lambda name: None)
+    try:
+        cp._codex_argv(["exec"])
+        assert False, "expected CodexNotFoundError"
+    except cp.CodexNotFoundError:
+        pass
+
+
 def test_flatten_messages_includes_system_history_and_latest():
     msgs = [
         {"role": "user", "content": "How do I post a deal?"},

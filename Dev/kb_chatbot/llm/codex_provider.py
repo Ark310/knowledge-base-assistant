@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Optional
@@ -41,6 +42,17 @@ def _ensure_codex_available() -> str:
     return path
 
 
+def _codex_argv(args: list[str]) -> list[str]:
+    """Resolve the codex executable to a full path and build the argv. On
+    Windows the CLI is an npm shim (codex.CMD/.BAT) which CreateProcess cannot
+    launch directly — route those through `cmd /c`. A bare 'codex' string would
+    raise FileNotFoundError even though shutil.which finds the shim."""
+    exe = _ensure_codex_available()
+    if sys.platform == "win32" and exe.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", exe, *args]
+    return [exe, *args]
+
+
 _login_ok_cache = False  # once True, stay True for the session (avoid re-probing)
 
 
@@ -56,7 +68,7 @@ def codex_login_ok() -> bool:
     if not shutil.which("codex"):
         return False
     try:
-        r = subprocess.run(["codex", "login", "status"],
+        r = subprocess.run(_codex_argv(["login", "status"]),
                            capture_output=True, text=True, timeout=10)
     except Exception:
         return False
@@ -150,15 +162,15 @@ def _run_codex_exec(prompt: str, model: str,
                     image_paths: Optional[list[str]] = None) -> tuple[str, int, int]:
     """Run one `codex exec` and return (text, input_tokens, output_tokens).
     Stateless, read-only sandbox, no repo. Shared by the chat and rewrite paths."""
-    _ensure_codex_available()
     out_fd, out_path = tempfile.mkstemp(suffix=".txt", prefix="kbcodex_")
     os.close(out_fd)
-    cmd = ["codex", "exec", "-m", model, "--json",
-           "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
-           "-o", out_path]
+    args = ["exec", "-m", model, "--json",
+            "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
+            "-o", out_path]
     for p in (image_paths or []):
-        cmd += ["-i", p]
-    cmd.append("-")  # read prompt from stdin
+        args += ["-i", p]
+    args.append("-")  # read prompt from stdin
+    cmd = _codex_argv(args)  # resolves the exe + wraps Windows .CMD shims
     try:
         proc = subprocess.run(cmd, input=prompt, capture_output=True,
                               text=True, timeout=CODEX_TIMEOUT_S)
