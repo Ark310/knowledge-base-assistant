@@ -36,6 +36,10 @@ def test_golden_qa_case(deps_factory, case):
 
     if case["expect"] == "abstain":
         deps = deps_factory(confidence_floor=0.99, fake_text="should never see this")
+        # Prevent multi-product clarifier from intercepting the abstain path:
+        # with CLARIFY_SCORE_FLOOR=0.0 (0-1 scale), any non-zero sigmoid triggers
+        # retrieve_quick; stub it empty so the test reaches the true abstain branch.
+        deps.retriever.retrieve_quick = lambda query, limit=10: []
     else:
         deps = deps_factory(confidence_floor=0.0, fake_text=fake_text)
 

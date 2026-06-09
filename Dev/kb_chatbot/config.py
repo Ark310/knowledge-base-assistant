@@ -82,8 +82,8 @@ PRODUCT_DISPLAY = {
 # ── Retrieval defaults ────────────────────────────────────────────────────────
 TOP_K_RETRIEVE      = 30
 TOP_K_RERANK        = 8
-CONFIDENCE_FLOOR    = 0.30
-CLARIFY_SCORE_FLOOR = -5.0
+CONFIDENCE_FLOOR    = 0.06   # sigmoid(rerank logit); was 0.30 on raw logits (over-abstained)
+CLARIFY_SCORE_FLOOR = 0.0    # rerank score is now 0-1; 0.0 keeps the abstain-path clarify check live
 MAX_HISTORY_TURNS   = 6
 CHUNK_TARGET_WORDS  = 500
 

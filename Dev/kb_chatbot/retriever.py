@@ -1,6 +1,7 @@
 """Embed query, vector-search ChromaDB, rerank, confidence-gate."""
 from __future__ import annotations
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,14 @@ from Dev.kb_chatbot.chunker import Chunk
 from Dev.kb_chatbot.ingest import COLLECTION_NAME
 
 log = logging.getLogger("kb_chatbot.retriever")
+
+
+def _sigmoid(x: float) -> float:
+    """Map a CrossEncoder logit to a 0-1 probability for a stable abstain floor."""
+    if x < 0:
+        z = math.exp(x)
+        return z / (1.0 + z)
+    return 1.0 / (1.0 + math.exp(-x))
 
 
 @dataclass
@@ -77,21 +86,19 @@ class Retriever:
         scores = self.reranker.predict(pairs)
         scored = sorted(zip(candidates, scores), key=lambda t: t[1], reverse=True)
         top = scored[: self.top_k_rerank]
-        top_score = float(top[0][1]) if top else 0.0
+        raw_top = float(top[0][1]) if top else -99.0
+        top_score = _sigmoid(raw_top)   # 0-1 probability
 
         if top_score < self.confidence_floor:
-            log.info("Abstaining: top rerank score %.3f < floor %.3f", top_score, self.confidence_floor)
+            log.info("Abstaining: top score %.3f (logit %.3f) < floor %.3f",
+                     top_score, raw_top, self.confidence_floor)
             return RetrievalResult(
-                chunks=[],
-                raw_top_score=0.0,
-                rerank_top_score=top_score,
-                abstain_reason="no_relevant_kb_match",
+                chunks=[], raw_top_score=raw_top,
+                rerank_top_score=top_score, abstain_reason="no_relevant_kb_match",
             )
 
         return RetrievalResult(
-            chunks=[c for c, _ in top],
-            raw_top_score=0.0,
-            rerank_top_score=top_score,
+            chunks=[c for c, _ in top], raw_top_score=raw_top, rerank_top_score=top_score,
         )
 
     def retrieve_quick(self, query: str, limit: int = 10) -> list[Chunk]:

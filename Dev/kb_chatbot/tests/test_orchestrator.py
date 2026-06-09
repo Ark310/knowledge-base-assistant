@@ -53,8 +53,9 @@ def test_clear_question_yields_answer_turn(deps_factory):
 
 def test_abstain_when_retrieval_below_floor(deps_factory):
     # Query is long enough (>= 4 words) and has no product, suggest() stubbed to []
-    # so content must equal plain ABSTAIN_MESSAGE
-    d, fake = deps_factory(0.99, "should not be seen", suggest_chunks=[])
+    # so content must equal plain ABSTAIN_MESSAGE.
+    # quick_chunks=[] prevents multi-product clarifier from intercepting the abstain path.
+    d, fake = deps_factory(0.99, "should not be seen", suggest_chunks=[], quick_chunks=[])
     session = Session.new()
     turn = handle_turn("quantum field theory equations", session, Filters(),
                         "claude-haiku-4-5-20251001", deps=d)
@@ -94,12 +95,14 @@ def test_clarification_when_no_product_and_diffuse_retrieval(deps_factory):
 
 
 def test_abstain_with_suggestions_when_suggest_returns_chunks(deps_factory):
-    """Long query that abstains + suggest() returns chunks → kind=abstain, content has links."""
+    """Long query that abstains + suggest() returns chunks → kind=abstain, content has links.
+    quick_chunks=[] prevents multi-product clarifier from intercepting the abstain path."""
     suggestion_chunks = [
         _make_chunk("Booking a Spot Deal", "https://help.contoso.example/spot"),
         _make_chunk("Forward Deal Guide", "https://help.contoso.example/forward"),
     ]
-    d, fake = deps_factory(0.99, "should not be seen", suggest_chunks=suggestion_chunks)
+    d, fake = deps_factory(0.99, "should not be seen", suggest_chunks=suggestion_chunks,
+                           quick_chunks=[])
     session = Session.new()
     turn = handle_turn("quantum field theory equations", session, Filters(),
                         "claude-haiku-4-5-20251001", deps=d)
@@ -129,9 +132,9 @@ def test_low_confidence_answer_appends_footer_when_suggestions_exist(deps_factor
         _make_chunk("Related Article", "https://help.contoso.example/related"),
     ]
     d, _ = deps_factory(0.0, "The answer is here.", suggest_chunks=suggestion_chunks)
-    # Stub retrieve() for a deterministic below-ceiling score
+    # Stub retrieve() for a deterministic below-ceiling score (0-1 sigmoid scale, new ceiling = 0.35)
     ctx = [_make_chunk("Booking a Spot Deal", "https://help.contoso.example/spot")]
-    d.retriever.retrieve = lambda q, f: RetrievalResult(chunks=ctx, rerank_top_score=0.35)
+    d.retriever.retrieve = lambda q, f: RetrievalResult(chunks=ctx, rerank_top_score=0.20)
     session = Session.new()
     turn = handle_turn("tradedesk advanced topics overview details", session,
                         Filters(product="tradedesk"), "claude-haiku-4-5-20251001", deps=d)

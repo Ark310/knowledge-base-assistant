@@ -47,7 +47,7 @@ SHORT_QUERY_CLARIFICATION = (
 )
 
 _SHORT_QUERY_WORD_LIMIT = 4
-LOW_CONFIDENCE_CEILING = 0.45
+LOW_CONFIDENCE_CEILING = 0.35   # 0-1 sigmoid: append suggestion footer below this
 
 
 def _is_short_unspecified_query(text: str) -> bool:
@@ -57,8 +57,8 @@ def _is_short_unspecified_query(text: str) -> bool:
     return not _mentions_product(text)
 
 
-_DRIFT_PREVIOUS_FLOOR = 0.50   # previous turn must have been confident
-_DRIFT_CURRENT_CEILING = 0.20  # current turn must be very low
+_DRIFT_PREVIOUS_FLOOR = 0.85   # 0-1 sigmoid: previous turn was confident
+_DRIFT_CURRENT_CEILING = 0.20  # 0-1 sigmoid: current turn very low
 
 DRIFT_NOTE = "\n\n[TOPIC SHIFT: The user has changed topics. Treat this as a fresh question. Do not reference prior context.]"
 

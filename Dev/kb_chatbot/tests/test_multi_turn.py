@@ -72,11 +72,13 @@ def test_no_drift_when_previous_score_low():
 
 
 def test_no_drift_when_current_score_adequate():
-    assert _is_topic_drift(previous=0.8, current=0.5) is False
+    # Previous is high (>= 0.85) but current is not very low (>= 0.20) → no drift
+    assert _is_topic_drift(previous=0.90, current=0.5) is False
 
 
 def test_drift_detected_when_score_drops_sharply():
-    assert _is_topic_drift(previous=0.7, current=0.15) is True
+    # Previous confident (>= 0.85) and current very low (< 0.20) → drift
+    assert _is_topic_drift(previous=0.90, current=0.15) is True
 
 
 def test_no_drift_at_boundary():
