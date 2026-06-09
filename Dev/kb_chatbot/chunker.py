@@ -34,7 +34,8 @@ def _stable_id(space_key: str, title: str, chunk_index: int) -> str:
     return f"art_{h}"
 
 
-def _split_body_md(body_md: str, target_words: int = config.CHUNK_TARGET_WORDS) -> list[str]:
+def _split_body_md(body_md: str, target_words: int = config.CHUNK_TARGET_WORDS,
+                   overlap_words: int = config.CHUNK_OVERLAP_WORDS) -> list[str]:
     """Split markdown text into chunks targeting `target_words` words.
        Splits on '## '/'### ' headings, sub-splits long sections on paragraph breaks,
        never splits inside fenced code blocks."""
@@ -84,6 +85,13 @@ def _split_body_md(body_md: str, target_words: int = config.CHUNK_TARGET_WORDS) 
         if buf:
             chunks.append(_unmask((heading_line + "\n\n" if heading_line else "") + "\n\n".join(buf)))
 
+    if overlap_words > 0 and len(chunks) > 1:
+        overlapped = [chunks[0]]
+        for prev, cur in zip(chunks, chunks[1:]):
+            tail = " ".join(prev.split()[-overlap_words:])
+            overlapped.append(f"[…] {tail}\n\n{cur}")
+        chunks = overlapped
+
     return chunks
 
 
@@ -93,7 +101,8 @@ def _breadcrumb(product: str, category: str, title: str) -> str:
 
 
 def build_article_chunks(article_data: dict, article_path: Path, library_root: Path,
-                         target_words: int = config.CHUNK_TARGET_WORDS) -> list[Chunk]:
+                         target_words: int = config.CHUNK_TARGET_WORDS,
+                         overlap_words: int = config.CHUNK_OVERLAP_WORDS) -> list[Chunk]:
     product = article_data.get("product", "unknown")
     title = article_data.get("title", "")
     space_key = article_data.get("space_key", "")
@@ -103,7 +112,7 @@ def build_article_chunks(article_data: dict, article_path: Path, library_root: P
     category = _category_from_path(article_path, library_root)
 
     breadcrumb = _breadcrumb(product, category, title)
-    parts = _split_body_md(body_md, target_words)
+    parts = _split_body_md(body_md, target_words, overlap_words)
     if not parts:
         return []
 

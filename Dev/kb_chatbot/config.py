@@ -51,6 +51,7 @@ CONFIDENCE_FLOOR    = 0.05          # bge-reranker-base scale; calibrated on gol
 CLARIFY_SCORE_FLOOR = 0.01          # bge sigmoid scale: above pure-gibberish (~0), below vague-query signal
 MAX_HISTORY_TURNS   = 6
 CHUNK_TARGET_WORDS  = 500
+CHUNK_OVERLAP_WORDS = 0             # >0 prepends a tail of the previous chunk (eval-gated)
 BM25_FILE           = "bm25.pkl"     # lives inside the chroma dir
 HYBRID_BM25         = True           # BM25 + vector with RRF fusion
 QUERY_EXPANSION     = True           # synonym expansion on the BM25 query

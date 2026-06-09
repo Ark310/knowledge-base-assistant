@@ -50,6 +50,7 @@ def ingest(
     library_path: Path,
     chroma_path: Path,
     on_progress: Callable[[int, int], None] = lambda done, total: None,
+    overlap_words: int = config.CHUNK_OVERLAP_WORDS,
 ) -> IngestReport:
     started = time.time()
     chroma_path.mkdir(parents=True, exist_ok=True)
@@ -73,7 +74,7 @@ def ingest(
         product = data.get("product", "unknown")
         report.articles_seen += 1
         report.products[product] = report.products.get(product, 0) + 1
-        all_chunks.extend(build_article_chunks(data, f, library_path))
+        all_chunks.extend(build_article_chunks(data, f, library_path, overlap_words=overlap_words))
 
     total = len(all_chunks)
     if total == 0:
