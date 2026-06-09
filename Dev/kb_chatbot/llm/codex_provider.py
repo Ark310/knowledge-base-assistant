@@ -32,6 +32,10 @@ class CodexNotFoundError(RuntimeError):
     """Raised when the `codex` CLI cannot be located on PATH."""
 
 
+class CodexExecError(RuntimeError):
+    """Raised when `codex exec` exits non-zero or produces no answer."""
+
+
 def _ensure_codex_available() -> str:
     path = shutil.which("codex")
     if not path:
@@ -166,6 +170,7 @@ def _run_codex_exec(prompt: str, model: str,
     os.close(out_fd)
     args = ["exec", "-m", model, "--json",
             "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
+            "-C", tempfile.gettempdir(),
             "-o", out_path]
     for p in (image_paths or []):
         args += ["-i", p]
@@ -182,6 +187,15 @@ def _run_codex_exec(prompt: str, model: str,
         if not text:
             text = _extract_agent_message(proc.stdout).strip()
         tin, tout = _parse_usage(proc.stdout)
+
+        if proc.returncode != 0 or not text:
+            stderr_tail = (proc.stderr or "").strip()[:300]
+            log.warning("codex exec failed: rc=%s stderr=%s", proc.returncode, stderr_tail)
+            raise CodexExecError(
+                f"codex exec failed (rc={proc.returncode}): "
+                f"{stderr_tail or 'no output produced'}"
+            )
+
         if not tin and not tout:
             tin = max(1, len(prompt) // 4)
             tout = max(1, len(text) // 4)

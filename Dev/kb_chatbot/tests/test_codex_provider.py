@@ -159,3 +159,49 @@ def test_codex_login_ok_caches_success(monkeypatch):
     assert cp.codex_login_ok() is True
     assert cp.codex_login_ok() is True   # second call served from cache
     assert calls["n"] == 1                # subprocess ran only once
+
+
+def test_run_codex_exec_raises_on_nonzero_return(monkeypatch):
+    class _Proc:
+        stdout = ""
+        stderr = "boom: codex blew up\nmore detail"
+        returncode = 1
+    monkeypatch.setattr(cp.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(cp.subprocess, "run", lambda *a, **k: _Proc())
+    try:
+        cp._run_codex_exec("prompt", "gpt-5.4-mini")
+        assert False, "expected CodexExecError"
+    except cp.CodexExecError as e:
+        assert "boom" in str(e)
+
+
+def test_run_codex_exec_raises_on_empty_output(monkeypatch):
+    class _Proc:
+        stdout = '{"type":"turn.started"}'
+        stderr = ""
+        returncode = 0
+    monkeypatch.setattr(cp.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(cp.subprocess, "run", lambda *a, **k: _Proc())
+    try:
+        cp._run_codex_exec("prompt", "gpt-5.4-mini")
+        assert False, "expected CodexExecError"
+    except cp.CodexExecError:
+        pass
+
+
+def test_run_codex_exec_logs_stderr_not_prompt(monkeypatch, caplog):
+    class _Proc:
+        stdout = ""
+        stderr = "stderr-secret-reason"
+        returncode = 2
+    monkeypatch.setattr(cp.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(cp.subprocess, "run", lambda *a, **k: _Proc())
+    import logging as _l
+    with caplog.at_level(_l.WARNING):
+        try:
+            cp._run_codex_exec("SENSITIVE-PROMPT-TEXT", "gpt-5.4-mini")
+        except cp.CodexExecError:
+            pass
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "stderr-secret-reason" in joined
+    assert "SENSITIVE-PROMPT-TEXT" not in joined
