@@ -963,6 +963,20 @@ class MainWindow(QMainWindow):
             self.settings = dlg.values()
             settings_mod.save_settings(self.settings)
             self._append("system", "Settings saved.", "#1b5e20", "SYSTEM:")
+            # The Settings dialog sets the DEFAULT for next launch; the live
+            # AI Provider / Model dropdowns above are the active selection.
+            # Say so explicitly so a default change isn't mistaken for a live switch.
+            default_display = config.PROVIDERS.get(
+                self.settings.default_provider, config.PROVIDERS["claude"])["display"]
+            active_display = config.PROVIDERS.get(
+                self.provider_box.currentData(), config.PROVIDERS["claude"])["display"]
+            if (self.settings.default_provider != self.provider_box.currentData()
+                    or self.settings.default_model != self.model_box.currentData()):
+                self._append("system",
+                    f"Saved default is {default_display} ({config.MODEL_DISPLAY.get(self.settings.default_model, self.settings.default_model)}), "
+                    f"applied on next launch. This session is still using {active_display} "
+                    f"({self.model_box.currentText()}) — change the AI Provider dropdown above to switch now.",
+                    "#6a1b9a", "PROVIDER:")
 
     def _clear_chat(self):
         self.chat_view.clear()
