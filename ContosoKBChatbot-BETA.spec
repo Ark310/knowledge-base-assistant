@@ -13,6 +13,8 @@ hiddenimports += [
     "torch", "transformers", "tokenizers",
     "sklearn.utils._cython_blas",
     "rank_bm25",
+    "yaml",          # expansion.py imports it; declare explicitly so a future
+                     # lazy-import refactor can't drop it from static analysis
 ]
 
 # Bundle model snapshots from the local HF cache (must be pre-downloaded — the
