@@ -10,8 +10,10 @@ __pycache__/
 
 Dev/kb_chatbot/state/
 build/
+build_beta/
 dist/
 *.spec
+!ContosoKBChatbot-BETA.spec
 Imgs for Dev*/
 fake_chroma/
 Dev/kb_chatbot/eval/seeds.jsonl

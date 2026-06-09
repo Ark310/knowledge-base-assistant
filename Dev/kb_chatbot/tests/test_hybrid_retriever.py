@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 import pytest
 
 from Dev.kb_chatbot import config
+from Dev.kb_chatbot.chunker import Chunk
 from Dev.kb_chatbot.ingest import ingest
 from Dev.kb_chatbot.retriever import Retriever, Filters, RetrievalResult
 
@@ -90,11 +91,20 @@ def test_results_capped_at_top_k_rerank(hybrid):
 
 def test_reranks_full_union_not_truncated_to_top_k_retrieve(chroma_dir):
     # Regression: the fused union of vector+BM25 lanes must ALL reach the
-    # reranker. With a tiny top_k_retrieve the union exceeds it; truncating the
-    # fused list pre-rerank would silently drop candidates a lane surfaced
-    # (this measurably dropped recall on the golden set).
+    # reranker. Truncating the fused list to top_k_retrieve pre-rerank would
+    # silently drop candidates a lane surfaced (this measurably dropped recall
+    # on the golden set). Lanes are forced disjoint so the union (4) strictly
+    # exceeds top_k_retrieve (2), independent of embeddings/BM25/chunk overlap.
     r = Retriever(chroma_dir, confidence_floor=0.0, top_k_retrieve=2)
     try:
+        vchunks = [Chunk(id=f"v{i}", text=f"vector doc {i}",
+                         metadata={"product": "tradedesk", "url": f"u{i}"}) for i in range(2)]
+        r._query_chroma = lambda vec, filt, n: list(vchunks)
+        r.lexical.query = lambda q, top_n: ["L0", "L1"]
+        r._get_by_ids = lambda ids: {
+            i: Chunk(id=i, text=f"lex {i}", metadata={"product": "tradedesk", "url": i})
+            for i in ids
+        }
         seen: dict[str, int] = {}
         orig = r.reranker.predict
 
@@ -103,9 +113,8 @@ def test_reranks_full_union_not_truncated_to_top_k_retrieve(chroma_dir):
             return orig(pairs, *a, **k)
 
         r.reranker.predict = spy
-        # A query spanning several distinct fixture docs across both lanes so
-        # the vector top-2 and BM25 top-2 don't collapse to the same 2 ids.
-        r.retrieve("ERR-7741 corporate deal IBAN form recurring payment", Filters())
-        assert seen["n"] > 2  # union reranked, not truncated back to top_k_retrieve=2
+        r.retrieve("anything", Filters())
+        # 2 vector + 2 disjoint lexical = 4 candidates, all reranked (not capped at 2)
+        assert seen["n"] == 4
     finally:
         r.close()

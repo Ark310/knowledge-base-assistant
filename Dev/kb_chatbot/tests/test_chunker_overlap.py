@@ -12,8 +12,12 @@ for p in range(10):
 LONG = "# Title\n\n" + "\n\n".join(paragraphs)
 
 
-def test_zero_overlap_is_default_and_unchanged():
-    assert _split_body_md(LONG) == _split_body_md(LONG, overlap_words=0)
+def test_explicit_zero_overlap_has_no_markers():
+    # overlap_words=0 must reproduce the original no-overlap chunking regardless
+    # of the configured default (which is now 80, the adopted value).
+    chunks = _split_body_md(LONG, target_words=100, overlap_words=0)
+    assert len(chunks) > 1
+    assert all("[…]" not in c for c in chunks)
 
 
 def test_overlap_prepends_tail_of_previous_chunk():
