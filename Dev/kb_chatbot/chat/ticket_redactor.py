@@ -11,6 +11,13 @@ _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE = re.compile(r"\+?\d[\d\s().\-]{6,}\d")
 _URL = re.compile(r"https?://\S+")
 
+# Names following a greeting/closing word: "Hi Sam", "Dear Sarah", "Thanks Mike",
+# "Regards, Jane". Redacts the name token(s), keeps the greeting word and the rest.
+_GREETING_NAME = re.compile(
+    r"\b(Hi|Hello|Dear|Thanks|Thank you|Regards|Cheers|Best|Kind regards|Hey)\b"
+    r"([,\s]+)([A-Z][a-z]+)(?=[\s,.!]|$)"
+)
+
 # Lines that are pure email/quote/signature boilerplate -> dropped entirely.
 _DROP_LINE = re.compile(
     r"^\s*(subject:|to:|cc:|bcc:|from:|sent:|date:|attachment:|"
@@ -38,6 +45,7 @@ def redact(text: str, *, known_terms: list[str]) -> str:
         line = _EMAIL.sub("[redacted]", line)
         line = _URL.sub("[link]", line)
         line = _PHONE.sub("[redacted]", line)
+        line = _GREETING_NAME.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
         for tr in term_res:
             line = tr.sub("[redacted]", line)
         stripped = line.strip()

@@ -46,3 +46,22 @@ def test_real_sample_no_pii():
 def test_empty_input():
     assert redact("", known_terms=[]) == ""
     assert redact("   \n  ", known_terms=[]) == ""
+
+
+def test_greeting_name_redacted_without_known_terms():
+    out = redact("Hi Sam, FixApp session has been restarted Thanks", known_terms=[])
+    assert "Sam" not in out
+    assert "FixApp session has been restarted" in out   # technical content kept
+
+
+def test_various_greetings_and_signoffs():
+    assert "Bob" not in redact("Hello Bob, the issue is fixed", known_terms=[])
+    assert "Sarah" not in redact("Dear Sarah, please retry", known_terms=[])
+    assert "Mike" not in redact("Thanks Mike", known_terms=[])
+    assert "Jane" not in redact("Regards, Jane", known_terms=[])
+
+
+def test_greeting_keeps_following_sentence():
+    out = redact("Hi Sam, the FixApp was restarted and prices resumed", known_terms=[])
+    assert "FixApp was restarted" in out
+    assert "prices resumed" in out
