@@ -187,7 +187,7 @@ class SettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Contoso KB Chatbot")
+        self.setWindowTitle(config.window_title())
         self.resize(1100, 780)
         self.settings = settings_mod.load_settings()
         self.session = Session.new()
@@ -474,7 +474,12 @@ class MainWindow(QMainWindow):
         self._retriever = retriever
         self.send_btn.setText("Send")
         self._set_chat_enabled(True)
-        self.statusBar().showMessage("Ready")
+        warning = getattr(retriever, "lexical_warning", None)
+        if warning:
+            self.statusBar().showMessage(f"⚠ {warning}")
+            self._append("system", f"Warning: {warning}", "#e65100", "SYSTEM:")
+        else:
+            self.statusBar().showMessage("Ready")
         self._append("system", "Ready. Type a question below.", "#1b5e20", "SYSTEM:")
 
     @Slot(str)

@@ -3,10 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+# ── Version / beta identity ───────────────────────────────────────────────────
+APP_VERSION = "3.0.0-beta"
+IS_BETA     = True
+# Beta uses a separate state dir so it never touches the stable exe's index.
+STATE_DIR_NAME = "chatbot_state_beta" if IS_BETA else "chatbot_state"
+
+
+def window_title() -> str:
+    return "Contoso KB Chatbot — v3.0 BETA" if IS_BETA else "Contoso KB Chatbot"
+
+
 # ── Freeze-aware base paths ───────────────────────────────────────────────────
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent              # dist/ at runtime
-    STATE_DIR = BASE_DIR / "chatbot_state"
+    STATE_DIR = BASE_DIR / STATE_DIR_NAME
 else:
     BASE_DIR = Path(__file__).parent.parent.parent      # Knowledge Base/
     STATE_DIR = Path(__file__).parent / "state"
