@@ -72,3 +72,12 @@ def test_build_messages_includes_history():
     msgs = build_messages(context_chunks=[], history=history, user_msg="Now?")
     assert msgs[0]["content"] == "Earlier?"
     assert "Now?" in msgs[-1]["content"]
+
+
+def test_system_prompt_demands_completeness():
+    from Dev.kb_chatbot.prompt import build_system_prompt
+    p = build_system_prompt().lower()
+    assert "all relevant" in p or "every step" in p
+    # guardrails still present
+    assert "only use facts from the context" in p
+    assert "[article title](url)" in p
