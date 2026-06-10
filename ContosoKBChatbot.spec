@@ -15,18 +15,25 @@ hiddenimports += [
     "sklearn.utils._cython_blas",
 ]
 
-# Bundle the HF model cache so the app works offline.
-# HF_HOME is set to <exedir>/models/huggingface at runtime (see gui.py top).
-# The user's cache lives at ~/.cache/huggingface/; bundle its contents under
-# models/huggingface/ so that HF_HOME=<exedir>/models/huggingface finds hub/.
+# Bundle ONLY the two HF models this app uses so it works offline.
+# (NOT the whole ~/.cache/huggingface — that also holds the v3-beta bge rerankers,
+# ~3.2 GB we don't need.) At runtime HF_HOME points at <bundle>/models/huggingface
+# (sys._MEIPASS-relative — PyInstaller onedir places datas under _internal/).
 import os as _os
 _hf = _os.path.join(_os.path.expanduser("~"), ".cache", "huggingface")
-if _os.path.isdir(_hf):
-    for _root, _dirs, _files in _os.walk(_hf):
-        for _f in _files:
-            _full = _os.path.join(_root, _f)
-            _rel = _os.path.relpath(_full, _hf)
-            datas.append((_full, _os.path.join("models", "huggingface", _os.path.dirname(_rel))))
+_WANT = ("models--cross-encoder--ms-marco-MiniLM-L-6-v2",
+         "models--sentence-transformers--all-MiniLM-L6-v2")
+_hub = _os.path.join(_hf, "hub")
+if _os.path.isdir(_hub):
+    for _model in _WANT:
+        _mdir = _os.path.join(_hub, _model)
+        if not _os.path.isdir(_mdir):
+            continue
+        for _root, _dirs, _files in _os.walk(_mdir):
+            for _f in _files:
+                _full = _os.path.join(_root, _f)
+                _rel = _os.path.relpath(_full, _hf)   # e.g. hub/models--.../snapshots/...
+                datas.append((_full, _os.path.join("models", "huggingface", _os.path.dirname(_rel))))
 
 a = Analysis(
     ["Dev/kb_chatbot/gui.py"],

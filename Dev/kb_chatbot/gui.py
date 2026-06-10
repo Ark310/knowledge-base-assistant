@@ -6,7 +6,10 @@ import os
 # missing/incomplete bundle degrades to an online fetch instead of hard-failing
 # (HF_HUB_OFFLINE would otherwise turn a missing model into a fatal InitWorker error).
 if getattr(sys, "frozen", False):
-    _models = os.path.join(os.path.dirname(sys.executable), "models", "huggingface")
+    # PyInstaller puts bundled datas under sys._MEIPASS (the _internal/ dir in
+    # onedir mode), NOT next to the exe — so resolve the model cache there.
+    _base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    _models = os.path.join(_base, "models", "huggingface")
     if os.path.isdir(_models):
         os.environ.setdefault("HF_HOME", _models)
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
