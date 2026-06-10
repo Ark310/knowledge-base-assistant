@@ -62,3 +62,16 @@ def test_validator_url_match_ignores_title_mismatch():
     answer = f"Hi [Getting Started]({url})."  # citation title differs from chunk title "Welcome"
     result = validate(answer, retrieved)
     assert result.all_verified is True
+
+
+def test_ticket_citation_validates_against_resolution_url():
+    from Dev.kb_chatbot.citations import validate
+    from Dev.kb_chatbot.chunker import Chunk
+    url = "https://support.contoso.example/Resolution.aspx?bugid=75100"
+    chunk = Chunk(id="ticket_x", text="…",
+                  metadata={"kind": "ticket", "ticket_id": "75100",
+                            "title": "Ticket #75100", "url": url, "product": "tradedesk"})
+    answer = f"Restart the FixApp session. [Ticket #75100 · TradeDesk]({url})"
+    res = validate(answer, [chunk])
+    assert len(res.verified) == 1
+    assert "[unverified]" not in res.stripped_text

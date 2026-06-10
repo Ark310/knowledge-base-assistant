@@ -81,3 +81,18 @@ def test_system_prompt_demands_completeness():
     # guardrails still present
     assert "only use facts from the context" in p
     assert "[article title](url)" in p
+
+
+def test_cite_handle_ticket_label():
+    from Dev.kb_chatbot.prompt import _cite_handle
+    h = _cite_handle({"kind": "ticket", "ticket_id": "75100", "product": "tradedesk",
+                      "url": "https://support.contoso.example/Resolution.aspx?bugid=75100"})
+    assert h.startswith("[Ticket #75100 · TradeDesk]")
+    assert "(https://support.contoso.example/Resolution.aspx?bugid=75100)" in h
+
+
+def test_system_prompt_has_ticket_rule():
+    from Dev.kb_chatbot.prompt import build_system_prompt
+    p = build_system_prompt().lower()
+    assert "ticket" in p
+    assert "never include customer" in p or "no customer" in p
