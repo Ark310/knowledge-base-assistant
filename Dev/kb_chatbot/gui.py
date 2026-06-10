@@ -2,12 +2,15 @@
 from __future__ import annotations
 import sys
 import os
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# Force offline + bundled models ONLY when frozen AND the bundle is present, so a
+# missing/incomplete bundle degrades to an online fetch instead of hard-failing
+# (HF_HUB_OFFLINE would otherwise turn a missing model into a fatal InitWorker error).
 if getattr(sys, "frozen", False):
     _models = os.path.join(os.path.dirname(sys.executable), "models", "huggingface")
     if os.path.isdir(_models):
         os.environ.setdefault("HF_HOME", _models)
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 import json
 import logging
 import random
