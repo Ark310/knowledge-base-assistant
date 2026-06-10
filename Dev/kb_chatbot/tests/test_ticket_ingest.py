@@ -83,3 +83,26 @@ def test_real_ticket_chunks_no_pii():
             org = data.get("organization", "")
             if org:
                 assert org not in c.text, f"{tid}: org '{org}' leaked"
+
+
+def test_resolution_not_over_redacted():
+    import json
+    from pathlib import Path
+    p = Path("library/tickets/ticket_75100.json")
+    data = json.loads(p.read_text(encoding="utf-8"))
+    chunks = build_ticket_chunks(data, p)
+    assert chunks
+    text = chunks[0].text
+    # The staff resolution must retain its real words, not be mostly [redacted]
+    assert "FixApp session has been restarted" in text
+    # Sanity: redaction markers should be a small fraction, not dominate
+    assert text.count("[redacted]") <= 3
+
+
+def test_known_terms_excludes_stopwords():
+    from Dev.kb_chatbot.ticket_ingest import _known_terms
+    terms = _known_terms({"organization": "", "created_by": "", "assignee": "",
+                          "comments": [{"type": "unknown",
+                                        "body": "Thanks for the update from the bank"}]})
+    lows = {t.lower() for t in terms}
+    assert "for" not in lows and "the" not in lows and "update" not in lows

@@ -13,33 +13,46 @@ import re
 from Dev.kb_chatbot.chunker import Chunk
 from Dev.kb_chatbot.chat.ticket_redactor import redact
 
-# "received from Sam Rivera" / "sent to Priya Patel" in header strings
-# Captures up to 4 capitalized name tokens (handles "Riley Anne Van Dyke")
+# "received from Sam Rivera" / "sent to Priya Patel" in header strings.
+# Keywords are case-insensitive via inline flag; name class is case-SENSITIVE so
+# lowercase prose words (e.g. "the outgoing wire template" after "from") are never
+# captured as person names.
 _FROM_NAME = re.compile(
-    r"(?:received from|sent to|from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})",
-    re.IGNORECASE,
+    r"(?i:received from|sent to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})"
 )
 
-# Display-name<email> or "Name <email>" patterns in header/body text
-# e.g. "Priya Patel <priya.patel@foo.com>", "Alex Morgan Chen <alex.chen@foo.com>"
+# Display-name<email> or "Name <email>" patterns in header/body text.
+# e.g. "Priya Patel <priya.patel@foo.com>", "Alex Morgan Chen <alex.chen@foo.com>".
+# Name class is case-SENSITIVE: requires leading capital, so lowercase prefixes
+# like "sent to" are never included in the captured name.
 _DISPLAY_EMAIL = re.compile(
-    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s*<[\w.+-]+@[\w.-]+>",
-    re.IGNORECASE,
+    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s*<[\w.+-]+@[\w.-]+"
+    r">"
 )
 
-# Greeting/sign-off names from body text (duplicates redactor pattern but used
-# here for term extraction, not substitution)
+# Greeting/sign-off names from body text (mirrors redactor pattern but used here
+# for term extraction). Keyword is case-insensitive via inline flag; name class
+# is case-SENSITIVE so "team", "for", "update" etc. are never captured.
 _GREET_NAME = re.compile(
-    r"\b(?:Hi|Hello|Dear|Thanks|Thank you|Regards|Cheers|Best|Kind regards|Hey)\b"
-    r"[,\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})",
-    re.IGNORECASE,
+    r"\b(?i:Hi|Hello|Dear|Thanks|Thank you|Regards|Cheers|Best|Kind regards|Hey)\b"
+    r"[,\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})"
 )
 
-# "cc: Name <email>" style in outbound email headers stored in comments
+# "cc: Name <email>" style in outbound email headers stored in comments.
+# Keyword is case-insensitive via inline flag; name class is case-SENSITIVE.
 _CC_NAME = re.compile(
-    r"\bcc:\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s*[<,]",
-    re.IGNORECASE,
+    r"\b(?i:cc):\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s*[<,]"
 )
+
+# Single-token terms whose lowercase form is in this set are never added to the
+# redaction list — they are too common to be safe redaction patterns.
+_STOPWORDS = {
+    "the", "and", "our", "for", "this", "that", "update", "of", "to", "support", "team",
+    "please", "thanks", "thank", "you", "with", "from", "is", "are", "was", "were", "in",
+    "on", "at", "it", "we", "i", "a", "an", "be", "as", "or", "but", "not", "your", "my",
+    "contoso", "customer", "client", "user", "hi", "hello", "dear", "regards", "cheers",
+    "now", "me", "let", "get", "sent", "received",
+}
 
 
 def _known_terms(data: dict) -> list[str]:
@@ -76,14 +89,26 @@ def _known_terms(data: dict) -> list[str]:
             terms.append(m)
             terms.extend(m.split())
 
-    # De-duplicate, preserve non-empty, case-insensitive uniqueness
+    # De-duplicate, preserve non-empty, case-insensitive uniqueness.
+    # Also drop single-token terms that are common stopwords — they must never
+    # become redaction patterns or they gut the resolution text.
     seen: set[str] = set()
     out: list[str] = []
     for t in terms:
         t = t.strip()
-        if t and t.lower() not in seen:
-            seen.add(t.lower())
-            out.append(t)
+        if not t:
+            continue
+        tl = t.lower()
+        if tl in seen:
+            continue
+        # Drop single tokens (no space) that are in the stopword list
+        if " " not in t and tl in _STOPWORDS:
+            continue
+        # Drop multi-token terms only if ALL tokens are stopwords
+        if " " in t and all(tok.lower() in _STOPWORDS for tok in t.split()):
+            continue
+        seen.add(tl)
+        out.append(t)
     return out
 
 

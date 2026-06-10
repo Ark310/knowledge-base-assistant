@@ -101,3 +101,15 @@ def test_real_tickets_no_obvious_names(tmp_path):
         out = redact(bodies, known_terms=[k for k in known if k])
         for name in leaked:
             assert name not in out, f"ticket {tid}: '{name}' leaked"
+
+
+def test_greeting_does_not_eat_lowercase_words():
+    out = redact("Thanks for the update on the FixApp restart", known_terms=[])
+    assert "for the update" in out
+    assert "FixApp restart" in out
+
+
+def test_action_verb_does_not_eat_lowercase():
+    out = redact("asked the team to restart the service", known_terms=[])
+    # "team" is lowercase, not a Capitalized name -> must survive
+    assert "team to restart the service" in out
