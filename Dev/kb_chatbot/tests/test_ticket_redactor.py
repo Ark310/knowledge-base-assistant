@@ -113,3 +113,39 @@ def test_action_verb_does_not_eat_lowercase():
     out = redact("asked the team to restart the service", known_terms=[])
     # "team" is lowercase, not a Capitalized name -> must survive
     assert "team to restart the service" in out
+
+
+def test_credential_values_redacted_keyword_kept():
+    out = redact("Username: SandboxUser Password: 4hbR2$ltrop", known_terms=[])
+    assert "4hbR2$ltrop" not in out
+    assert "SandboxUser" not in out
+
+
+def test_password_keyword_in_prose_survives():
+    out = redact("Reset the password via Admin > Users then retry login", known_terms=[])
+    assert "Reset the password via Admin" in out
+
+
+def test_decrypt_and_api_key_values_redacted():
+    out = redact("Decrypt key for above link: UnDjnih6Tbkc5yQSIBDW0J", known_terms=[])
+    assert "UnDjnih6Tbkc5yQSIBDW0J" not in out
+    out2 = redact("API Key: sk-abc123XYZ", known_terms=[])
+    assert "sk-abc123XYZ" not in out2
+
+
+def test_url_credential_pairs_redacted():
+    out = redact("posted username=AppUser&password=9jL%23G%24s1 to the endpoint", known_terms=[])
+    assert "AppUser" not in out
+    assert "9jL" not in out
+
+
+def test_at_mentions_redacted():
+    out = redact("@Dana please provide the logs and @Hasan verify", known_terms=[])
+    assert "Dana" not in out and "Hasan" not in out
+    assert "please provide the logs" in out
+
+
+def test_bare_domain_residue_redacted():
+    out = redact("forwarded to sam@woodgrove.example for review", known_terms=[])
+    assert "woodgrove.example" not in out
+    assert "@woodgrove" not in out

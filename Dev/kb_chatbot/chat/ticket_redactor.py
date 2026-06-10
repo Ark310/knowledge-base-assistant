@@ -32,6 +32,27 @@ _ACTION_NAME = re.compile(
 # Parenthetical first-name mentions: "user (Robin)", "(Dana)".
 _PAREN_NAME = re.compile(r"\(([A-Z][a-z]+)\)")
 
+# Credential VALUES after a label ("Password: X", "API Key = Y", "Decrypt key: Z").
+# Keeps the keyword (so "reset the password" prose survives), redacts the value.
+# Tolerates an optional closing quote between keyword and separator and a quoted
+# value, so JSON/query forms like "password": "secret" are also caught.
+_CRED_LABEL = re.compile(
+    r"(?i)\b(pass(?:word|phrase)?|pwd|user\s?name|username|login|"
+    r"api[\s_-]?key|secret(?:\s*key)?|access[\s_-]?key|private[\s_-]?key|"
+    r"decrypt\s*key|auth[\s_-]?token|token|credentials?)\b"
+    r"""(["']?\s*(?:for[^:=\n]*)?[:=]\s*)"""
+    r"""(?:(["'])[^"'\n]*\2|\S+)"""
+)
+# Credential pairs in URL/query form: password=..., pwd=..., secret=..., token=...
+_CRED_KV = re.compile(
+    r"(?i)\b(pass(?:word)?|pwd|secret|token|api[_-]?key|access[_-]?key|user(?:name)?|login)"
+    r"(=)([^\s&]+)"
+)
+# @mentions of names: @Dana, @Hasan
+_AT_MENTION = re.compile(r"@[A-Za-z][\w.\-]*")
+# Bare email-domain residue left after local-part redaction.
+_BARE_DOMAIN = re.compile(r"@[\w.\-]+\.\w{2,}")
+
 # Lines that are pure email/quote/signature boilerplate -> dropped entirely.
 _DROP_LINE = re.compile(
     r"^\s*(subject:|to:|cc:|bcc:|from:|sent:|date:|attachment:|"
@@ -57,6 +78,10 @@ def redact(text: str, *, known_terms: list[str]) -> str:
         if _DROP_LINE.match(line.strip()):
             continue
         line = _EMAIL.sub("[redacted]", line)
+        line = _CRED_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
+        line = _CRED_LABEL.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
+        line = _AT_MENTION.sub("@[redacted]", line)
+        line = _BARE_DOMAIN.sub("[redacted]", line)
         line = _URL.sub("[link]", line)
         line = _PHONE.sub("[redacted]", line)
         line = _GREETING_NAME.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
