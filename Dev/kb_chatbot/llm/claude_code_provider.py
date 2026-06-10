@@ -214,7 +214,16 @@ class ClaudeCodeProvider(LLMProvider):
                 log.exception("Error tearing down stale ClaudeSDKClient")
             cls._client = None
             cls._client_signature = ()
-        options = ClaudeAgentOptions(system_prompt=system_prompt, model=model)
+        cli = shutil.which("claude")
+        opts_kwargs = {"system_prompt": system_prompt, "model": model}
+        if cli:
+            opts_kwargs["cli_path"] = cli
+        try:
+            options = ClaudeAgentOptions(**opts_kwargs)
+        except TypeError:
+            # cli_path not supported by this SDK version — fall back without it
+            opts_kwargs.pop("cli_path", None)
+            options = ClaudeAgentOptions(**opts_kwargs)
         cls._client = ClaudeSDKClient(options=options)
         await cls._client.__aenter__()
         cls._client_signature = signature

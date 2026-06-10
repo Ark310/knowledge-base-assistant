@@ -1,6 +1,13 @@
 """V2.5 KB Chatbot GUI. No API key. Claude Code preflight on startup."""
 from __future__ import annotations
 import sys
+import os
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+if getattr(sys, "frozen", False):
+    _models = os.path.join(os.path.dirname(sys.executable), "models", "huggingface")
+    if os.path.isdir(_models):
+        os.environ.setdefault("HF_HOME", _models)
 import json
 import logging
 import random
@@ -150,14 +157,14 @@ class InitWorker(QThread):
 
     def run(self):
         try:
-            self.status.emit("⟳ Initialising — loading models…")
+            self.status.emit("✦ Loading search models…")
             retriever = Retriever(
                 config.CHROMA_DIR,
                 confidence_floor=self.settings.confidence_floor,
             )
             provider_id = getattr(self.settings, "default_provider", "claude")
             display = config.PROVIDERS.get(provider_id, config.PROVIDERS["claude"])["display"]
-            self.status.emit(f"⟳ Initialising — warming up {display}…")
+            self.status.emit(f"✦ Warming up {display}…")
             try:
                 if provider_id == "claude":
                     from Dev.kb_chatbot.prompt import build_system_prompt
