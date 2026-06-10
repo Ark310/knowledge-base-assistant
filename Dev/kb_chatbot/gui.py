@@ -1,4 +1,4 @@
-"""V2.5 KB Chatbot GUI. No API key. Claude Code preflight on startup."""
+"""V2.6 KB Chatbot GUI. No API key. Provider preflight on startup. One-folder offline build."""
 from __future__ import annotations
 import sys
 import os

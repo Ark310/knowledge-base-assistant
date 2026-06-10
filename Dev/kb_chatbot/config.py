@@ -1,4 +1,4 @@
-"""V2.5 static defaults + freeze-aware paths + provider registry. No persisted settings live here."""
+"""V2.6 static defaults + freeze-aware paths + provider registry + tickets. No persisted settings live here."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
