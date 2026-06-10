@@ -13,6 +13,7 @@ else:
     STATE_DIR = Path(__file__).parent / "state"
 
 LIBRARY_DEFAULT = BASE_DIR / "library" / "kb"
+TICKETS_DEFAULT = BASE_DIR / "library" / "tickets"
 CHROMA_DIR      = STATE_DIR / "chroma"
 CHATS_DIR       = STATE_DIR / "chats"
 LOG_FILE        = STATE_DIR / "run.log"

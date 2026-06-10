@@ -13,6 +13,7 @@ from sentence_transformers import SentenceTransformer
 
 from Dev.kb_chatbot import config
 from Dev.kb_chatbot.chunker import build_article_chunks, Chunk
+from Dev.kb_chatbot.ticket_ingest import build_ticket_chunks
 
 log = logging.getLogger("kb_chatbot.ingest")
 
@@ -40,6 +41,13 @@ def _gather_article_jsons(library_path: Path) -> list[Path]:
     return [p for p in out if p.name != "index.json"]
 
 
+def _gather_ticket_jsons(tickets_path: Path) -> list[Path]:
+    """All ticket_*.json files in tickets_path, skipping index.json."""
+    if not tickets_path.exists():
+        return []
+    return [p for p in sorted(tickets_path.glob("*.json")) if p.name != "index.json"]
+
+
 def _embed_batch(model: SentenceTransformer, texts: list[str]) -> list[list[float]]:
     vecs = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
     return [v.tolist() for v in vecs]
@@ -49,6 +57,7 @@ def ingest(
     library_path: Path,
     chroma_path: Path,
     on_progress: Callable[[int, int], None] = lambda done, total: None,
+    tickets_path: Path | None = None,
 ) -> IngestReport:
     started = time.time()
     chroma_path.mkdir(parents=True, exist_ok=True)
@@ -73,6 +82,22 @@ def ingest(
         report.articles_seen += 1
         report.products[product] = report.products.get(product, 0) + 1
         all_chunks.extend(build_article_chunks(data, f, library_path))
+
+    tpath = tickets_path if tickets_path is not None else (library_path.parent / "tickets")
+    for tf in _gather_ticket_jsons(tpath):
+        try:
+            tdata = json.loads(tf.read_text(encoding="utf-8"))
+        except Exception as exc:
+            log.warning("Skipping unreadable ticket %s: %s", tf, exc)
+            report.skipped += 1
+            continue
+        tchunks = build_ticket_chunks(tdata, tf)
+        if tchunks:
+            report.articles_seen += 1
+            report.products["tickets"] = report.products.get("tickets", 0) + 1
+            all_chunks.extend(tchunks)
+        else:
+            report.skipped += 1
 
     total = len(all_chunks)
     if total == 0:
