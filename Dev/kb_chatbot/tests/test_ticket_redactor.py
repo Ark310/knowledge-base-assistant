@@ -65,3 +65,39 @@ def test_greeting_keeps_following_sentence():
     out = redact("Hi Sam, the FixApp was restarted and prices resumed", known_terms=[])
     assert "FixApp was restarted" in out
     assert "prices resumed" in out
+
+
+def test_allcaps_greeting_name_redacted():
+    out = redact("HI Dana, please put it together", known_terms=[])
+    assert "Dana" not in out
+
+
+def test_multi_token_greeting_name_redacted():
+    out = redact("Regards, Priya Patel", known_terms=[])
+    assert "Priya" not in out and "Lee" not in out
+
+
+def test_prose_names_after_action_verbs_redacted():
+    assert "Riley" not in redact("Messaged Riley on Teams chat to check update", known_terms=[])
+    assert "Priya" not in redact("I asked Priya to verify the fix", known_terms=[])
+    assert "Robin" not in redact("asked the user (Robin) to perform UAT", known_terms=[])
+
+
+def test_action_verb_keeps_technical_remainder():
+    out = redact("Messaged Riley on Teams to restart the FixApp service", known_terms=[])
+    assert "restart the FixApp service" in out
+
+
+def test_real_tickets_no_obvious_names(tmp_path):
+    import json
+    from pathlib import Path
+    for tid, leaked in [("75103", ["Riley"]), ("75111", ["Dana", "Robin"])]:
+        p = Path(f"library/tickets/ticket_{tid}.json")
+        if not p.exists():
+            continue
+        data = json.loads(p.read_text(encoding="utf-8"))
+        known = [data.get("organization",""), data.get("created_by",""), data.get("assignee","")]
+        bodies = "\n".join(c.get("body","") for c in data.get("comments", []))
+        out = redact(bodies, known_terms=[k for k in known if k])
+        for name in leaked:
+            assert name not in out, f"ticket {tid}: '{name}' leaked"

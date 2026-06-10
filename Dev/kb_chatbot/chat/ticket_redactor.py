@@ -12,11 +12,25 @@ _PHONE = re.compile(r"\+?\d[\d\s().\-]{6,}\d")
 _URL = re.compile(r"https?://\S+")
 
 # Names following a greeting/closing word: "Hi Sam", "Dear Sarah", "Thanks Mike",
-# "Regards, Jane". Redacts the name token(s), keeps the greeting word and the rest.
+# "Regards, Jane", "HI Dana", "Regards, Priya Patel".
+# Case-insensitive on the greeting word; captures 1-3 capitalised name tokens.
 _GREETING_NAME = re.compile(
     r"\b(Hi|Hello|Dear|Thanks|Thank you|Regards|Cheers|Best|Kind regards|Hey)\b"
-    r"([,\s]+)([A-Z][a-z]+)(?=[\s,.!]|$)"
+    r"([,\s]+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})(?=[\s,.!?]|$)",
+    re.IGNORECASE,
 )
+
+# Names after action verbs: "Messaged Riley", "asked Priya", "emailed Jane".
+# Also handles "the user/customer/client (Name)" variant.
+_ACTION_NAME = re.compile(
+    r"\b(messaged|message|asked|told|emailed|email|called|contacted|"
+    r"spoke to|spoke with|pinged|notified|informed|advised|reached out to)\s+"
+    r"(?:the\s+(?:user|customer|client)\s+)?([A-Z][a-z]+)",
+    re.IGNORECASE,
+)
+
+# Parenthetical first-name mentions: "user (Robin)", "(Dana)".
+_PAREN_NAME = re.compile(r"\(([A-Z][a-z]+)\)")
 
 # Lines that are pure email/quote/signature boilerplate -> dropped entirely.
 _DROP_LINE = re.compile(
@@ -46,6 +60,8 @@ def redact(text: str, *, known_terms: list[str]) -> str:
         line = _URL.sub("[link]", line)
         line = _PHONE.sub("[redacted]", line)
         line = _GREETING_NAME.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
+        line = _ACTION_NAME.sub(lambda m: f"{m.group(1)} [redacted]", line)
+        line = _PAREN_NAME.sub("([redacted])", line)
         for tr in term_res:
             line = tr.sub("[redacted]", line)
         stripped = line.strip()
