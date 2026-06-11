@@ -33,14 +33,14 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QTextBrowser, QLineEdit, QToolBar,
     QStatusBar, QMessageBox, QDialog, QDialogButtonBox, QFormLayout,
     QFileDialog, QProgressBar, QPlainTextEdit, QInputDialog,
-    QTableWidget, QTableWidgetItem,
+    QTableWidget, QTableWidgetItem, QCheckBox,
 )
 
 from Dev.kb_chatbot import config, settings as settings_mod
 from Dev.kb_chatbot.chat.query_rewriter import make_rewriter
 from Dev.kb_chatbot.chat.orchestrator import Deps, handle_turn
 from Dev.kb_chatbot.chat.session import Session, Turn
-from Dev.kb_chatbot.ingest import ingest
+from Dev.kb_chatbot.ingest import ingest, IngestCancelled
 from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeProvider, ClaudeCodeNotFoundError
 from Dev.kb_chatbot.llm.codex_provider import CodexProvider, CodexNotFoundError, codex_login_ok
 from Dev.kb_chatbot.retriever import Retriever, Filters
@@ -131,20 +131,36 @@ class TurnWorker(QThread):
 
 
 class IngestWorker(QThread):
-    progress = Signal(int, int)
+    event = Signal(dict)
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, library_path, chroma_path):
+    def __init__(self, library_path, chroma_path, *,
+                 force_rebuild=False, embedder=None, collection=None):
         super().__init__()
         self.library_path = library_path
         self.chroma_path = chroma_path
+        self.force_rebuild = force_rebuild
+        self.embedder = embedder
+        self.collection = collection
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
 
     def run(self):
         try:
-            report = ingest(self.library_path, self.chroma_path,
-                             on_progress=lambda d, t: self.progress.emit(d, t))
+            report = ingest(
+                self.library_path, self.chroma_path,
+                on_event=lambda e: self.event.emit(e),
+                force_rebuild=self.force_rebuild,
+                embedder=self.embedder,
+                collection=self.collection,
+                should_cancel=lambda: self._cancel,
+            )
             self.finished.emit(report)
+        except IngestCancelled:
+            self.failed.emit("Cancelled.")
         except Exception as exc:
             log.exception("Ingest failed")
             self.failed.emit(str(exc))
@@ -360,6 +376,104 @@ class TokenUsageDialog(QDialog):
         layout.addWidget(bb)
 
 
+class IndexingDialog(QDialog):
+    """Modal reindex panel: live progress bar, per-source counters, stage log."""
+
+    def __init__(self, parent, library_path, chroma_path, embedder, collection):
+        super().__init__(parent)
+        self.setWindowTitle("Reindex Knowledge Base")
+        self.resize(720, 480)
+        self._library_path = library_path
+        self._chroma_path = chroma_path
+        self._embedder = embedder
+        self._collection = collection
+        self._worker: Optional[IngestWorker] = None
+        self.report = None
+
+        layout = QVBoxLayout(self)
+        self._force_cb = QCheckBox("Force full rebuild (re-embed everything)")
+        layout.addWidget(self._force_cb)
+        self.progress = QProgressBar()
+        layout.addWidget(self.progress)
+        self._counts = QLabel("Idle. Press Start to index.")
+        self._counts.setStyleSheet("color:#555;")
+        layout.addWidget(self._counts)
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setFont(QFont("Consolas", 9))
+        layout.addWidget(self.log_view, stretch=1)
+
+        row = QHBoxLayout()
+        self._start_btn = QPushButton("Start")
+        self._cancel_btn = QPushButton("Cancel"); self._cancel_btn.setEnabled(False)
+        self._close_btn = QPushButton("Close")
+        row.addWidget(self._start_btn); row.addWidget(self._cancel_btn)
+        row.addStretch(); row.addWidget(self._close_btn)
+        layout.addLayout(row)
+
+        self._start_btn.clicked.connect(self._start)
+        self._cancel_btn.clicked.connect(self._do_cancel)
+        self._close_btn.clicked.connect(self.reject)
+
+    def _log(self, msg: str):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.log_view.appendPlainText(f"{ts}  {msg}")
+
+    def _start(self):
+        self._start_btn.setEnabled(False)
+        self._force_cb.setEnabled(False)
+        self._cancel_btn.setEnabled(True)
+        self._close_btn.setEnabled(False)
+        self.progress.setValue(0)
+        self._log("Starting reindex...")
+        self._worker = IngestWorker(
+            self._library_path, self._chroma_path,
+            force_rebuild=self._force_cb.isChecked(),
+            embedder=self._embedder, collection=self._collection)
+        self._worker.event.connect(self._on_event)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    @Slot(dict)
+    def _on_event(self, e: dict):
+        msg = e.get("message")
+        if msg:
+            self._log(msg)
+        cur, tot = e.get("current"), e.get("total")
+        if tot:
+            self.progress.setValue(int(cur * 100 / tot))
+        counts = e.get("counts") or {}
+        if counts:
+            self._counts.setText(" | ".join(f"{k}: {v}" for k, v in counts.items()))
+
+    @Slot(object)
+    def _on_finished(self, report):
+        self.report = report
+        self.progress.setValue(100)
+        self._log(f"KB root:    {report.resolved_kb_path}")
+        self._log(f"Tickets:    {report.resolved_tickets_path}")
+        self._log(f"DONE in {report.duration_s:.1f}s -- +{report.chunks_embedded} embedded, "
+                  f"-{report.chunks_deleted} removed, {report.total_chunks} total | "
+                  f"{report.articles_seen} articles, {report.tickets_seen} tickets changed, "
+                  f"{report.unchanged_files} unchanged")
+        self._cancel_btn.setEnabled(False)
+        self._close_btn.setEnabled(True)
+
+    @Slot(str)
+    def _on_failed(self, err: str):
+        self._log(f"FAILED: {err}")
+        self._start_btn.setEnabled(True)
+        self._force_cb.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        self._close_btn.setEnabled(True)
+
+    def _do_cancel(self):
+        if self._worker:
+            self._worker.cancel()
+            self._log("Cancelling after the current batch...")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -372,7 +486,6 @@ class MainWindow(QMainWindow):
         self._session_start_ts = datetime.now().isoformat()
         self.session = Session.new()
         self.worker: Optional[TurnWorker] = None
-        self.ingest_worker: Optional[IngestWorker] = None
         self._retriever: Optional[Retriever] = None
         self._today_queries = 0
         self._today_tokens = 0
@@ -1008,37 +1121,17 @@ class MainWindow(QMainWindow):
         subprocess.Popen(["explorer.exe", str(config.STATE_DIR)])
 
     def _reindex(self):
-        if self.ingest_worker:
-            return
-        self.progress.setVisible(True); self.progress.setValue(0)
-        self._set_inputs_enabled(False)
-        self.ingest_worker = IngestWorker(self.settings.library_path, config.CHROMA_DIR)
-        self.ingest_worker.progress.connect(self._on_ingest_progress)
-        self.ingest_worker.finished.connect(self._on_ingest_done)
-        self.ingest_worker.failed.connect(self._on_ingest_failed)
-        self.ingest_worker.start()
-        self._append("system", f"Reindex started from {self.settings.library_path}", "#1b5e20", "SYSTEM:")
-
-    @Slot(int, int)
-    def _on_ingest_progress(self, done, total):
-        if total:
-            self.progress.setValue(int(done * 100 / total))
-
-    @Slot(object)
-    def _on_ingest_done(self, report):
-        self.progress.setVisible(False)
-        self._append("system",
-            f"Reindex complete: {report.articles_seen} articles, {report.chunks_created} chunks, {report.duration_s:.1f}s",
-            "#1b5e20", "SYSTEM:")
-        self.ingest_worker = None
-        self._set_inputs_enabled(True)
-
-    @Slot(str)
-    def _on_ingest_failed(self, err):
-        self.progress.setVisible(False)
-        self._append("system", f"Reindex failed: {err}", "#c62828", "ERROR:")
-        self.ingest_worker = None
-        self._set_inputs_enabled(True)
+        collection = self._retriever.collection if self._retriever else None
+        embedder = self._retriever.embedder if self._retriever else None
+        dlg = IndexingDialog(self, self.settings.library_path, config.CHROMA_DIR,
+                             embedder, collection)
+        dlg.exec()
+        if dlg.report is not None:
+            self._append("system",
+                f"Reindex: +{dlg.report.chunks_embedded} embedded, "
+                f"{dlg.report.total_chunks} total ({dlg.report.articles_seen} articles, "
+                f"{dlg.report.tickets_seen} tickets) in {dlg.report.duration_s:.1f}s",
+                "#1b5e20", "SYSTEM:")
 
     def _set_inputs_enabled(self, enabled: bool):
         if self._retriever is not None:  # chat stays locked until init completes
@@ -1048,7 +1141,7 @@ class MainWindow(QMainWindow):
         self._act_stop.setEnabled(not enabled)
 
     def closeEvent(self, event):
-        if self.worker or self.ingest_worker:
+        if self.worker:
             reply = QMessageBox.question(self, "Quit?",
                 "A task is running. Quit anyway?",
                 QMessageBox.Yes | QMessageBox.No)
