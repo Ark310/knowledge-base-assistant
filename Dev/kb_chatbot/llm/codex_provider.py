@@ -73,7 +73,8 @@ def codex_login_ok() -> bool:
         return False
     try:
         r = subprocess.run(_codex_argv(["login", "status"]),
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=10)
     except Exception:
         return False
     _login_ok_cache = r.returncode == 0
@@ -178,7 +179,8 @@ def _run_codex_exec(prompt: str, model: str,
     cmd = _codex_argv(args)  # resolves the exe + wraps Windows .CMD shims
     try:
         proc = subprocess.run(cmd, input=prompt, capture_output=True,
-                              text=True, timeout=CODEX_TIMEOUT_S)
+                              encoding="utf-8", errors="replace",
+                              timeout=CODEX_TIMEOUT_S)
         try:
             with open(out_path, "r", encoding="utf-8") as fh:
                 text = fh.read().strip()

@@ -205,3 +205,44 @@ def test_run_codex_exec_logs_stderr_not_prompt(monkeypatch, caplog):
     joined = " ".join(r.getMessage() for r in caplog.records)
     assert "stderr-secret-reason" in joined
     assert "SENSITIVE-PROMPT-TEXT" not in joined
+
+
+def test_run_codex_exec_uses_utf8_encoding(monkeypatch):
+    """The prompt must be sent as UTF-8, not the Windows locale codepage."""
+    import json as _json
+    captured = {}
+
+    class _Proc:
+        stdout = _json.dumps({"type": "turn.completed",
+                              "usage": {"input_tokens": 1, "output_tokens": 1}})
+        stderr = ""
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        out_path = cmd[cmd.index("-o") + 1]
+        with open(out_path, "w", encoding="utf-8") as fh:
+            fh.write("ok")
+        return _Proc()
+
+    monkeypatch.setattr(cp.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(cp.subprocess, "run", fake_run)
+
+    cp._run_codex_exec("em—dash ✦ smart’quote prompt", "gpt-5.4-mini")
+    assert captured.get("encoding") == "utf-8"
+    assert captured.get("errors") == "replace"
+    assert "text" not in captured  # must not rely on text=True (locale codepage)
+
+
+def test_codex_login_ok_uses_utf8(monkeypatch):
+    captured = {}
+
+    class _Proc:
+        returncode = 0
+
+    monkeypatch.setattr(cp, "_login_ok_cache", False)
+    monkeypatch.setattr(cp.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(cp.subprocess, "run",
+                        lambda cmd, **kw: (captured.update(kw), _Proc())[1])
+    cp.codex_login_ok()
+    assert captured.get("encoding") == "utf-8"
