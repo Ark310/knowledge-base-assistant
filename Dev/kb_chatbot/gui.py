@@ -473,6 +473,33 @@ class IndexingDialog(QDialog):
             self._worker.cancel()
             self._log("Cancelling after the current batch...")
 
+    def _worker_active(self) -> bool:
+        return self._worker is not None and self._worker.isRunning()
+
+    def reject(self):
+        # Esc and the window [X] both route here. Tearing the dialog down while
+        # the IngestWorker QThread is still running would destroy a live thread
+        # (crash / "QThread: Destroyed while thread is still running"), so while a
+        # run is active we cancel cooperatively and stay open until it unwinds and
+        # re-enables Close. When nothing is running, join the worker then close.
+        if self._worker_active():
+            self._worker.cancel()
+            self._log("Cancelling after the current batch...")
+            return
+        if self._worker is not None:
+            self._worker.wait(5000)
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._worker_active():
+            self._worker.cancel()
+            self._log("Cancelling after the current batch...")
+            event.ignore()
+            return
+        if self._worker is not None:
+            self._worker.wait(5000)
+        event.accept()
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
