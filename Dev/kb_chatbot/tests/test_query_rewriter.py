@@ -78,7 +78,7 @@ def _ctx_chunk():
 
 def _mock_retriever(results):
     """Retriever whose retrieve() pops from `results` per call."""
-    with patch("Dev.kb_chatbot.retriever.chromadb.PersistentClient"), \
+    with patch("Dev.kb_chatbot.retriever.open_persistent_client"), \
          patch("Dev.kb_chatbot.retriever.SentenceTransformer"), \
          patch("Dev.kb_chatbot.retriever.CrossEncoder"):
         r = Retriever(Path("fake"))
