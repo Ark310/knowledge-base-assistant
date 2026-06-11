@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import chromadb
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from Dev.kb_chatbot import config
