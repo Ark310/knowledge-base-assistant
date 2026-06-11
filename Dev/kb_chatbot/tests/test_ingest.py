@@ -174,3 +174,22 @@ def test_event_stages_emitted(tmp_path):
     ingest(lib, chroma, on_event=lambda e: stages.append(e["stage"]))
     for s in ("scan", "diff", "embed", "persist", "done"):
         assert s in stages
+
+
+def test_cancel_then_reindex_recovers_changed_file(tmp_path):
+    from Dev.kb_chatbot.ingest import IngestCancelled
+    lib = tmp_path / "kb"
+    _write_article(lib / "api", "a.json", "A", body="original body text here")
+    chroma = tmp_path / "chroma"
+    ingest(lib, chroma)
+    # modify the file, then cancel the reindex immediately
+    _write_article(lib / "api", "a.json", "A", body="completely new body text now")
+    try:
+        ingest(lib, chroma, should_cancel=lambda: True)
+        assert False, "expected IngestCancelled"
+    except IngestCancelled:
+        pass
+    # a normal reindex afterwards must re-embed the changed file (self-heal, no permanent loss)
+    r = ingest(lib, chroma)
+    assert r.chunks_embedded >= 1
+    assert r.total_chunks >= 1

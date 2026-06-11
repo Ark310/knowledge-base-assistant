@@ -160,171 +160,173 @@ def ingest(
         client = open_persistent_client(chroma_path)
         collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
-    model = embedder if embedder is not None else SentenceTransformer(config.EMBED_MODEL)
+    try:
+        model = embedder if embedder is not None else SentenceTransformer(config.EMBED_MODEL)
 
-    manifest = _load_manifest(chroma_path)
-    model_changed = manifest.get("embed_model") not in ("", config.EMBED_MODEL)
-    if force_rebuild or model_changed:
-        ids = collection.get(include=[]).get("ids", [])
-        for i in range(0, len(ids), DELETE_BATCH):
-            collection.delete(ids=ids[i:i + DELETE_BATCH])
-        manifest = {"version": 1, "embed_model": config.EMBED_MODEL, "files": {}}
-    manifest["embed_model"] = config.EMBED_MODEL
-    files = manifest["files"]
+        manifest = _load_manifest(chroma_path)
+        model_changed = manifest.get("embed_model") not in ("", config.EMBED_MODEL)
+        if force_rebuild or model_changed:
+            ids = collection.get(include=[]).get("ids", [])
+            for i in range(0, len(ids), DELETE_BATCH):
+                collection.delete(ids=ids[i:i + DELETE_BATCH])
+            manifest = {"version": 1, "embed_model": config.EMBED_MODEL, "files": {}}
+        manifest["embed_model"] = config.EMBED_MODEL
+        files = manifest["files"]
 
-    # -- Scan ------------------------------------------------------------------
-    emit({"stage": "scan", "message": "Scanning sources...",
-          "current": None, "total": None, "counts": {}})
-    kb_files = _gather_article_jsons(kb_root)
-    ticket_files = _gather_ticket_jsons(tickets_root)
-    emit({"stage": "scan",
-          "message": f"KB root {kb_root}: {len(kb_files)} files | "
-                     f"Tickets {tickets_root}: {len(ticket_files)} files",
-          "current": None, "total": None,
-          "counts": {"kb_files": len(kb_files), "ticket_files": len(ticket_files)}})
-    if not ticket_files:
-        emit({"stage": "scan",
-              "message": f"WARNING: 0 ticket files found at {tickets_root}",
+        # -- Scan --------------------------------------------------------------
+        emit({"stage": "scan", "message": "Scanning sources...",
               "current": None, "total": None, "counts": {}})
+        kb_files = _gather_article_jsons(kb_root)
+        ticket_files = _gather_ticket_jsons(tickets_root)
+        emit({"stage": "scan",
+              "message": f"KB root {kb_root}: {len(kb_files)} files | "
+                         f"Tickets {tickets_root}: {len(ticket_files)} files",
+              "current": None, "total": None,
+              "counts": {"kb_files": len(kb_files), "ticket_files": len(ticket_files)}})
+        if not ticket_files:
+            emit({"stage": "scan",
+                  "message": f"WARNING: 0 ticket files found at {tickets_root}",
+                  "current": None, "total": None, "counts": {}})
 
-    current: dict[str, tuple] = {}
-    for f in kb_files:
-        current["kb/" + f.relative_to(kb_root).as_posix()] = ("kb", f, _sig(f))
-    for tf in ticket_files:
-        current["ticket/" + tf.name] = ("ticket", tf, _sig(tf))
+        current: dict[str, tuple] = {}
+        for f in kb_files:
+            current["kb/" + f.relative_to(kb_root).as_posix()] = ("kb", f, _sig(f))
+        for tf in ticket_files:
+            current["ticket/" + tf.name] = ("ticket", tf, _sig(tf))
 
-    # -- Diff ------------------------------------------------------------------
-    added, changed, removed, unchanged = [], [], [], []
-    for key, (_kind, _path, sig) in current.items():
-        prev = files.get(key)
-        if prev is None:
-            added.append(key)
-        elif [prev.get("mtime"), prev.get("size")] != sig:
-            changed.append(key)
-        else:
-            unchanged.append(key)
-    for key in list(files):
-        if key not in current:
-            removed.append(key)
-    report.unchanged_files = len(unchanged)
-    emit({"stage": "diff",
-          "message": f"{len(added)} new | {len(changed)} changed | "
-                     f"{len(removed)} removed | {len(unchanged)} unchanged",
-          "current": None, "total": None,
-          "counts": {"new": len(added), "changed": len(changed),
-                     "removed": len(removed), "unchanged": len(unchanged)}})
+        # -- Diff --------------------------------------------------------------
+        added, changed, removed, unchanged = [], [], [], []
+        for key, (_kind, _path, sig) in current.items():
+            prev = files.get(key)
+            if prev is None:
+                added.append(key)
+            elif [prev.get("mtime"), prev.get("size")] != sig:
+                changed.append(key)
+            else:
+                unchanged.append(key)
+        for key in list(files):
+            if key not in current:
+                removed.append(key)
+        report.unchanged_files = len(unchanged)
+        emit({"stage": "diff",
+              "message": f"{len(added)} new | {len(changed)} changed | "
+                         f"{len(removed)} removed | {len(unchanged)} unchanged",
+              "current": None, "total": None,
+              "counts": {"new": len(added), "changed": len(changed),
+                         "removed": len(removed), "unchanged": len(unchanged)}})
 
-    # -- Delete chunks for removed + changed files -----------------------------
-    delete_ids: list[str] = []
-    for key in removed + changed:
-        delete_ids.extend(files.get(key, {}).get("chunk_ids", []))
-    for i in range(0, len(delete_ids), DELETE_BATCH):
-        collection.delete(ids=delete_ids[i:i + DELETE_BATCH])
-    report.chunks_deleted = len(delete_ids)
-    for key in removed:
-        files.pop(key, None)
+        # -- Delete chunks for removed + changed files -------------------------
+        delete_ids: list[str] = []
+        for key in removed + changed:
+            delete_ids.extend(files.get(key, {}).get("chunk_ids", []))
+        for i in range(0, len(delete_ids), DELETE_BATCH):
+            collection.delete(ids=delete_ids[i:i + DELETE_BATCH])
+        report.chunks_deleted = len(delete_ids)
+        for key in removed:
+            files.pop(key, None)
 
-    # -- Build chunks for added + changed files --------------------------------
-    to_process = added + changed
-    kb_keys = [k for k in to_process if current[k][0] == "kb"]
-    ticket_keys = [k for k in to_process if current[k][0] == "ticket"]
-    pending: list[Chunk] = []
-    file_chunk_ids: dict[str, list[str]] = {}
+        # -- Build chunks for added + changed files ----------------------------
+        to_process = added + changed
+        kb_keys = [k for k in to_process if current[k][0] == "kb"]
+        ticket_keys = [k for k in to_process if current[k][0] == "ticket"]
+        pending: list[Chunk] = []
+        file_chunk_ids: dict[str, list[str]] = {}
 
-    total_kb = len(kb_keys)
-    for i, key in enumerate(kb_keys, 1):
-        if should_cancel():
-            raise IngestCancelled()
-        _kind, f, _sigv = current[key]
-        file_chunk_ids[key] = []
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-        except Exception as exc:
-            log.warning("Skipping unreadable %s: %s", f, exc)
-            report.skipped += 1
-            continue
-        if not isinstance(data, dict) or not data.get("body_md"):
-            report.skipped += 1
-            continue
-        product = data.get("product", "unknown")
-        report.articles_seen += 1
-        report.products[product] = report.products.get(product, 0) + 1
-        chunks = build_article_chunks(data, f, kb_root)
-        file_chunk_ids[key] = [c.id for c in chunks]
-        pending.extend(chunks)
-        if i % 50 == 0 or i == total_kb:
-            emit({"stage": "parse_kb", "message": f"Parsed {i}/{total_kb} KB articles",
-                  "current": i, "total": total_kb,
-                  "counts": {"kb_articles": report.articles_seen, "chunks": len(pending)}})
+        total_kb = len(kb_keys)
+        for i, key in enumerate(kb_keys, 1):
+            if should_cancel():
+                raise IngestCancelled()
+            _kind, f, _sigv = current[key]
+            file_chunk_ids[key] = []
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception as exc:
+                log.warning("Skipping unreadable %s: %s", f, exc)
+                report.skipped += 1
+                continue
+            if not isinstance(data, dict) or not data.get("body_md"):
+                report.skipped += 1
+                continue
+            product = data.get("product", "unknown")
+            report.articles_seen += 1
+            report.products[product] = report.products.get(product, 0) + 1
+            chunks = build_article_chunks(data, f, kb_root)
+            file_chunk_ids[key] = [c.id for c in chunks]
+            pending.extend(chunks)
+            if i % 50 == 0 or i == total_kb:
+                emit({"stage": "parse_kb", "message": f"Parsed {i}/{total_kb} KB articles",
+                      "current": i, "total": total_kb,
+                      "counts": {"kb_articles": report.articles_seen, "chunks": len(pending)}})
 
-    total_tk = len(ticket_keys)
-    for i, key in enumerate(ticket_keys, 1):
-        if should_cancel():
-            raise IngestCancelled()
-        _kind, tf, _sigv = current[key]
-        file_chunk_ids[key] = []
-        try:
-            tdata = json.loads(tf.read_text(encoding="utf-8"))
-        except Exception as exc:
-            log.warning("Skipping unreadable ticket %s: %s", tf, exc)
-            report.skipped += 1
-            continue
-        tchunks = build_ticket_chunks(tdata, tf)
-        if tchunks:
-            report.tickets_seen += 1
-            file_chunk_ids[key] = [c.id for c in tchunks]
-            pending.extend(tchunks)
-        else:
-            report.skipped += 1
-        if i % 200 == 0 or i == total_tk:
-            emit({"stage": "redact_tickets",
-                  "message": f"Redacted + parsed {i}/{total_tk} tickets",
-                  "current": i, "total": total_tk,
-                  "counts": {"tickets": report.tickets_seen, "chunks": len(pending)}})
+        total_tk = len(ticket_keys)
+        for i, key in enumerate(ticket_keys, 1):
+            if should_cancel():
+                raise IngestCancelled()
+            _kind, tf, _sigv = current[key]
+            file_chunk_ids[key] = []
+            try:
+                tdata = json.loads(tf.read_text(encoding="utf-8"))
+            except Exception as exc:
+                log.warning("Skipping unreadable ticket %s: %s", tf, exc)
+                report.skipped += 1
+                continue
+            tchunks = build_ticket_chunks(tdata, tf)
+            if tchunks:
+                report.tickets_seen += 1
+                file_chunk_ids[key] = [c.id for c in tchunks]
+                pending.extend(tchunks)
+            else:
+                report.skipped += 1
+            if i % 200 == 0 or i == total_tk:
+                emit({"stage": "redact_tickets",
+                      "message": f"Redacted + parsed {i}/{total_tk} tickets",
+                      "current": i, "total": total_tk,
+                      "counts": {"tickets": report.tickets_seen, "chunks": len(pending)}})
 
-    # -- Embed + upsert --------------------------------------------------------
-    total = len(pending)
-    embedded = 0
-    for i in range(0, total, BATCH_SIZE):
-        if should_cancel():
-            raise IngestCancelled()
-        batch = pending[i:i + BATCH_SIZE]
-        embeds = _embed_batch(model, [c.text for c in batch])
-        collection.upsert(
-            ids=[c.id for c in batch],
-            documents=[c.text for c in batch],
-            embeddings=embeds,
-            metadatas=[c.metadata for c in batch],
-        )
-        embedded += len(batch)
-        emit({"stage": "embed", "message": f"Embedded {embedded}/{total} chunks",
-              "current": embedded, "total": total,
-              "counts": {"chunks_embedded": embedded}})
-    report.chunks_embedded = embedded
+        # -- Embed + upsert ----------------------------------------------------
+        total = len(pending)
+        embedded = 0
+        for i in range(0, total, BATCH_SIZE):
+            if should_cancel():
+                raise IngestCancelled()
+            batch = pending[i:i + BATCH_SIZE]
+            embeds = _embed_batch(model, [c.text for c in batch])
+            collection.upsert(
+                ids=[c.id for c in batch],
+                documents=[c.text for c in batch],
+                embeddings=embeds,
+                metadatas=[c.metadata for c in batch],
+            )
+            embedded += len(batch)
+            emit({"stage": "embed", "message": f"Embedded {embedded}/{total} chunks",
+                  "current": embedded, "total": total,
+                  "counts": {"chunks_embedded": embedded}})
+        report.chunks_embedded = embedded
 
-    # -- Persist manifest ------------------------------------------------------
-    for key in to_process:
-        _kind, _path, sig = current[key]
-        files[key] = {"mtime": sig[0], "size": sig[1],
-                      "chunk_ids": file_chunk_ids.get(key, [])}
-    manifest["files"] = files
-    emit({"stage": "persist", "message": "Saving index manifest...",
-          "current": None, "total": None, "counts": {}})
-    _save_manifest(chroma_path, manifest)
+        # -- Persist manifest --------------------------------------------------
+        for key in to_process:
+            _kind, _path, sig = current[key]
+            files[key] = {"mtime": sig[0], "size": sig[1],
+                          "chunk_ids": file_chunk_ids.get(key, [])}
+        manifest["files"] = files
+        emit({"stage": "persist", "message": "Saving index manifest...",
+              "current": None, "total": None, "counts": {}})
+        _save_manifest(chroma_path, manifest)
 
-    report.total_chunks = collection.count()
-    report.duration_s = time.time() - started
-    emit({"stage": "done",
-          "message": (f"Done: +{report.chunks_embedded} embedded, "
-                      f"-{report.chunks_deleted} removed, "
-                      f"{report.total_chunks} total, {report.duration_s:.1f}s"),
-          "current": total or 1, "total": total or 1,
-          "counts": {"total_chunks": report.total_chunks,
-                     "tickets": report.tickets_seen,
-                     "kb_articles": report.articles_seen}})
-    log.info("Ingest: +%d embedded, -%d removed, %d total, %.1fs (kb=%s tickets=%s)",
-             report.chunks_embedded, report.chunks_deleted, report.total_chunks,
-             report.duration_s, kb_root, tickets_root)
-    if own_client and client is not None:
-        client.close()
-    return report
+        report.total_chunks = collection.count()
+        report.duration_s = time.time() - started
+        emit({"stage": "done",
+              "message": (f"Done: +{report.chunks_embedded} embedded, "
+                          f"-{report.chunks_deleted} removed, "
+                          f"{report.total_chunks} total, {report.duration_s:.1f}s"),
+              "current": total or 1, "total": total or 1,
+              "counts": {"total_chunks": report.total_chunks,
+                         "tickets": report.tickets_seen,
+                         "kb_articles": report.articles_seen}})
+        log.info("Ingest: +%d embedded, -%d removed, %d total, %.1fs (kb=%s tickets=%s)",
+                 report.chunks_embedded, report.chunks_deleted, report.total_chunks,
+                 report.duration_s, kb_root, tickets_root)
+        return report
+    finally:
+        if own_client and client is not None:
+            client.close()
