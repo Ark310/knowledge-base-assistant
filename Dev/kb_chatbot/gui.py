@@ -1,4 +1,4 @@
-"""V2.6 KB Chatbot GUI. No API key. Provider preflight on startup. One-folder offline build."""
+"""V2.7 KB Chatbot GUI. No API key. Provider preflight on startup. One-folder offline build."""
 from __future__ import annotations
 import sys
 import os
@@ -363,7 +363,7 @@ class TokenUsageDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Contoso KB Chatbot")
+        self.setWindowTitle(f"Contoso KB Chatbot v{config.APP_VERSION}")
         self.resize(1100, 780)
         self.settings = settings_mod.load_settings()
         self._model_migrated = settings_mod.migrate_default_model(self.settings)
@@ -1089,7 +1089,7 @@ def _preflight_provider(provider_id: str) -> Optional[str]:
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Contoso KB Chatbot")
+    app.setApplicationName(f"Contoso KB Chatbot v{config.APP_VERSION}")
     saved = settings_mod.load_settings()
     err = _preflight_provider(saved.default_provider)
     if err:
