@@ -11,7 +11,7 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from Dev.kb_chatbot import config
 from Dev.kb_chatbot.chunker import Chunk
-from Dev.kb_chatbot.ingest import COLLECTION_NAME
+from Dev.kb_chatbot.ingest import COLLECTION_NAME, open_persistent_client
 
 log = logging.getLogger("kb_chatbot.retriever")
 
@@ -47,14 +47,21 @@ class Retriever:
         top_k_retrieve: int = config.TOP_K_RETRIEVE,
         top_k_rerank: int = config.TOP_K_RERANK,
         confidence_floor: float = config.CONFIDENCE_FLOOR,
+        embedder: Optional[SentenceTransformer] = None,
     ):
-        self.client = chromadb.PersistentClient(path=str(chroma_path))
+        self.client = open_persistent_client(chroma_path)
         self.collection = self.client.get_or_create_collection(name=COLLECTION_NAME)
-        self.embedder = SentenceTransformer(config.EMBED_MODEL)
-        self.reranker = CrossEncoder(config.RERANKER_MODEL)
+        self.embedder = embedder if embedder is not None else SentenceTransformer(config.EMBED_MODEL)
+        self._reranker: Optional[CrossEncoder] = None  # loaded lazily on first rerank
         self.top_k_retrieve = top_k_retrieve
         self.top_k_rerank = top_k_rerank
         self.confidence_floor = confidence_floor
+
+    def _get_reranker(self) -> CrossEncoder:
+        if self._reranker is None:
+            log.info("Loading reranker model (first use)...")
+            self._reranker = CrossEncoder(config.RERANKER_MODEL)
+        return self._reranker
 
     def _embed(self, text: str) -> list[float]:
         return self.embedder.encode(text, convert_to_numpy=True).tolist()
@@ -83,7 +90,7 @@ class Retriever:
             return RetrievalResult(abstain_reason="no_relevant_kb_match")
 
         pairs = [(query, c.text) for c in candidates]
-        scores = self.reranker.predict(pairs)
+        scores = self._get_reranker().predict(pairs)
         scored = sorted(zip(candidates, scores), key=lambda t: t[1], reverse=True)
         top = scored[: self.top_k_rerank]
         raw_top = float(top[0][1]) if top else -99.0
