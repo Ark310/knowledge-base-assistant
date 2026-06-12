@@ -162,7 +162,11 @@ def _handled_by(data: dict) -> list[str]:
         header = c.get("header") or ""
         if "sent to" in header.lower():
             m = _BY_SENDER.search(header)
-            if m:
+            # The case-sensitive [a-z] lead is intentional (keeps customer
+            # CamelCase display names out); guard against header-noise words so
+            # "...by email"/"...by the" don't surface as a "handled by" resource.
+            if m and m.group(1).lower() not in _STOPWORDS \
+                    and m.group(1).lower() not in {"email", "mail", "fax", "phone", "attachment"}:
                 names.append(m.group(1))
     created_by = (data.get("created_by") or "").strip().lower()
     return [n for n in _dedupe_keep_order(names) if n.lower() != created_by]
@@ -211,6 +215,7 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
     resolution_url = data.get("resolution_url", "") or data.get("url", "")
 
     safe_title = redact(raw_title, known_terms=known) or f"Ticket {ticket_id}"
+    handled = _handled_by(data)
     header = _staff_block(data)
 
     text = f"Ticket #{ticket_id} — {safe_title}"
@@ -234,7 +239,7 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
             "organization": data.get("organization", "") or "",
             "csqa_owner": data.get("csqa_owner", "") or "",
             "assignee": data.get("assignee", "") or "",
-            "handled_by": ", ".join(_handled_by(data)),
+            "handled_by": ", ".join(handled),
             "chunk_index": 0,
         },
     )]

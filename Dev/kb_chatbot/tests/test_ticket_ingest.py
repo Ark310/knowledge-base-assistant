@@ -136,3 +136,14 @@ def test_known_terms_excludes_organization():
     terms = {t.lower() for t in _known_terms(
         {"organization": "Litware", "created_by": "", "assignee": "", "comments": []})}
     assert "litware" not in terms
+
+
+def test_handled_by_ignores_header_noise(tmp_path):
+    from Dev.kb_chatbot.ticket_ingest import _handled_by
+    data, p = _ticket(tmp_path, [
+        {"type": "unknown", "header": "email 9 sent to A Customer <c@x.com> by email on 2023-01-01"},
+        {"type": "comment", "author": "jchen", "body": "done"},
+    ])
+    h = _handled_by(data)
+    assert "email" not in [x.lower() for x in h]
+    assert "jchen" in h
