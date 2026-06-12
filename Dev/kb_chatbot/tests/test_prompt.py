@@ -95,4 +95,8 @@ def test_system_prompt_has_ticket_rule():
     from Dev.kb_chatbot.prompt import build_system_prompt
     p = build_system_prompt().lower()
     assert "ticket" in p
-    assert "never include customer" in p or "no customer" in p
+    # internal tool: customer PERSONAL contact details still protected
+    assert "customer" in p and ("personal" in p or "contact details" in p)
+    # resourcing + escalation wording present
+    assert "csqa owner" in p
+    assert "team lead" in p or "senior resource" in p
