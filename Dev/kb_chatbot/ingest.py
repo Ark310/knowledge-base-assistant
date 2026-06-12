@@ -34,6 +34,13 @@ class IngestCancelled(Exception):
     """Raised inside ingest() when should_cancel() returns True."""
 
 
+class IngestSourceEmpty(Exception):
+    """Raised when the configured source folder has no KB or ticket files. A
+    reindex would otherwise wipe a populated index; instead we abort BEFORE any
+    delete and leave the existing index untouched (e.g. the shipped exe has no
+    library beside it — the user must point Settings at the real source folder)."""
+
+
 @dataclass
 class IngestReport:
     articles_seen: int = 0          # KB articles added/changed this run
@@ -162,18 +169,13 @@ def ingest(
 
     try:
         model = embedder if embedder is not None else SentenceTransformer(config.EMBED_MODEL)
-
         manifest = _load_manifest(chroma_path)
-        model_changed = manifest.get("embed_model") not in ("", config.EMBED_MODEL)
-        if force_rebuild or model_changed:
-            ids = collection.get(include=[]).get("ids", [])
-            for i in range(0, len(ids), DELETE_BATCH):
-                collection.delete(ids=ids[i:i + DELETE_BATCH])
-            manifest = {"version": 1, "embed_model": config.EMBED_MODEL, "files": {}}
-        manifest["embed_model"] = config.EMBED_MODEL
-        files = manifest["files"]
 
-        # -- Scan --------------------------------------------------------------
+        # -- Scan FIRST --------------------------------------------------------
+        # Scan the source BEFORE clearing anything. A reindex must never destroy a
+        # populated index when the configured source folder is missing or empty
+        # (e.g. the shipped exe with no library beside it). So the empty-source
+        # guard runs ahead of the force-rebuild / embed-model-change delete below.
         emit({"stage": "scan", "message": "Scanning sources...",
               "current": None, "total": None, "counts": {}})
         kb_files = _gather_article_jsons(kb_root)
@@ -183,10 +185,26 @@ def ingest(
                          f"Tickets {tickets_root}: {len(ticket_files)} files",
               "current": None, "total": None,
               "counts": {"kb_files": len(kb_files), "ticket_files": len(ticket_files)}})
+        if not kb_files and not ticket_files:
+            msg = (f"No source files found. KB root: {kb_root} | Tickets: {tickets_root}. "
+                   f"Index left unchanged — set the knowledge-base source folder in Settings.")
+            emit({"stage": "error", "message": msg,
+                  "current": None, "total": None, "counts": {}})
+            raise IngestSourceEmpty(msg)
         if not ticket_files:
             emit({"stage": "scan",
                   "message": f"WARNING: 0 ticket files found at {tickets_root}",
                   "current": None, "total": None, "counts": {}})
+
+        # -- Now safe to clear for a full rebuild / embed-model change ---------
+        model_changed = manifest.get("embed_model") not in ("", config.EMBED_MODEL)
+        if force_rebuild or model_changed:
+            ids = collection.get(include=[]).get("ids", [])
+            for i in range(0, len(ids), DELETE_BATCH):
+                collection.delete(ids=ids[i:i + DELETE_BATCH])
+            manifest = {"version": 1, "embed_model": config.EMBED_MODEL, "files": {}}
+        manifest["embed_model"] = config.EMBED_MODEL
+        files = manifest["files"]
 
         current: dict[str, tuple] = {}
         for f in kb_files:

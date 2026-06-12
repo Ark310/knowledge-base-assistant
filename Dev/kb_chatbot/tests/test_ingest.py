@@ -166,6 +166,30 @@ def test_tickets_indexed_via_explicit_path(tmp_path):
     client.close()
 
 
+def test_reindex_refuses_empty_source_and_keeps_index(tmp_path):
+    # A reindex pointed at a missing/empty source must NOT wipe a populated index
+    # (the exe-with-no-library data-loss bug). It must abort BEFORE any delete.
+    from Dev.kb_chatbot.ingest import IngestSourceEmpty
+    import chromadb
+    lib = tmp_path / "kb"
+    _write_article(lib / "api", "a.json", "A")
+    chroma = tmp_path / "chroma"
+    r1 = ingest(lib, chroma)
+    assert r1.total_chunks >= 1
+
+    empty = tmp_path / "empty_root"
+    empty.mkdir()
+    try:
+        ingest(empty, chroma, force_rebuild=True)  # force-rebuild + empty source
+        assert False, "expected IngestSourceEmpty"
+    except IngestSourceEmpty:
+        pass
+
+    client = chromadb.PersistentClient(path=str(chroma))
+    assert client.get_collection("kbs").count() == r1.total_chunks  # index untouched
+    client.close()
+
+
 def test_event_stages_emitted(tmp_path):
     lib = tmp_path / "kb"
     _write_article(lib / "api", "a.json", "A")

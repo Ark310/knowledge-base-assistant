@@ -37,13 +37,12 @@ from PySide6.QtWidgets import (
 )
 
 from Dev.kb_chatbot import config, settings as settings_mod
-from Dev.kb_chatbot.chat.query_rewriter import make_rewriter
-from Dev.kb_chatbot.chat.orchestrator import Deps, handle_turn
 from Dev.kb_chatbot.chat.session import Session, Turn
-from Dev.kb_chatbot.ingest import ingest, IngestCancelled
-from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeProvider, ClaudeCodeNotFoundError
-from Dev.kb_chatbot.llm.codex_provider import CodexProvider, CodexNotFoundError, codex_login_ok
-from Dev.kb_chatbot.retriever import Retriever, Filters
+# NOTE: retriever / ingest / chat.orchestrator / chat.query_rewriter / llm providers
+# pull in torch + transformers + sentence_transformers + chromadb + the Claude SDK —
+# ~40s of imports. They are imported LAZILY inside the worker threads / handlers below
+# so the main window paints within a few seconds and ALL heavy work happens in the
+# background InitWorker. Do NOT promote any of these to a top-level import.
 
 config.STATE_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
@@ -78,9 +77,12 @@ REPHRASE_TEXT = "Rephrasing your question for a better search"
 
 
 def build_provider(provider_id: str):
-    """Construct the LLM provider for the given provider id."""
+    """Construct the LLM provider for the given provider id. Imports are local so
+    the heavy provider modules load lazily, not at GUI import time."""
     if provider_id == "openai":
+        from Dev.kb_chatbot.llm.codex_provider import CodexProvider
         return CodexProvider()
+    from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeProvider
     return ClaudeCodeProvider()
 
 
@@ -117,6 +119,7 @@ class TurnWorker(QThread):
         self._cancel = True
 
     def run(self):
+        from Dev.kb_chatbot.chat.orchestrator import handle_turn
         try:
             turn = handle_turn(self.user_msg, self.session, self.filters,
                                 self.default_model, deps=self.deps)
@@ -149,6 +152,7 @@ class IngestWorker(QThread):
         self._cancel = True
 
     def run(self):
+        from Dev.kb_chatbot.ingest import ingest, IngestCancelled
         try:
             report = ingest(
                 self.library_path, self.chroma_path,
@@ -178,6 +182,11 @@ class InitWorker(QThread):
         self.settings = settings
 
     def run(self):
+        # Heavy imports happen HERE, on the background thread, so the window is
+        # already visible while torch/transformers/chromadb/the SDK load.
+        from Dev.kb_chatbot.retriever import Retriever
+        from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeProvider, ClaudeCodeNotFoundError
+        from Dev.kb_chatbot.llm.codex_provider import CodexNotFoundError
         try:
             self.status.emit("✦ Loading search models…")
             retriever = Retriever(
@@ -262,6 +271,10 @@ class SettingsDialog(QDialog):
         self.resize(560, 180)
         form = QFormLayout(self)
         self.lib_edit = QLineEdit(str(current.library_path))
+        self.lib_edit.setToolTip(
+            "Master knowledge-base source folder containing kb/ and tickets/ "
+            "(e.g. …\\Knowledge Base\\library). Answers use the shipped index until "
+            "you Reindex; Reindex reads from THIS folder and updates the index in place.")
         self.lib_btn = QPushButton("Browse…")
         self.lib_btn.clicked.connect(self._pick_dir)
         lib_row = QHBoxLayout(); lib_row.addWidget(self.lib_edit); lib_row.addWidget(self.lib_btn)
@@ -275,7 +288,7 @@ class SettingsDialog(QDialog):
         self.model_box = QComboBox()
         self._fill_models(getattr(current, "default_provider", "claude"), current.default_model)
         self.provider_box.currentIndexChanged.connect(self._on_dialog_provider_changed)
-        form.addRow("Library path:", lib_w)
+        form.addRow("KB source folder:", lib_w)
         form.addRow("Default AI provider:", self.provider_box)
         form.addRow("Default model:", self.model_box)
         self.usage_btn = QPushButton("View Token Usage…")
@@ -871,6 +884,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_provider_changed(self, _index: int):
+        from Dev.kb_chatbot.llm.codex_provider import codex_login_ok
         provider_id = self.provider_box.currentData()
         self._populate_model_box(provider_id)
         display = config.PROVIDERS[provider_id]["display"]
@@ -889,6 +903,11 @@ class MainWindow(QMainWindow):
                      "#6a1b9a", "PROVIDER:")
 
     def _send(self):
+        from Dev.kb_chatbot.llm.codex_provider import codex_login_ok, CodexNotFoundError
+        from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeNotFoundError
+        from Dev.kb_chatbot.chat.orchestrator import Deps
+        from Dev.kb_chatbot.chat.query_rewriter import make_rewriter
+        from Dev.kb_chatbot.retriever import Filters
         if self._retriever is None:
             # Send doubles as "Retry init" after a failed initialisation
             if self.send_btn.text() == "Retry init":
@@ -1137,10 +1156,14 @@ class MainWindow(QMainWindow):
         self._last_assistant_turn = None
         self._feedback_bar.setVisible(False)
         self._correction_panel.setVisible(False)
-        try:
-            ClaudeCodeProvider.reset_conversation()
-        except Exception:
-            log.exception("LLM conversation reset failed (non-fatal)")
+        # Only reset if the Claude provider was actually loaded this session —
+        # don't import the SDK just to clear chat when using ChatGPT.
+        _ccp = sys.modules.get("Dev.kb_chatbot.llm.claude_code_provider")
+        if _ccp is not None:
+            try:
+                _ccp.ClaudeCodeProvider.reset_conversation()
+            except Exception:
+                log.exception("LLM conversation reset failed (non-fatal)")
 
     def _open_logs(self):
         import subprocess
@@ -1187,15 +1210,18 @@ class MainWindow(QMainWindow):
             self.session.save(config.CHATS_DIR)
         except Exception:
             log.exception("Session save failed on close")
-        try:
-            ClaudeCodeProvider.shutdown()
-        except Exception:
-            log.exception("ClaudeCodeProvider shutdown failed")
+        _ccp = sys.modules.get("Dev.kb_chatbot.llm.claude_code_provider")
+        if _ccp is not None:
+            try:
+                _ccp.ClaudeCodeProvider.shutdown()
+            except Exception:
+                log.exception("ClaudeCodeProvider shutdown failed")
         event.accept()
 
 
 def _preflight_provider(provider_id: str) -> Optional[str]:
     if provider_id == "openai":
+        from Dev.kb_chatbot.llm.codex_provider import codex_login_ok
         if codex_login_ok():
             return None
         return ("Codex CLI is required for ChatGPT.\n\n"
