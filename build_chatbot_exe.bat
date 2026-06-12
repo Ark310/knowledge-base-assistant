@@ -10,7 +10,7 @@ if errorlevel 1 (
     exit /b 1
 )
 echo.
-echo Build complete. Artifact: dist\ContosoKBChatbot-v2.7\ContosoKBChatbot-v2.7.exe  (distribute the whole ContosoKBChatbot-v2.7 folder).
+echo Build complete. Artifact: dist\ContosoKBChatbot-v2.8\ContosoKBChatbot-v2.8.exe  (distribute the whole ContosoKBChatbot-v2.8 folder).
 pause
 popd
 endlocal
