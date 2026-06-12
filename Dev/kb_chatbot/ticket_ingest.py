@@ -57,8 +57,11 @@ _STOPWORDS = {
 
 def _known_terms(data: dict) -> list[str]:
     """Collect all person/org names that should be redacted from this ticket."""
+    # v2.8: organization is intentionally NOT redacted — this is an internal tool and
+    # the client company name is surfaced (also in the structured header). created_by +
+    # assignee stay so personal names in the body are still stripped; the surfaced
+    # team/client come from _staff_block (fields), not the redacted body.
     terms: list[str] = [
-        data.get("organization", "") or "",
         data.get("created_by", "") or "",
         data.get("assignee", "") or "",
     ]
@@ -134,11 +137,67 @@ def _problem_text(data: dict, known: list[str]) -> str:
     return redact(data.get("title", "") or "", known_terms=known)
 
 
-def build_ticket_chunks(data: dict, path) -> list[Chunk]:
-    """Return a list of at most one Chunk for the given ticket dict.
+_BY_SENDER = re.compile(r"\bby\s+([a-z][\w.\-]+)")  # "...sent to <customer> by mlopez"
 
-    Skips tickets with no usable internal resolution comment. The chunk url
-    metadata equals resolution_url so the existing citation validator works."""
+
+def _dedupe_keep_order(values) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in values:
+        v = (v or "").strip()
+        if v and v.lower() not in seen:
+            seen.add(v.lower())
+            out.append(v)
+    return out
+
+
+def _handled_by(data: dict) -> list[str]:
+    """Internal staff who worked the ticket: comment authors + the 'by <user>'
+    sender on outbound (sent-to) email headers. Excludes created_by, which is
+    often the external requester."""
+    names: list[str] = []
+    for c in data.get("comments", []):
+        if c.get("type") == "comment" and c.get("author"):
+            names.append(str(c["author"]))
+        header = c.get("header") or ""
+        if "sent to" in header.lower():
+            m = _BY_SENDER.search(header)
+            if m:
+                names.append(m.group(1))
+    created_by = (data.get("created_by") or "").strip().lower()
+    return [n for n in _dedupe_keep_order(names) if n.lower() != created_by]
+
+
+def _staff_block(data: dict) -> str:
+    """Field-derived, un-redacted team/client header. Contains only the client
+    company name + internal staff usernames — never customer-individual PII."""
+    lines: list[str] = []
+    org = (data.get("organization") or "").strip()
+    if org:
+        lines.append(f"Client: {org}")
+    parts: list[str] = []
+    owner = (data.get("csqa_owner") or "").strip()
+    if owner:
+        parts.append(f"CSQA owner: {owner}")
+    assignee = (data.get("assignee") or "").strip()
+    if assignee:
+        parts.append(f"Assignee: {assignee}")
+    qa = _dedupe_keep_order([data.get("sqa_assignee"), data.get("site1_qa_signoff"),
+                             data.get("site2_qa_signoff")])
+    if qa:
+        parts.append("QA sign-off: " + ", ".join(qa))
+    handled = _handled_by(data)
+    if handled:
+        parts.append("Handled by: " + ", ".join(handled))
+    if parts:
+        lines.append(" · ".join(parts))
+    return "\n".join(lines)
+
+
+def build_ticket_chunks(data: dict, path) -> list[Chunk]:
+    """Return at most one Chunk for the ticket. Skips tickets with no internal
+    resolution comment. The chunk carries a field-derived team/client header and
+    cites the actual ticket page (not the resolution page)."""
     known = _known_terms(data)
     resolution = _resolution_text(data, known)
     if not resolution:
@@ -148,16 +207,17 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
     raw_title = data.get("title", "") or f"Ticket {data.get('ticket_id', '')}"
     product = data.get("product", "") or "tickets"
     ticket_id = str(data.get("ticket_id", ""))
+    ticket_url = data.get("url", "") or data.get("resolution_url", "")
     resolution_url = data.get("resolution_url", "") or data.get("url", "")
 
-    # Redact title before embedding into chunk text — titles can contain org names
     safe_title = redact(raw_title, known_terms=known) or f"Ticket {ticket_id}"
+    header = _staff_block(data)
 
-    text = (
-        f"Ticket #{ticket_id}: {safe_title}\n\n"
-        f"Problem: {problem}\n\n"
-        f"Resolution: {resolution}"
-    )
+    text = f"Ticket #{ticket_id} — {safe_title}"
+    if header:
+        text += "\n" + header
+    text += f"\n\nProblem: {problem}\n\nResolution: {resolution}"
+
     cid = "ticket_" + hashlib.sha1(f"{ticket_id}:{raw_title}".encode()).hexdigest()[:16]
 
     return [Chunk(
@@ -169,8 +229,12 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
             "category": data.get("category", "") or "ticket",
             "title": f"Ticket #{ticket_id}",
             "ticket_id": ticket_id,
-            "url": resolution_url,
+            "url": ticket_url,                # v2.8: link to the ticket itself
             "resolution_url": resolution_url,
+            "organization": data.get("organization", "") or "",
+            "csqa_owner": data.get("csqa_owner", "") or "",
+            "assignee": data.get("assignee", "") or "",
+            "handled_by": ", ".join(_handled_by(data)),
             "chunk_index": 0,
         },
     )]

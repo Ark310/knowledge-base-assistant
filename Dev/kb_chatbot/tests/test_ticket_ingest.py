@@ -27,7 +27,7 @@ def test_chunk_has_problem_and_resolution(tmp_path):
     assert "FixApp session has been restarted" in c.text
     assert c.metadata["kind"] == "ticket"
     assert c.metadata["ticket_id"] == "75100"
-    assert c.metadata["url"] == data["resolution_url"]
+    assert c.metadata["url"] == data["url"]
     assert c.metadata["resolution_url"] == data["resolution_url"]
     assert c.metadata["title"] == "Ticket #75100"
 
@@ -40,10 +40,10 @@ def test_chunk_text_has_no_pii(tmp_path):
         {"type": "comment", "author": "Taylor.Brooks", "body": "Restarted the session for Fabrikam Financial"},
     ])
     c = build_ticket_chunks(data, p)[0]
-    assert "@" not in c.text
-    assert "Fabrikam Financial" not in c.text
-    assert "fabrikam" not in c.text.lower()
-    assert "Sam" not in c.text
+    assert "@" not in c.text                       # emails still stripped
+    assert "Sam" not in c.text                    # external customer personal name stripped
+    assert "fabrikam" not in c.text.lower()   # email domain stripped
+    assert "Client: Fabrikam Financial" in c.text      # client company name now surfaced
 
 
 def test_no_resolution_skipped(tmp_path):
@@ -80,9 +80,6 @@ def test_real_ticket_chunks_no_pii():
         chunks = build_ticket_chunks(data, p)
         for c in chunks:
             assert "@" not in c.text, f"{tid}: email leaked"
-            org = data.get("organization", "")
-            if org:
-                assert org not in c.text, f"{tid}: org '{org}' leaked"
 
 
 def test_resolution_not_over_redacted():
@@ -106,3 +103,36 @@ def test_known_terms_excludes_stopwords():
                                         "body": "Thanks for the update from the bank"}]})
     lows = {t.lower() for t in terms}
     assert "for" not in lows and "the" not in lows and "update" not in lows
+
+
+def test_chunk_header_surfaces_team_and_client(tmp_path):
+    data, p = _ticket(tmp_path, [
+        {"type": "unknown", "body": "prices missing, please fix"},
+        {"type": "comment", "author": "jchen", "body": "Restarted the session"},
+        {"type": "unknown",
+         "header": "email 1 sent to A Customer <c@client.com> by mlopez on 2023-01-01"},
+    ], csqa_owner="p.shah", sqa_assignee="jchen", site1_qa_signoff="jchen",
+       site2_qa_signoff="p.shah")
+    c = build_ticket_chunks(data, p)[0]
+    assert "Client: Fabrikam Financial" in c.text
+    assert "CSQA owner: p.shah" in c.text
+    assert "Assignee: Taylor.Brooks" in c.text
+    assert "Handled by:" in c.text and "jchen" in c.text and "mlopez" in c.text
+    assert c.metadata["csqa_owner"] == "p.shah"
+    assert c.metadata["organization"] == "Fabrikam Financial"
+    assert c.metadata["url"] == data["url"]
+
+
+def test_handled_by_excludes_created_by(tmp_path):
+    data, p = _ticket(tmp_path, [
+        {"type": "comment", "author": "srivera", "body": "resolved"},
+    ], created_by="srivera")
+    from Dev.kb_chatbot.ticket_ingest import _handled_by
+    assert "srivera" not in _handled_by(data)
+
+
+def test_known_terms_excludes_organization():
+    from Dev.kb_chatbot.ticket_ingest import _known_terms
+    terms = {t.lower() for t in _known_terms(
+        {"organization": "Litware", "created_by": "", "assignee": "", "comments": []})}
+    assert "litware" not in terms
