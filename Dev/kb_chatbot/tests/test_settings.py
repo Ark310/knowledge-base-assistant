@@ -119,13 +119,13 @@ def test_default_provider_round_trips():
     from Dev.kb_chatbot.settings import Settings, save_settings, load_settings
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "settings.json"
-        s = Settings(library_path=config.LIBRARY_DEFAULT, default_model="gpt-5.5",
+        s = Settings(library_path=config.LIBRARY_DEFAULT, default_model="gpt-5.4",
                      confidence_floor=config.CONFIDENCE_FLOOR,
                      default_provider="openai", model_explicitly_set=True)
         save_settings(s, p)
         loaded = load_settings(p)
         assert loaded.default_provider == "openai"
-        assert loaded.default_model == "gpt-5.5"
+        assert loaded.default_model == "gpt-5.4"
 
 
 def test_validation_resets_mismatched_model(tmp_path):
@@ -143,4 +143,4 @@ def test_validation_resets_mismatched_model(tmp_path):
     }), encoding="utf-8")
     loaded = load_settings(p)
     assert loaded.default_provider == "openai"
-    assert loaded.default_model == "gpt-5.5"  # reset to openai's default
+    assert loaded.default_model == "gpt-5.4"  # reset to openai's default

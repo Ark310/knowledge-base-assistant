@@ -246,3 +246,48 @@ def test_codex_login_ok_uses_utf8(monkeypatch):
                         lambda cmd, **kw: (captured.update(kw), _Proc())[1])
     cp.codex_login_ok()
     assert captured.get("encoding") == "utf-8"
+
+
+def test_extract_error_unwraps_nested_api_message():
+    inner = json.dumps({"type": "error",
+                        "error": {"type": "invalid_request_error",
+                                  "message": "Invalid schema for function '_search': ..."},
+                        "status": 400})
+    stdout = "\n".join([
+        json.dumps({"type": "turn.started"}),
+        json.dumps({"type": "error", "message": inner}),
+        json.dumps({"type": "turn.failed", "error": {"message": inner}}),
+    ])
+    out = cp._extract_error(stdout)
+    assert "Invalid schema for function '_search'" in out
+    assert len(out) <= 300
+
+
+def test_extract_error_empty_when_no_error_event():
+    stdout = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}})
+    assert cp._extract_error(stdout) == ""
+
+
+def test_run_codex_exec_surfaces_stdout_error_when_stderr_empty(monkeypatch):
+    # Reproduces the real codex 0.139 failure: non-zero exit, EMPTY stderr, and the
+    # actual cause only in the --json stdout stream. The error must surface — NOT
+    # the useless "no output produced".
+    failure = json.dumps({"error": {"message": "Invalid schema for function '_search'"}})
+
+    class _Proc:
+        stdout = "\n".join([
+            json.dumps({"type": "turn.started"}),
+            json.dumps({"type": "turn.failed", "error": {"message": failure}}),
+        ])
+        stderr = ""
+        returncode = 1
+
+    monkeypatch.setattr(cp.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(cp.subprocess, "run", lambda *a, **k: _Proc())
+    try:
+        cp._run_codex_exec("prompt", "gpt-5.4")
+        assert False, "expected CodexExecError"
+    except cp.CodexExecError as e:
+        s = str(e)
+        assert "Invalid schema for function '_search'" in s
+        assert "no output produced" not in s
