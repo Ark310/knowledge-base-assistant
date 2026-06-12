@@ -537,7 +537,9 @@ class MainWindow(QMainWindow):
         # Window shows immediately; models + LLM warm-up load in background
         self._set_chat_enabled(False)
         self._init_thinking = ThinkingIndicator()
-        self.statusBar().addWidget(self._init_thinking)
+        # Permanent (right side) so the temporary "Log: …" status message never
+        # contends with / overlaps the loading indicator while the app warms up.
+        self.statusBar().addPermanentWidget(self._init_thinking)
         self._init_thinking.start(INIT_WORDS)
         self.input.setPlaceholderText("Getting ready — one moment…")
         self._start_init_worker()
