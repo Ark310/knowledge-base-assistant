@@ -72,7 +72,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon=None,
+    icon="contoso.ico",
 )
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
