@@ -1,5 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+import re as _re
+_cfg_src = open("Dev/kb_chatbot/config.py", encoding="utf-8").read()
+_vm = _re.search(r'APP_VERSION\s*=\s*"([^"]+)"', _cfg_src)
+VERSION = _vm.group(1) if _vm else "0.0"
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("PySide6", "sentence_transformers", "chromadb", "claude_agent_sdk", "markdown"):
@@ -62,15 +66,15 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="ContosoKBChatbot",
+    name=f"ContosoKBChatbot-v{VERSION}",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     console=False,
-    icon=None,
+    icon="contoso.ico",
 )
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
-    strip=False, upx=False, name="ContosoKBChatbot",
+    strip=False, upx=False, name=f"ContosoKBChatbot-v{VERSION}",
 )

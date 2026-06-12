@@ -1,4 +1,4 @@
-"""V2.6 KB Chatbot GUI. No API key. Provider preflight on startup. One-folder offline build."""
+"""V2.7 KB Chatbot GUI. No API key. Provider preflight on startup. One-folder offline build."""
 from __future__ import annotations
 import sys
 import os
@@ -33,17 +33,16 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QTextBrowser, QLineEdit, QToolBar,
     QStatusBar, QMessageBox, QDialog, QDialogButtonBox, QFormLayout,
     QFileDialog, QProgressBar, QPlainTextEdit, QInputDialog,
-    QTableWidget, QTableWidgetItem,
+    QTableWidget, QTableWidgetItem, QCheckBox,
 )
 
 from Dev.kb_chatbot import config, settings as settings_mod
-from Dev.kb_chatbot.chat.query_rewriter import make_rewriter
-from Dev.kb_chatbot.chat.orchestrator import Deps, handle_turn
 from Dev.kb_chatbot.chat.session import Session, Turn
-from Dev.kb_chatbot.ingest import ingest
-from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeProvider, ClaudeCodeNotFoundError
-from Dev.kb_chatbot.llm.codex_provider import CodexProvider, CodexNotFoundError, codex_login_ok
-from Dev.kb_chatbot.retriever import Retriever, Filters
+# NOTE: retriever / ingest / chat.orchestrator / chat.query_rewriter / llm providers
+# pull in torch + transformers + sentence_transformers + chromadb + the Claude SDK —
+# ~40s of imports. They are imported LAZILY inside the worker threads / handlers below
+# so the main window paints within a few seconds and ALL heavy work happens in the
+# background InitWorker. Do NOT promote any of these to a top-level import.
 
 config.STATE_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
@@ -78,9 +77,12 @@ REPHRASE_TEXT = "Rephrasing your question for a better search"
 
 
 def build_provider(provider_id: str):
-    """Construct the LLM provider for the given provider id."""
+    """Construct the LLM provider for the given provider id. Imports are local so
+    the heavy provider modules load lazily, not at GUI import time."""
     if provider_id == "openai":
+        from Dev.kb_chatbot.llm.codex_provider import CodexProvider
         return CodexProvider()
+    from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeProvider
     return ClaudeCodeProvider()
 
 
@@ -117,6 +119,7 @@ class TurnWorker(QThread):
         self._cancel = True
 
     def run(self):
+        from Dev.kb_chatbot.chat.orchestrator import handle_turn
         try:
             turn = handle_turn(self.user_msg, self.session, self.filters,
                                 self.default_model, deps=self.deps)
@@ -131,20 +134,37 @@ class TurnWorker(QThread):
 
 
 class IngestWorker(QThread):
-    progress = Signal(int, int)
+    event = Signal(dict)
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, library_path, chroma_path):
+    def __init__(self, library_path, chroma_path, *,
+                 force_rebuild=False, embedder=None, collection=None):
         super().__init__()
         self.library_path = library_path
         self.chroma_path = chroma_path
+        self.force_rebuild = force_rebuild
+        self.embedder = embedder
+        self.collection = collection
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
 
     def run(self):
+        from Dev.kb_chatbot.ingest import ingest, IngestCancelled
         try:
-            report = ingest(self.library_path, self.chroma_path,
-                             on_progress=lambda d, t: self.progress.emit(d, t))
+            report = ingest(
+                self.library_path, self.chroma_path,
+                on_event=lambda e: self.event.emit(e),
+                force_rebuild=self.force_rebuild,
+                embedder=self.embedder,
+                collection=self.collection,
+                should_cancel=lambda: self._cancel,
+            )
             self.finished.emit(report)
+        except IngestCancelled:
+            self.failed.emit("Cancelled.")
         except Exception as exc:
             log.exception("Ingest failed")
             self.failed.emit(str(exc))
@@ -162,6 +182,11 @@ class InitWorker(QThread):
         self.settings = settings
 
     def run(self):
+        # Heavy imports happen HERE, on the background thread, so the window is
+        # already visible while torch/transformers/chromadb/the SDK load.
+        from Dev.kb_chatbot.retriever import Retriever
+        from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeProvider, ClaudeCodeNotFoundError
+        from Dev.kb_chatbot.llm.codex_provider import CodexNotFoundError
         try:
             self.status.emit("✦ Loading search models…")
             retriever = Retriever(
@@ -246,6 +271,10 @@ class SettingsDialog(QDialog):
         self.resize(560, 180)
         form = QFormLayout(self)
         self.lib_edit = QLineEdit(str(current.library_path))
+        self.lib_edit.setToolTip(
+            "Master knowledge-base source folder containing kb/ and tickets/ "
+            "(e.g. …\\Knowledge Base\\library). Answers use the shipped index until "
+            "you Reindex; Reindex reads from THIS folder and updates the index in place.")
         self.lib_btn = QPushButton("Browse…")
         self.lib_btn.clicked.connect(self._pick_dir)
         lib_row = QHBoxLayout(); lib_row.addWidget(self.lib_edit); lib_row.addWidget(self.lib_btn)
@@ -259,7 +288,7 @@ class SettingsDialog(QDialog):
         self.model_box = QComboBox()
         self._fill_models(getattr(current, "default_provider", "claude"), current.default_model)
         self.provider_box.currentIndexChanged.connect(self._on_dialog_provider_changed)
-        form.addRow("Library path:", lib_w)
+        form.addRow("KB source folder:", lib_w)
         form.addRow("Default AI provider:", self.provider_box)
         form.addRow("Default model:", self.model_box)
         self.usage_btn = QPushButton("View Token Usage…")
@@ -360,10 +389,135 @@ class TokenUsageDialog(QDialog):
         layout.addWidget(bb)
 
 
+class IndexingDialog(QDialog):
+    """Modal reindex panel: live progress bar, per-source counters, stage log."""
+
+    def __init__(self, parent, library_path, chroma_path, embedder, collection):
+        super().__init__(parent)
+        self.setWindowTitle("Reindex Knowledge Base")
+        self.resize(720, 480)
+        self._library_path = library_path
+        self._chroma_path = chroma_path
+        self._embedder = embedder
+        self._collection = collection
+        self._worker: Optional[IngestWorker] = None
+        self.report = None
+
+        layout = QVBoxLayout(self)
+        self._force_cb = QCheckBox("Force full rebuild (re-embed everything)")
+        layout.addWidget(self._force_cb)
+        self.progress = QProgressBar()
+        layout.addWidget(self.progress)
+        self._counts = QLabel("Idle. Press Start to index.")
+        self._counts.setStyleSheet("color:#555;")
+        layout.addWidget(self._counts)
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setFont(QFont("Consolas", 9))
+        layout.addWidget(self.log_view, stretch=1)
+
+        row = QHBoxLayout()
+        self._start_btn = QPushButton("Start")
+        self._cancel_btn = QPushButton("Cancel"); self._cancel_btn.setEnabled(False)
+        self._close_btn = QPushButton("Close")
+        row.addWidget(self._start_btn); row.addWidget(self._cancel_btn)
+        row.addStretch(); row.addWidget(self._close_btn)
+        layout.addLayout(row)
+
+        self._start_btn.clicked.connect(self._start)
+        self._cancel_btn.clicked.connect(self._do_cancel)
+        self._close_btn.clicked.connect(self.reject)
+
+    def _log(self, msg: str):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.log_view.appendPlainText(f"{ts}  {msg}")
+
+    def _start(self):
+        self._start_btn.setEnabled(False)
+        self._force_cb.setEnabled(False)
+        self._cancel_btn.setEnabled(True)
+        self._close_btn.setEnabled(False)
+        self.progress.setValue(0)
+        self._log("Starting reindex...")
+        self._worker = IngestWorker(
+            self._library_path, self._chroma_path,
+            force_rebuild=self._force_cb.isChecked(),
+            embedder=self._embedder, collection=self._collection)
+        self._worker.event.connect(self._on_event)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    @Slot(dict)
+    def _on_event(self, e: dict):
+        msg = e.get("message")
+        if msg:
+            self._log(msg)
+        cur, tot = e.get("current"), e.get("total")
+        if tot:
+            self.progress.setValue(int(cur * 100 / tot))
+        counts = e.get("counts") or {}
+        if counts:
+            self._counts.setText(" | ".join(f"{k}: {v}" for k, v in counts.items()))
+
+    @Slot(object)
+    def _on_finished(self, report):
+        self.report = report
+        self.progress.setValue(100)
+        self._log(f"KB root:    {report.resolved_kb_path}")
+        self._log(f"Tickets:    {report.resolved_tickets_path}")
+        self._log(f"DONE in {report.duration_s:.1f}s -- +{report.chunks_embedded} embedded, "
+                  f"-{report.chunks_deleted} removed, {report.total_chunks} total | "
+                  f"{report.articles_seen} articles, {report.tickets_seen} tickets changed, "
+                  f"{report.unchanged_files} unchanged")
+        self._cancel_btn.setEnabled(False)
+        self._close_btn.setEnabled(True)
+
+    @Slot(str)
+    def _on_failed(self, err: str):
+        self._log(f"FAILED: {err}")
+        self._start_btn.setEnabled(True)
+        self._force_cb.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        self._close_btn.setEnabled(True)
+
+    def _do_cancel(self):
+        if self._worker:
+            self._worker.cancel()
+            self._log("Cancelling after the current batch...")
+
+    def _worker_active(self) -> bool:
+        return self._worker is not None and self._worker.isRunning()
+
+    def reject(self):
+        # Esc and the window [X] both route here. Tearing the dialog down while
+        # the IngestWorker QThread is still running would destroy a live thread
+        # (crash / "QThread: Destroyed while thread is still running"), so while a
+        # run is active we cancel cooperatively and stay open until it unwinds and
+        # re-enables Close. When nothing is running, join the worker then close.
+        if self._worker_active():
+            self._worker.cancel()
+            self._log("Cancelling after the current batch...")
+            return
+        if self._worker is not None:
+            self._worker.wait(5000)
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._worker_active():
+            self._worker.cancel()
+            self._log("Cancelling after the current batch...")
+            event.ignore()
+            return
+        if self._worker is not None:
+            self._worker.wait(5000)
+        event.accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Contoso KB Chatbot")
+        self.setWindowTitle(f"Contoso KB Chatbot v{config.APP_VERSION}")
         self.resize(1100, 780)
         self.settings = settings_mod.load_settings()
         self._model_migrated = settings_mod.migrate_default_model(self.settings)
@@ -372,7 +526,6 @@ class MainWindow(QMainWindow):
         self._session_start_ts = datetime.now().isoformat()
         self.session = Session.new()
         self.worker: Optional[TurnWorker] = None
-        self.ingest_worker: Optional[IngestWorker] = None
         self._retriever: Optional[Retriever] = None
         self._today_queries = 0
         self._today_tokens = 0
@@ -384,7 +537,9 @@ class MainWindow(QMainWindow):
         # Window shows immediately; models + LLM warm-up load in background
         self._set_chat_enabled(False)
         self._init_thinking = ThinkingIndicator()
-        self.statusBar().addWidget(self._init_thinking)
+        # Permanent (right side) so the temporary "Log: …" status message never
+        # contends with / overlaps the loading indicator while the app warms up.
+        self.statusBar().addPermanentWidget(self._init_thinking)
         self._init_thinking.start(INIT_WORDS)
         self.input.setPlaceholderText("Getting ready — one moment…")
         self._start_init_worker()
@@ -731,6 +886,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_provider_changed(self, _index: int):
+        from Dev.kb_chatbot.llm.codex_provider import codex_login_ok
         provider_id = self.provider_box.currentData()
         self._populate_model_box(provider_id)
         display = config.PROVIDERS[provider_id]["display"]
@@ -749,6 +905,11 @@ class MainWindow(QMainWindow):
                      "#6a1b9a", "PROVIDER:")
 
     def _send(self):
+        from Dev.kb_chatbot.llm.codex_provider import codex_login_ok, CodexNotFoundError
+        from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeNotFoundError
+        from Dev.kb_chatbot.chat.orchestrator import Deps
+        from Dev.kb_chatbot.chat.query_rewriter import make_rewriter
+        from Dev.kb_chatbot.retriever import Filters
         if self._retriever is None:
             # Send doubles as "Retry init" after a failed initialisation
             if self.send_btn.text() == "Retry init":
@@ -997,10 +1158,14 @@ class MainWindow(QMainWindow):
         self._last_assistant_turn = None
         self._feedback_bar.setVisible(False)
         self._correction_panel.setVisible(False)
-        try:
-            ClaudeCodeProvider.reset_conversation()
-        except Exception:
-            log.exception("LLM conversation reset failed (non-fatal)")
+        # Only reset if the Claude provider was actually loaded this session —
+        # don't import the SDK just to clear chat when using ChatGPT.
+        _ccp = sys.modules.get("Dev.kb_chatbot.llm.claude_code_provider")
+        if _ccp is not None:
+            try:
+                _ccp.ClaudeCodeProvider.reset_conversation()
+            except Exception:
+                log.exception("LLM conversation reset failed (non-fatal)")
 
     def _open_logs(self):
         import subprocess
@@ -1008,37 +1173,17 @@ class MainWindow(QMainWindow):
         subprocess.Popen(["explorer.exe", str(config.STATE_DIR)])
 
     def _reindex(self):
-        if self.ingest_worker:
-            return
-        self.progress.setVisible(True); self.progress.setValue(0)
-        self._set_inputs_enabled(False)
-        self.ingest_worker = IngestWorker(self.settings.library_path, config.CHROMA_DIR)
-        self.ingest_worker.progress.connect(self._on_ingest_progress)
-        self.ingest_worker.finished.connect(self._on_ingest_done)
-        self.ingest_worker.failed.connect(self._on_ingest_failed)
-        self.ingest_worker.start()
-        self._append("system", f"Reindex started from {self.settings.library_path}", "#1b5e20", "SYSTEM:")
-
-    @Slot(int, int)
-    def _on_ingest_progress(self, done, total):
-        if total:
-            self.progress.setValue(int(done * 100 / total))
-
-    @Slot(object)
-    def _on_ingest_done(self, report):
-        self.progress.setVisible(False)
-        self._append("system",
-            f"Reindex complete: {report.articles_seen} articles, {report.chunks_created} chunks, {report.duration_s:.1f}s",
-            "#1b5e20", "SYSTEM:")
-        self.ingest_worker = None
-        self._set_inputs_enabled(True)
-
-    @Slot(str)
-    def _on_ingest_failed(self, err):
-        self.progress.setVisible(False)
-        self._append("system", f"Reindex failed: {err}", "#c62828", "ERROR:")
-        self.ingest_worker = None
-        self._set_inputs_enabled(True)
+        collection = self._retriever.collection if self._retriever else None
+        embedder = self._retriever.embedder if self._retriever else None
+        dlg = IndexingDialog(self, self.settings.library_path, config.CHROMA_DIR,
+                             embedder, collection)
+        dlg.exec()
+        if dlg.report is not None:
+            self._append("system",
+                f"Reindex: +{dlg.report.chunks_embedded} embedded, "
+                f"{dlg.report.total_chunks} total ({dlg.report.articles_seen} articles, "
+                f"{dlg.report.tickets_seen} tickets) in {dlg.report.duration_s:.1f}s",
+                "#1b5e20", "SYSTEM:")
 
     def _set_inputs_enabled(self, enabled: bool):
         if self._retriever is not None:  # chat stays locked until init completes
@@ -1048,7 +1193,7 @@ class MainWindow(QMainWindow):
         self._act_stop.setEnabled(not enabled)
 
     def closeEvent(self, event):
-        if self.worker or self.ingest_worker:
+        if self.worker:
             reply = QMessageBox.question(self, "Quit?",
                 "A task is running. Quit anyway?",
                 QMessageBox.Yes | QMessageBox.No)
@@ -1067,15 +1212,18 @@ class MainWindow(QMainWindow):
             self.session.save(config.CHATS_DIR)
         except Exception:
             log.exception("Session save failed on close")
-        try:
-            ClaudeCodeProvider.shutdown()
-        except Exception:
-            log.exception("ClaudeCodeProvider shutdown failed")
+        _ccp = sys.modules.get("Dev.kb_chatbot.llm.claude_code_provider")
+        if _ccp is not None:
+            try:
+                _ccp.ClaudeCodeProvider.shutdown()
+            except Exception:
+                log.exception("ClaudeCodeProvider shutdown failed")
         event.accept()
 
 
 def _preflight_provider(provider_id: str) -> Optional[str]:
     if provider_id == "openai":
+        from Dev.kb_chatbot.llm.codex_provider import codex_login_ok
         if codex_login_ok():
             return None
         return ("Codex CLI is required for ChatGPT.\n\n"
@@ -1089,7 +1237,7 @@ def _preflight_provider(provider_id: str) -> Optional[str]:
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Contoso KB Chatbot")
+    app.setApplicationName(f"Contoso KB Chatbot v{config.APP_VERSION}")
     saved = settings_mod.load_settings()
     err = _preflight_provider(saved.default_provider)
     if err:

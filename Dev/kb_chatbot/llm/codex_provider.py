@@ -73,7 +73,8 @@ def codex_login_ok() -> bool:
         return False
     try:
         r = subprocess.run(_codex_argv(["login", "status"]),
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=10)
     except Exception:
         return False
     _login_ok_cache = r.returncode == 0
@@ -162,6 +163,36 @@ def _extract_agent_message(stdout: str) -> str:
     return text
 
 
+def _extract_error(stdout: str) -> str:
+    """Pull a concise failure reason from codex --json stdout. codex reports turn
+    failures as {"type":"error",...} / {"type":"turn.failed","error":{...}} events
+    on STDOUT (not stderr), so a non-zero exit usually has an EMPTY stderr and the
+    real cause lives here. The event message is often itself a JSON blob with a
+    nested error.message — unwrap it. Returns '' if no error event is present."""
+    msg = ""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        t = ev.get("type")
+        if t == "error":
+            msg = ev.get("message", "") or msg
+        elif t == "turn.failed":
+            msg = (ev.get("error", {}) or {}).get("message", "") or msg
+    try:
+        inner = json.loads(msg)
+        if isinstance(inner, dict):
+            nested = (inner.get("error", {}) or {}).get("message")
+            msg = nested or inner.get("message") or msg
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return msg.strip()[:300]
+
+
 def _run_codex_exec(prompt: str, model: str,
                     image_paths: Optional[list[str]] = None) -> tuple[str, int, int]:
     """Run one `codex exec` and return (text, input_tokens, output_tokens).
@@ -178,7 +209,8 @@ def _run_codex_exec(prompt: str, model: str,
     cmd = _codex_argv(args)  # resolves the exe + wraps Windows .CMD shims
     try:
         proc = subprocess.run(cmd, input=prompt, capture_output=True,
-                              text=True, timeout=CODEX_TIMEOUT_S)
+                              encoding="utf-8", errors="replace",
+                              timeout=CODEX_TIMEOUT_S)
         try:
             with open(out_path, "r", encoding="utf-8") as fh:
                 text = fh.read().strip()
@@ -190,11 +222,10 @@ def _run_codex_exec(prompt: str, model: str,
 
         if proc.returncode != 0 or not text:
             stderr_tail = (proc.stderr or "").strip()[:300]
-            log.warning("codex exec failed: rc=%s stderr=%s", proc.returncode, stderr_tail)
-            raise CodexExecError(
-                f"codex exec failed (rc={proc.returncode}): "
-                f"{stderr_tail or 'no output produced'}"
-            )
+            api_err = _extract_error(proc.stdout)  # codex puts turn errors on stdout, not stderr
+            detail = stderr_tail or api_err or "no output produced"
+            log.warning("codex exec failed: rc=%s detail=%s", proc.returncode, detail)
+            raise CodexExecError(f"codex exec failed (rc={proc.returncode}): {detail}")
 
         if not tin and not tout:
             tin = max(1, len(prompt) // 4)

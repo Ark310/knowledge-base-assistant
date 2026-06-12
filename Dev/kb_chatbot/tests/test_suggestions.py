@@ -67,7 +67,7 @@ from Dev.kb_chatbot.retriever import Retriever, Filters
 
 def _make_retriever_with_mock_chroma(chunks):
     """Build a Retriever with mocked ChromaDB and embedding models."""
-    with patch("Dev.kb_chatbot.retriever.chromadb.PersistentClient"), \
+    with patch("Dev.kb_chatbot.retriever.open_persistent_client"), \
          patch("Dev.kb_chatbot.retriever.SentenceTransformer"), \
          patch("Dev.kb_chatbot.retriever.CrossEncoder"):
         r = Retriever(Path("fake_chroma"))

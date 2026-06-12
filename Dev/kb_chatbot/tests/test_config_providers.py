@@ -22,8 +22,10 @@ def test_every_model_has_cost_and_display():
 
 
 def test_openai_models_present():
+    # Only gpt-5.4 works over Codex 0.139 with a ChatGPT account; gpt-5.5 and
+    # gpt-5.4-mini 400 on the built-in `_search` tool schema. See config.PROVIDERS.
     ids = set(config.PROVIDERS["openai"]["models"].values())
-    assert ids == {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}
+    assert ids == {"gpt-5.4"}
 
 
 def test_openai_costs():
@@ -38,12 +40,12 @@ def test_models_for():
 
 
 def test_default_model_for():
-    assert config.default_model_for("openai") == "gpt-5.5"
+    assert config.default_model_for("openai") == "gpt-5.4"
     assert config.default_model_for("claude") == "claude-sonnet-4-6"
 
 
 def test_provider_of_model():
-    assert config.provider_of_model("gpt-5.4-mini") == "openai"
+    assert config.provider_of_model("gpt-5.4") == "openai"
     assert config.provider_of_model("claude-sonnet-4-6") == "claude"
     assert config.provider_of_model("mystery") is None
 

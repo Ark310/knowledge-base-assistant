@@ -1,8 +1,12 @@
-"""V2.6 static defaults + freeze-aware paths + provider registry + tickets. No persisted settings live here."""
+"""V2.7 static defaults + freeze-aware paths + provider registry + tickets. No persisted settings live here."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 import sys
+
+# Single source of truth for the app version. Surfaced in the window title and
+# the exe filename (read by ContosoKBChatbot.spec). Bump here only.
+APP_VERSION = "2.7"
 
 # ── Freeze-aware base paths ───────────────────────────────────────────────────
 if getattr(sys, "frozen", False):
@@ -37,11 +41,15 @@ PROVIDERS = {
     },
     "openai": {
         "display": "ChatGPT",
-        "default_model": "gpt-5.5",
+        # Codex CLI 0.139 injects a built-in `_search` tool whose parameter schema
+        # has a top-level anyOf. gpt-5.5 and gpt-5.4-mini enforce strict
+        # function-schema validation and reject it with HTTP 400 ("Invalid schema
+        # for function '_search'"), so the turn fails before any output. gpt-5.4
+        # accepts the same tool set, so it is the only ChatGPT model that works over
+        # Codex today. Re-add the others once Codex ships a valid tool schema.
+        "default_model": "gpt-5.4",
         "models": {
-            "GPT-5.5 (smartest)":  "gpt-5.5",
-            "GPT-5.4 (mid)":       "gpt-5.4",
-            "GPT-5.4-mini (fast)": "gpt-5.4-mini",
+            "GPT-5.4": "gpt-5.4",
         },
     },
 }
