@@ -26,6 +26,7 @@ COLLECTION_NAME = "kbs"
 BATCH_SIZE = 64
 DELETE_BATCH = 256
 MANIFEST_NAME = "index_manifest.json"
+CHUNK_SCHEMA_VERSION = 2  # bump when ticket/article chunk text or metadata layout changes -> forces a clean re-embed
 
 OnEvent = Callable[[dict], None]
 
@@ -196,14 +197,18 @@ def ingest(
                   "message": f"WARNING: 0 ticket files found at {tickets_root}",
                   "current": None, "total": None, "counts": {}})
 
-        # -- Now safe to clear for a full rebuild / embed-model change ---------
+        # -- Now safe to clear for a full rebuild / embed-model / schema change -
         model_changed = manifest.get("embed_model") not in ("", config.EMBED_MODEL)
-        if force_rebuild or model_changed:
+        schema_changed = bool(manifest.get("files")) and \
+            manifest.get("chunk_schema_version") != CHUNK_SCHEMA_VERSION
+        if force_rebuild or model_changed or schema_changed:
             ids = collection.get(include=[]).get("ids", [])
             for i in range(0, len(ids), DELETE_BATCH):
                 collection.delete(ids=ids[i:i + DELETE_BATCH])
-            manifest = {"version": 1, "embed_model": config.EMBED_MODEL, "files": {}}
+            manifest = {"version": 1, "embed_model": config.EMBED_MODEL,
+                        "chunk_schema_version": CHUNK_SCHEMA_VERSION, "files": {}}
         manifest["embed_model"] = config.EMBED_MODEL
+        manifest["chunk_schema_version"] = CHUNK_SCHEMA_VERSION
         files = manifest["files"]
 
         current: dict[str, tuple] = {}
