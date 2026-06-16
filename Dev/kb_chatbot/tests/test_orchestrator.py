@@ -144,6 +144,60 @@ def test_low_confidence_answer_appends_footer_when_suggestions_exist(deps_factor
     assert "https://help.contoso.example/related" in turn.content
 
 
+def test_followup_carries_focus_and_id_lookup():
+    """Reproduces the v2.8 continuity bug: after answering from ticket #75919,
+    a resourcing follow-up ('who works on these / which client') must keep #75919
+    in context (carried), and a bare 'ticket 75919' must pin it by ticket_id."""
+    from Dev.kb_chatbot.chat.orchestrator import handle_turn, Deps
+    from Dev.kb_chatbot.chat.session import Session
+    from Dev.kb_chatbot.chunker import Chunk
+    from Dev.kb_chatbot.retriever import Filters, RetrievalResult
+    from Dev.kb_chatbot.llm.fake_provider import FakeProvider
+
+    ticket = Chunk(
+        id="ticket_focus", text=(
+            "Ticket #75919 — GetWebDeal missing buy amount\n"
+            "Client: Acme · CSQA owner: p.shah · Assignee: jchen\n\n"
+            "Problem: buy amount null\n\nResolution: updated the value"),
+        metadata={"kind": "ticket", "product": "tradedesk", "title": "Ticket #75919",
+                  "ticket_id": "75919", "category": "api",
+                  "url": "https://support.contoso.example/edit_bug.aspx?id=75919"})
+
+    class FakeRetriever:
+        def retrieve(self, query, filters):
+            q = query.lower()
+            if "buy amount" in q or "getwebdeal" in q:
+                return RetrievalResult(chunks=[ticket], rerank_top_score=0.9)
+            return RetrievalResult(chunks=[], abstain_reason="no_relevant_kb_match",
+                                   rerank_top_score=0.05)
+        def get_by_ids(self, ids):
+            return [ticket] if "ticket_focus" in ids else []
+        def get_by_ticket_ids(self, tids):
+            return [ticket] if "75919" in [str(t) for t in tids] else []
+        def retrieve_quick(self, query, limit=10):
+            return []
+        def suggest(self, query, top_k=5):
+            return []
+
+    cite = "[Ticket #75919](https://support.contoso.example/edit_bug.aspx?id=75919)"
+    d = Deps(retriever=FakeRetriever(), llm=FakeProvider(canned_text=f"ok {cite}"))
+    s = Session.new()
+
+    t1 = handle_turn("TD GetWebDeal did not return any buy amount, solution?",
+                     s, Filters(), "claude-haiku-4-5-20251001", deps=d)
+    assert t1.kind == "answer"
+    assert "ticket_focus" in t1.retrieved_ids
+
+    t2 = handle_turn("Who usually works on these tickets and which client did this occur at?",
+                     s, Filters(), "claude-haiku-4-5-20251001", deps=d)
+    assert t2.kind == "answer", f"carry should keep #75919 in context, got {t2.kind}"
+    assert "ticket_focus" in t2.retrieved_ids
+
+    t3 = handle_turn("ticket 75919", s, Filters(), "claude-haiku-4-5-20251001", deps=d)
+    assert t3.kind == "answer", f"ID pin should surface #75919, got {t3.kind}"
+    assert "ticket_focus" in t3.retrieved_ids
+
+
 def test_high_confidence_answer_no_footer(deps_factory):
     """Answer with rerank_top_score >= LOW_CONFIDENCE_CEILING → no footer."""
     d, _ = deps_factory(0.0, "You book a spot deal via the dealing screen.",
