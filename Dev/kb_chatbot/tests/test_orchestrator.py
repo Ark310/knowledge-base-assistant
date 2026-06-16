@@ -198,6 +198,80 @@ def test_followup_carries_focus_and_id_lookup():
     assert "ticket_focus" in t3.retrieved_ids
 
 
+def test_explicit_ticket_id_pin_in_fresh_session():
+    """Isolates the PIN path: a first-turn 'ticket 75919' with no prior context must
+    surface #75919 via ticket_id alone (carry is impossible here)."""
+    from Dev.kb_chatbot.chat.orchestrator import handle_turn, Deps
+    from Dev.kb_chatbot.chat.session import Session
+    from Dev.kb_chatbot.chunker import Chunk
+    from Dev.kb_chatbot.retriever import Filters, RetrievalResult
+    from Dev.kb_chatbot.llm.fake_provider import FakeProvider
+
+    ticket = Chunk(id="ticket_focus", text=(
+        "Ticket #75919 — x\nClient: Acme · CSQA owner: p.shah\n\nProblem: p\n\nResolution: r"),
+        metadata={"kind": "ticket", "product": "tradedesk", "title": "Ticket #75919",
+                  "ticket_id": "75919", "category": "api",
+                  "url": "https://support.contoso.example/edit_bug.aspx?id=75919"})
+
+    class PinOnlyRetriever:
+        def retrieve(self, query, filters):
+            return RetrievalResult(chunks=[], abstain_reason="no_relevant_kb_match",
+                                   rerank_top_score=0.05)
+        def get_by_ids(self, ids):
+            return []  # no carry possible — proves the pin works on its own
+        def get_by_ticket_ids(self, tids):
+            return [ticket] if "75919" in [str(t) for t in tids] else []
+        def retrieve_quick(self, query, limit=10):
+            return []
+        def suggest(self, query, top_k=5):
+            return []
+
+    cite = "[Ticket #75919](https://support.contoso.example/edit_bug.aspx?id=75919)"
+    d = Deps(retriever=PinOnlyRetriever(), llm=FakeProvider(canned_text=f"ok {cite}"))
+    t = handle_turn("ticket 75919", Session.new(), Filters(),
+                    "claude-haiku-4-5-20251001", deps=d)
+    assert t.kind == "answer"
+    assert "ticket_focus" in t.retrieved_ids
+
+
+def test_confident_new_question_does_not_carry_stale_focus():
+    """C1 guard: a confident NEW question containing a hint word ('work') must NOT
+    drag the previous ticket into context."""
+    from Dev.kb_chatbot.chat.orchestrator import handle_turn, Deps
+    from Dev.kb_chatbot.chat.session import Session
+    from Dev.kb_chatbot.chunker import Chunk
+    from Dev.kb_chatbot.retriever import Filters, RetrievalResult
+    from Dev.kb_chatbot.llm.fake_provider import FakeProvider
+
+    old = Chunk(id="old_ticket", text="Ticket #100 unrelated",
+                metadata={"kind": "ticket", "ticket_id": "100", "product": "tradedesk",
+                          "title": "Ticket #100", "url": "u100"})
+    fresh = Chunk(id="fresh_art", text="SSO setup",
+                  metadata={"product": "saleshub", "category": "auth", "title": "SSO",
+                            "url": "https://help.contoso.example/sso"})
+
+    class R:
+        def retrieve(self, query, filters):
+            return RetrievalResult(chunks=[fresh], rerank_top_score=0.9)  # confident
+        def get_by_ids(self, ids):
+            return [old]
+        def get_by_ticket_ids(self, tids):
+            return []
+        def retrieve_quick(self, query, limit=10):
+            return []
+        def suggest(self, query, top_k=5):
+            return []
+
+    d = Deps(retriever=R(), llm=FakeProvider(canned_text="ok [SSO](https://help.contoso.example/sso)"))
+    s = Session.new()
+    s.last_context_ids = ["old_ticket"]
+    t = handle_turn("How does SalesHub single sign-on work for new users today?",
+                    s, Filters(product="saleshub"), "claude-haiku-4-5-20251001", deps=d)
+    assert t.kind == "answer"
+    assert "old_ticket" not in t.retrieved_ids   # stale focus NOT dragged into a confident new query
+    assert "fresh_art" in t.retrieved_ids
+
+
 def test_high_confidence_answer_no_footer(deps_factory):
     """Answer with rerank_top_score >= LOW_CONFIDENCE_CEILING → no footer."""
     d, _ = deps_factory(0.0, "You book a spot deal via the dealing screen.",

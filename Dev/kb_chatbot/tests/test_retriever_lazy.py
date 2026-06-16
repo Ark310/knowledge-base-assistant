@@ -38,3 +38,24 @@ def test_retriever_uses_provided_embedder(monkeypatch, tmp_path):
     sentinel = _FakeST()
     rt = r.Retriever(tmp_path / "chroma", embedder=sentinel)
     assert rt.embedder is sentinel
+
+
+def test_get_by_ids_and_ticket_ids(monkeypatch, tmp_path):
+    monkeypatch.setattr(r, "CrossEncoder", lambda *a, **k: None)
+    monkeypatch.setattr(r, "SentenceTransformer", _FakeST)
+    rt = r.Retriever(tmp_path / "chroma")
+    rt.collection.upsert(
+        ids=["a", "b"],
+        embeddings=[[0.0] * 384, [0.1] * 384],
+        documents=["doc a", "doc b"],
+        metadatas=[{"ticket_id": "100", "kind": "ticket"},
+                   {"ticket_id": "200", "kind": "ticket"}],
+    )
+    assert rt.get_by_ids([]) == []
+    assert [c.id for c in rt.get_by_ids(["a"])] == ["a"]
+    assert [c.id for c in rt.get_by_ids(["a", "zzz"])] == ["a"]   # stale id silently dropped
+    one = rt.get_by_ticket_ids(["100"])           # single -> where {ticket_id: v}
+    assert len(one) == 1 and one[0].id == "a"
+    two = rt.get_by_ticket_ids(["100", "200"])    # multi -> $in branch
+    assert {c.id for c in two} == {"a", "b"}
+    assert rt.get_by_ticket_ids([]) == []
