@@ -5,5 +5,5 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from Dev.kb_chatbot import config
 
 
-def test_app_version_is_2_7():
-    assert config.APP_VERSION == "2.7"
+def test_app_version_is_2_8():
+    assert config.APP_VERSION == "2.8"

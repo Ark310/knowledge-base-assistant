@@ -1,4 +1,4 @@
-"""V2.7 static defaults + freeze-aware paths + provider registry + tickets. No persisted settings live here."""
+"""V2.8 static defaults + freeze-aware paths + provider registry + tickets. No persisted settings live here."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
@@ -6,7 +6,7 @@ import sys
 
 # Single source of truth for the app version. Surfaced in the window title and
 # the exe filename (read by ContosoKBChatbot.spec). Bump here only.
-APP_VERSION = "2.7"
+APP_VERSION = "2.8"
 
 # ── Freeze-aware base paths ───────────────────────────────────────────────────
 if getattr(sys, "frozen", False):

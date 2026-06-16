@@ -31,6 +31,9 @@ class Session:
     id: str
     turns: list[dict] = field(default_factory=list)
     last_rerank_score: float = 0.0
+    # Chunk-ids of the context behind the most recent ANSWER, so a follow-up that
+    # refers to "this / these tickets / who worked on it" can re-fetch them.
+    last_context_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def new(cls) -> "Session":

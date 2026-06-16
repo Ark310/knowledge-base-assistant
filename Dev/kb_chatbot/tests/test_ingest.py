@@ -4,7 +4,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from Dev.kb_chatbot.ingest import ingest
 import json
-from Dev.kb_chatbot.ingest import resolve_sources, IngestReport
+from Dev.kb_chatbot.ingest import resolve_sources, IngestReport, open_persistent_client
 
 FIX = Path(__file__).parent / "fixtures" / "tiny_library"
 
@@ -42,7 +42,7 @@ def test_ingest_collection_queryable_after_ingest():
     import chromadb
     with tempfile.TemporaryDirectory() as tmp:
         ingest(FIX, Path(tmp))
-        client = chromadb.PersistentClient(path=str(tmp))
+        client = open_persistent_client(tmp)
         coll = client.get_collection("kbs")
         all_records = coll.get()
         assert len(all_records["ids"]) >= 6
@@ -159,7 +159,7 @@ def test_tickets_indexed_via_explicit_path(tmp_path):
     assert report.tickets_seen == 1
     assert report.resolved_tickets_path == str(tickets)
     import chromadb
-    client = chromadb.PersistentClient(path=str(chroma))
+    client = open_persistent_client(chroma)
     coll = client.get_collection("kbs")
     kinds = {m.get("kind") for m in coll.get()["metadatas"]}
     assert "ticket" in kinds
@@ -185,7 +185,7 @@ def test_reindex_refuses_empty_source_and_keeps_index(tmp_path):
     except IngestSourceEmpty:
         pass
 
-    client = chromadb.PersistentClient(path=str(chroma))
+    client = open_persistent_client(chroma)
     assert client.get_collection("kbs").count() == r1.total_chunks  # index untouched
     client.close()
 
@@ -217,3 +217,17 @@ def test_cancel_then_reindex_recovers_changed_file(tmp_path):
     r = ingest(lib, chroma)
     assert r.chunks_embedded >= 1
     assert r.total_chunks >= 1
+
+
+def test_chunk_schema_change_forces_rebuild(tmp_path):
+    lib = tmp_path / "kb"
+    _write_article(lib / "api", "a.json", "A")
+    chroma = tmp_path / "chroma"
+    r1 = ingest(lib, chroma)
+    mf = chroma / "index_manifest.json"
+    data = json.loads(mf.read_text(encoding="utf-8"))
+    assert data.get("chunk_schema_version") is not None  # written on ingest
+    data["chunk_schema_version"] = 0                      # simulate an older schema
+    mf.write_text(json.dumps(data), encoding="utf-8")
+    r2 = ingest(lib, chroma)
+    assert r2.chunks_embedded == r1.chunks_embedded       # all re-embedded

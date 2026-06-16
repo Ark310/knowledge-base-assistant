@@ -82,6 +82,28 @@ class Retriever:
             chunks.append(Chunk(id=cid, text=doc, metadata=dict(meta or {})))
         return chunks
 
+    def _chunks_from_get(self, got: dict) -> list[Chunk]:
+        """Build Chunks from a collection.get() result (flat lists, not nested)."""
+        ids = got.get("ids", []) or []
+        docs = got.get("documents", []) or []
+        metas = got.get("metadatas", []) or []
+        return [Chunk(id=cid, text=doc or "", metadata=dict(meta or {}))
+                for cid, doc, meta in zip(ids, docs, metas)]
+
+    def get_by_ids(self, ids: list[str]) -> list[Chunk]:
+        """Fetch chunks by their chunk-id (used to carry a prior turn's context)."""
+        if not ids:
+            return []
+        return self._chunks_from_get(self.collection.get(ids=list(ids)))
+
+    def get_by_ticket_ids(self, ticket_ids: list[str]) -> list[Chunk]:
+        """Fetch ticket chunks by ticket_id metadata (explicit 'ticket #N' lookup)."""
+        wanted = [str(t) for t in ticket_ids if str(t)]
+        if not wanted:
+            return []
+        where = {"ticket_id": wanted[0]} if len(wanted) == 1 else {"ticket_id": {"$in": wanted}}
+        return self._chunks_from_get(self.collection.get(where=where))
+
     def retrieve(self, query: str, filters: Filters) -> RetrievalResult:
         query_vec = self._embed(query)
         candidates = self._query_chroma(query_vec, filters, self.top_k_retrieve)

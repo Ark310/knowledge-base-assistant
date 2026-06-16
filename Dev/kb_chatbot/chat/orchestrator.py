@@ -129,6 +129,43 @@ def _default_clarifier(user_msg: str, quick: list[Chunk]) -> str:
 from Dev.kb_chatbot.chat.query_rewriter import REWRITE_MODEL as _REWRITE_MODEL_NAME
 
 
+# Explicit ticket references only ("ticket 75919", "bug #75919", "#75919") — pinned
+# into context by ticket_id. A bare number is NOT treated as a ticket id: support
+# tickets share the 5-digit space with amounts/quantities, so a prefix is required.
+_TICKET_ID_RE = re.compile(r"(?:ticket|tickets|bug|#)\s*#?\s*(\d{3,7})", re.IGNORECASE)
+# Words that signal a follow-up referring back to the tickets just discussed.
+_FOLLOWUP_HINT = re.compile(
+    r"\b(this|that|these|those|it|its|they|them|their|same|above|prior|previous|"
+    r"who|owner|owned|handle[ds]?|handling|work(?:s|ed|ing)?|assigned|assignee|"
+    r"client|escalat\w*|contact|resource|sign[\s-]?off)\b", re.IGNORECASE)
+
+
+def _extract_ticket_ids(text: str) -> list[str]:
+    out: list[str] = []
+    for m in _TICKET_ID_RE.finditer(text):
+        if m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
+def _is_reference_followup(text: str) -> bool:
+    return (len(text.strip().split()) < _FOLLOW_UP_WORD_LIMIT
+            or bool(_FOLLOWUP_HINT.search(text)))
+
+
+def _merge_chunks(primary: list[Chunk], secondary: list[Chunk], *, limit: int) -> list[Chunk]:
+    out: list[Chunk] = []
+    seen: set[str] = set()
+    for c in [*primary, *secondary]:
+        if c.id in seen:
+            continue
+        seen.add(c.id)
+        out.append(c)
+        if len(out) >= limit:
+            break
+    return out
+
+
 @dataclass
 class Deps:
     retriever: Retriever
@@ -168,6 +205,29 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             retrieval_query = rw.query
             result = deps.retriever.retrieve(retrieval_query, filters)
 
+    # ── Context augmentation: explicit ticket-ID pins + carried conversation focus ──
+    # The LLM may only use CONTEXT (rule 1), so a follow-up about the tickets just
+    # discussed — or one naming a ticket # — must re-inject those chunks into CONTEXT.
+    # Carry ONLY when fresh retrieval is weak: a confident NEW question stands on its
+    # own and must not be polluted by a stale prior ticket, even if it has a hint word.
+    fresh_confident = (not result.abstain_reason
+                       and result.rerank_top_score >= LOW_CONFIDENCE_CEILING)
+    pinned = deps.retriever.get_by_ticket_ids(_extract_ticket_ids(user_msg))
+    carried: list[Chunk] = []
+    if not fresh_confident and _is_reference_followup(user_msg) and session.last_context_ids:
+        carried = deps.retriever.get_by_ids(session.last_context_ids)
+    augment = _merge_chunks(pinned, carried, limit=config.TOP_K_RERANK)
+    skip_clarify = False
+    if augment:
+        # Lead with the explicit/carried focus; only append fresh if it was confident
+        # (don't dilute the focus with the weak matches that triggered the carry).
+        fresh = result.chunks if fresh_confident else []
+        result.chunks = _merge_chunks(augment, fresh, limit=config.TOP_K_RERANK)
+        result.abstain_reason = None
+        if not fresh_confident:
+            result.rerank_top_score = max(result.rerank_top_score, 1.0)
+        skip_clarify = True
+
     # Topic-drift: inject note if confidence dropped sharply from previous turn
     drift_note = ""
     if _is_topic_drift(session.last_rerank_score, result.rerank_top_score):
@@ -175,7 +235,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
     session.last_rerank_score = result.rerank_top_score
 
     if not result.abstain_reason:
-        if not (filters.product or _mentions_product(user_msg) or _recent_product_in_history(session)):
+        if not skip_clarify and not (filters.product or _mentions_product(user_msg) or _recent_product_in_history(session)):
             quick = deps.retriever.retrieve_quick(retrieval_query, limit=10)
             if _needs_clarification_from_quick(quick):
                 clar_fn = deps.clarifier or _default_clarifier
@@ -231,6 +291,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             latency_ms=resp.latency_ms,
             attachments=[a.filename for a in (deps.attachments or [])],
         )
+        session.last_context_ids = [c.id for c in result.chunks]  # focus for follow-ups
         session.add(turn)
         deps.usage_logger(turn)
         return turn
