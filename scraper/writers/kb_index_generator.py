@@ -2,14 +2,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_PRODUCT_ORDER = ["tradedesk", "web2", "web4", "api", "saleshub", "other"]
+_PRODUCT_ORDER = ["tradedesk", "web2", "web4", "api", "saleshub", "formflow", "other"]
 _PRODUCT_LABELS = {
-    "tradedesk": "TradeDesk KB",
-    "web2": "Web 2.0 KB",
-    "web4": "Web 4.0 KB",
-    "api": "API KB",
-    "saleshub": "SalesHub KB",
-    "other": "Other",
+    "tradedesk":    "TradeDesk KB",
+    "web2":        "Web 2.5 KB",
+    "web4":        "Web 4.0 KB",
+    "api":         "API KB",
+    "saleshub":     "SalesHub KB",
+    "formflow":  "FormFlow KB",
+    "other":       "Other",
 }
 
 

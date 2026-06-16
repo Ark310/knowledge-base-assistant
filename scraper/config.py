@@ -1,14 +1,45 @@
 from pathlib import Path
 import sys
 
+APP_VERSION = "3.1"
+"""
+Changelog
+─────────
+v3.1  2026-06-10  Ticket Portal enhancements:
+                   A) Parallel workers (1-4 configurable in GUI) — each worker opens
+                      its own headed Chrome, logs in independently; state file writes
+                      protected by threading.Lock.
+                   B) Resolution skip — only fetches Resolution.aspx when the ticket
+                      detail page shows "Resolution(filled)"; saves one page load per
+                      ticket without a resolution.
+                   C) Inline attachment capture — extracts base64-encoded images
+                      embedded in comment/email bodies (data:image/... URIs), saves
+                      them as files to library/tickets/attachments/{id}/, and stores
+                      paths in JSON; raw base64 never written to disk.
+v3.0  2026-06-09  Ticket Portal scraper (Tab 3): ingest tickets + resolutions from
+                   support.contoso.example into library/tickets/; OS-keyring credential
+                   storage; single/multi/range ticket input; browser auto-restart.
+v2.6  2026-06-09  Browser freeze fix: changed wait_until from networkidle to
+                   domcontentloaded; added Browser.is_alive() + restart() for
+                   automatic recovery from Chrome crashes mid-scrape.
+v2.5  2026-06-03  KB config overhaul: added FIX Protocol/Distribution Layer (TradeDesk),
+                   8 missing SalesHub spaces, new FormFlow KB product group (moved
+                   SF* spaces from saleshub), relabeled Web 2.0 → Web 2.5.
+v2.0  2026-06-01  Full-site KB scraper (Tab 2): 43 Confluence spaces, JSON+MD output.
+v1.0  2026-05-27  Release notes scraper (Tab 1): TradeDesk, Web4, SalesHub.
+"""
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 # When frozen as a PyInstaller exe, __file__ points inside a temp extract dir;
 # library/state must sit next to the executable instead.
 if getattr(sys, "frozen", False):
-    BASE_DIR = Path(sys.executable).parent
-    STATE_DIR = BASE_DIR / "state"
+    # exe lives at Knowledge Base/dist/ContosoKBScraper.exe
+    # go up one level past dist/ to reach the project root
+    _EXE_DIR  = Path(sys.executable).parent          # .../dist/
+    BASE_DIR  = _EXE_DIR.parent                       # .../Knowledge Base/
+    STATE_DIR = _EXE_DIR / "state"                    # .../dist/state/  (runtime artifacts)
 else:
-    BASE_DIR = Path(__file__).parent.parent           # Knowledge Base/
+    BASE_DIR  = Path(__file__).parent.parent           # Knowledge Base/
     STATE_DIR = Path(__file__).parent / "state"
 LIBRARY_BASE = BASE_DIR / "library"
 STATE_FILE   = STATE_DIR / "scraped_versions.json"

@@ -16,9 +16,10 @@ from PySide6.QtWidgets import (
     QStatusBar, QMessageBox, QTabWidget,
 )
 
-from scraper.config import PRODUCTS, LOG_FILE
+from scraper.config import APP_VERSION, PRODUCTS, LOG_FILE
 from scraper.engine import Engine, EngineCallbacks, CancellationToken
 from scraper.kb_tab import KBTab
+from scraper.ticket_tab import TicketTab
 
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
@@ -101,7 +102,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Contoso KB Scraper")
+        self.setWindowTitle(f"Contoso KB Scraper v{APP_VERSION}")
         self.resize(1100, 740)
 
         self.bridge = SignalBridge()
@@ -126,6 +127,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_v1_widget(), "v1 — Release Notes")
         self.kb_tab = KBTab()
         self.tabs.addTab(self.kb_tab, "v2 — Knowledge Base")
+        self.ticket_tab = TicketTab()
+        self.tabs.addTab(self.ticket_tab, "v3 — Ticket Portal")
 
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage(f"Log file: {LOG_FILE}")
