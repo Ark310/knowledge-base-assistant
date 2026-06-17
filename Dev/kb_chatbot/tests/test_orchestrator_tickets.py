@@ -133,3 +133,18 @@ def test_no_kb_attached_when_none_exists():
     turn = handle_turn("why did GetWebDeal return null buy amount",
                        Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
     assert turn.kind == "answer"   # no crash, no KB added
+
+
+def test_same_ticket_question_is_consistent_across_rephrasings():
+    """The alpha bug: same question yields partial → nothing → partial. With parent
+    expansion + a confident ticket match, both phrasings return the full answer."""
+    for phrasing in ["why did GetWebDeal return null buy amount",
+                     "GetWebDeal buy amount came back null, what was the fix"]:
+        llm = FakeProvider(canned_text=f"ok [Ticket #75919]({URL})")
+        d = Deps(retriever=FragmentRetriever(), llm=llm)
+        turn = handle_turn(phrasing, Session.new(), Filters(),
+                           "claude-haiku-4-5-20251001", deps=d)
+        assert turn.kind == "answer"
+        sent = llm.calls[-1]["messages"][-1]["content"]
+        assert "buy amount came back null" in sent
+        assert "re-added the field and redeployed" in sent
