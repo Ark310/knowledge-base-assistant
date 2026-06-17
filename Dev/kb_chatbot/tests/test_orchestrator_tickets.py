@@ -77,3 +77,33 @@ def test_orchestrator_scrubs_answer_before_render():
     turn = handle_turn("why did GetWebDeal return null buy amount",
                        Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
     assert "leaked@acme.com" not in turn.content
+
+
+class ImageTicketRetriever(FragmentRetriever):
+    def retrieve(self, query, filters):
+        return RetrievalResult(chunks=[_frag(0, "Problem: see screenshot", has_images=True)],
+                               rerank_top_score=0.9)
+    def get_by_ticket_ids(self, tids):
+        return [_frag(0, "Problem: see screenshot", has_images=True),
+                _frag(1, "Resolution: per the image", has_images=True)] \
+            if "75919" in [str(t) for t in tids] else []
+
+
+def test_ticket_with_images_appends_screenshot_note():
+    llm = FakeProvider(canned_text=f"resolved [Ticket #75919]({URL})")
+    d = Deps(retriever=ImageTicketRetriever(), llm=llm)
+    turn = handle_turn("why did GetWebDeal return null buy amount",
+                       Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
+    assert turn.kind == "answer"
+    assert "screenshot" in turn.content.lower()
+    assert URL in turn.content           # links to the ticket
+    # no image bytes/paths surfaced
+    assert "data:image" not in turn.content and "attachments/" not in turn.content
+
+
+def test_ticket_without_images_has_no_note():
+    llm = FakeProvider(canned_text=f"resolved [Ticket #75919]({URL})")
+    d = Deps(retriever=FragmentRetriever(), llm=llm)  # has_images=False
+    turn = handle_turn("why did GetWebDeal return null buy amount",
+                       Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
+    assert "screenshot" not in turn.content.lower()

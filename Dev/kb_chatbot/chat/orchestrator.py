@@ -48,6 +48,11 @@ LOW_CONFIDENCE_FOOTER = """\
 *Not fully certain this covers your question. You might also check:*
 {suggestions}"""
 
+IMAGE_NOTE_TEMPLATE = (
+    "\n\n📎 This ticket includes a screenshot that may hold additional detail not in the text — "
+    "open the ticket to view it: [Ticket #{tid}]({url})"
+)
+
 SHORT_QUERY_CLARIFICATION = (
     "Could you give me a bit more context? For example, which product are you asking about "
     "(TradeDesk, API, Web2, Web4, or SalesHub) and what you're trying to do?"
@@ -306,6 +311,13 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             suggestion_block = format_suggestions(deps.retriever.suggest(retrieval_query, top_k=3))
             if suggestion_block:
                 answer_text += LOW_CONFIDENCE_FOOTER.format(suggestions=suggestion_block)
+        # Append screenshot note for the first used ticket chunk with images
+        for c in result.chunks:
+            if c.metadata.get("kind") == "ticket" and c.metadata.get("has_images") \
+                    and c.metadata.get("url"):
+                answer_text += IMAGE_NOTE_TEMPLATE.format(
+                    tid=c.metadata.get("ticket_id", ""), url=c.metadata["url"])
+                break
         turn = Turn(
             role="assistant",
             content=answer_text,
