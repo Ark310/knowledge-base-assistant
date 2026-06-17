@@ -38,6 +38,30 @@ class RetrievalResult:
     abstain_reason: Optional[str] = None
 
 
+def _strip_title_line(text: str) -> str:
+    """Drop the leading 'Ticket #<id> — <title>' line (and the blank line after it)
+    from a non-first chunk, leaving just its body segment."""
+    parts = text.split("\n\n", 1)
+    return parts[1].strip() if len(parts) == 2 else text.strip()
+
+
+def assemble_ticket(chunks: list[Chunk]) -> Chunk:
+    """Reassemble the full ticket from its sibling chunks (parent-document
+    retrieval). Orders by chunk_index; chunk 0 (with the staff/client header)
+    leads, subsequent chunks contribute their body segment only. Returns one
+    Chunk carrying chunk 0's metadata (chunk_index normalised to 0)."""
+    ordered = sorted(chunks, key=lambda c: int(c.metadata.get("chunk_index", 0)))
+    head = ordered[0]
+    text = head.text.strip()
+    for c in ordered[1:]:
+        seg = _strip_title_line(c.text)
+        if seg:
+            text += "\n\n" + seg
+    meta = dict(head.metadata)
+    meta["chunk_index"] = 0
+    return Chunk(id=head.id, text=text, metadata=meta)
+
+
 class Retriever:
     def __init__(
         self,
