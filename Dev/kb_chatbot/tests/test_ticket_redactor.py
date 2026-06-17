@@ -207,3 +207,18 @@ def test_multi_word_credential_value_redacted():
 def test_credential_prose_without_separator_survives():
     out = redact("Please reset the password to continue", known_terms=[])
     assert "reset the password to continue" in out
+
+
+def test_action_verb_multiword_name_fully_redacted():
+    out = redact("I called Morgan Blake about the deal", known_terms=[])
+    assert "Morgan" not in out and "Blake" not in out
+
+
+def test_signature_line_after_signoff_dropped():
+    out = redact("Resolved the issue.\nRegards,\nPriya Patel", known_terms=[])
+    assert "Priya Patel" not in out
+
+
+def test_non_signoff_short_capitalized_line_survives():
+    out = redact("Open the panel.\nClick Save Now", known_terms=[])
+    assert "Click Save Now" in out

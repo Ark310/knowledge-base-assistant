@@ -52,6 +52,8 @@ _STOPWORDS = {
     "on", "at", "it", "we", "i", "a", "an", "be", "as", "or", "but", "not", "your", "my",
     "contoso", "customer", "client", "user", "hi", "hello", "dear", "regards", "cheers",
     "now", "me", "let", "get", "sent", "received",
+    "could", "would", "should", "also", "however", "therefore", "moreover",
+    "additionally", "furthermore", "regarding", "hello",
 }
 
 

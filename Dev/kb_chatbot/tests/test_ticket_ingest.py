@@ -147,3 +147,11 @@ def test_handled_by_ignores_header_noise(tmp_path):
     h = _handled_by(data)
     assert "email" not in [x.lower() for x in h]
     assert "jchen" in h
+
+
+def test_greeting_modal_not_harvested_as_term():
+    from Dev.kb_chatbot.ticket_ingest import _known_terms
+    data = {"comments": [{"type": "comment", "author": "a.user",
+                          "header": "", "body": "Thanks. Could you re-run the batch?"}]}
+    terms = _known_terms(data)
+    assert "Could" not in terms and "could" not in [t.lower() for t in terms]

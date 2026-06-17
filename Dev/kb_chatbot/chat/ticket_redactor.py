@@ -21,12 +21,12 @@ _GREETING_NAME = re.compile(
 )
 
 # Names after action verbs: "Messaged Riley", "asked Priya", "emailed Jane".
-# Also handles "the user/customer/client (Name)" variant.
+# Also handles "the user/customer/client (Name)" variant and multi-token names.
 # Verb is case-insensitive via inline flag; name class is case-SENSITIVE.
 _ACTION_NAME = re.compile(
     r"\b((?i:messaged|message|asked|told|emailed|email|called|contacted|"
     r"spoke to|spoke with|pinged|notified|informed|advised|reached out to))\s+"
-    r"(?:the\s+(?:user|customer|client)\s+)?([A-Z][a-z]+)"
+    r"(?:the\s+(?:user|customer|client)\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})"
 )
 
 # Parenthetical first-name mentions: "user (Robin)", "(Dana)".
@@ -96,6 +96,15 @@ _DROP_LINE = re.compile(
     re.IGNORECASE,
 )
 
+_SIGNOFF_LINE = re.compile(
+    r"^\s*(?i:regards|thanks|thank you|best|kind regards|cheers|sincerely|br|warm regards)\b"
+)
+_NAME_ONLY_LINE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}$")
+
+
+def _is_signoff(line: str) -> bool:
+    return bool(_SIGNOFF_LINE.match(line.strip()))
+
 
 def redact(text: str, *, known_terms: list[str]) -> str:
     """Return text with PII removed. known_terms (org/person names from the
@@ -107,10 +116,18 @@ def redact(text: str, *, known_terms: list[str]) -> str:
         for t in known_terms if t and len(t) >= 2
     ]
     cleaned_lines: list[str] = []
+    prev_signoff = False
     for raw_line in text.replace("\r", "").split("\n"):
         line = raw_line
-        if _DROP_LINE.match(line.strip()):
+        stripped_raw = line.strip()
+        if _DROP_LINE.match(stripped_raw):
+            prev_signoff = _is_signoff(stripped_raw)
             continue
+        # A short all-capitalised line right after a sign-off is a signature name.
+        if prev_signoff and _NAME_ONLY_LINE.match(stripped_raw):
+            prev_signoff = False
+            continue
+        prev_signoff = _is_signoff(stripped_raw)
         line = _EMAIL.sub("[redacted]", line)
         line = _CRED_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
         line = _CRED_LABEL.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
