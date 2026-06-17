@@ -95,6 +95,7 @@ CONFIDENCE_FLOOR    = 0.06   # sigmoid(rerank logit); was 0.30 on raw logits (ov
 CLARIFY_SCORE_FLOOR = 0.0    # rerank score is now 0-1; 0.0 keeps the abstain-path clarify check live
 MAX_HISTORY_TURNS   = 6
 CHUNK_TARGET_WORDS  = 500
+ANSWER_MAX_TOKENS   = 2048   # full ticket resolutions can exceed 1024; completeness wins (v2.9.1)
 
 # ── Cost estimation (USD per million tokens) ──────────────────────────────────
 # Used by llm.base.estimate_cost. Claude Code subprocess doesn't bill per-call,

@@ -59,3 +59,13 @@ def test_ticket_answer_sees_full_ticket_not_fragment():
     assert "re-added the field and redeployed" in sent  # resolution (chunk 2)
     # ticket appears once in the retrieved set, not as 3 fragments
     assert turn.retrieved_ids.count("ticket_h:0") <= 1
+
+
+def test_answer_uses_raised_max_tokens():
+    from Dev.kb_chatbot import config
+    llm = FakeProvider(canned_text=f"ok [Ticket #75919]({URL})")
+    d = Deps(retriever=FragmentRetriever(), llm=llm)
+    handle_turn("why did GetWebDeal return null buy amount",
+                Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
+    assert llm.calls[-1]["max_tokens"] == config.ANSWER_MAX_TOKENS
+    assert config.ANSWER_MAX_TOKENS >= 2048

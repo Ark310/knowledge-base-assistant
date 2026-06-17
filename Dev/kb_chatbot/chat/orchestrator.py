@@ -276,7 +276,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
                 messages=messages,
                 model=default_model,
                 system_prompt=build_system_prompt(),
-                max_tokens=1024,
+                max_tokens=config.ANSWER_MAX_TOKENS,
             )
         except ClaudeCodeNotFoundError as exc:
             turn = Turn(role="assistant", kind="abstain", content=str(exc))
