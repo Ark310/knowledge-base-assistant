@@ -53,6 +53,38 @@ _AT_MENTION = re.compile(r"@[A-Za-z][\w.\-]*")
 # Bare email-domain residue left after local-part redaction.
 _BARE_DOMAIN = re.compile(r"@[\w.\-]+\.\w{2,}")
 
+# ── Label-independent secret-shape scrubbing ──────────────────────────────────
+# Catches secrets that have no recognised label (OAuth client IDs, raw API keys,
+# base64/hex blobs, JWTs, hex wallet addresses). Conservative thresholds so
+# version strings, order numbers, and ordinary words are not eaten.
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+_HEX_ADDR = re.compile(r"\b0x[0-9a-fA-F]{16,}\b")
+_LONG_TOKEN = re.compile(r"[A-Za-z0-9+/=_\-]{20,}")
+
+
+def _looks_secret(tok: str) -> bool:
+    core = tok.strip("=")
+    if len(core) < 20:
+        return False
+    # base64-ish or hex blob of length >= 32
+    if len(core) >= 32 and re.fullmatch(r"[A-Za-z0-9+/]+", core):
+        return True
+    if len(core) >= 32 and re.fullmatch(r"[0-9a-fA-F]+", core):
+        return True
+    # high-entropy: >= 20 chars mixing lower + upper + digit (looks like a key)
+    has_low = any(c.islower() for c in core)
+    has_up = any(c.isupper() for c in core)
+    has_dig = any(c.isdigit() for c in core)
+    return len(core) >= 20 and has_low and has_up and has_dig
+
+
+def _redact_secret_shapes(line: str) -> str:
+    line = _JWT.sub("[redacted]", line)
+    line = _HEX_ADDR.sub("[redacted]", line)
+    return _LONG_TOKEN.sub(
+        lambda m: "[redacted]" if _looks_secret(m.group(0)) else m.group(0), line
+    )
+
 # Lines that are pure email/quote/signature boilerplate -> dropped entirely.
 _DROP_LINE = re.compile(
     r"^\s*(subject:|to:|cc:|bcc:|from:|sent:|date:|attachment:|"
@@ -80,6 +112,7 @@ def redact(text: str, *, known_terms: list[str]) -> str:
         line = _EMAIL.sub("[redacted]", line)
         line = _CRED_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
         line = _CRED_LABEL.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
+        line = _redact_secret_shapes(line)
         line = _AT_MENTION.sub("@[redacted]", line)
         line = _BARE_DOMAIN.sub("[redacted]", line)
         line = _URL.sub("[link]", line)

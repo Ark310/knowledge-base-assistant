@@ -149,3 +149,40 @@ def test_bare_domain_residue_redacted():
     out = redact("forwarded to sam@woodgrove.example for review", known_terms=[])
     assert "woodgrove.example" not in out
     assert "@woodgrove" not in out
+
+
+def test_high_entropy_token_redacted():
+    out = redact("ClientID: G5qjl8ujMGHJlfrNAnrPG0BM1sYohXIZAcobZ6vWm9LZAIT2", known_terms=[])
+    assert "G5qjl8ujMGHJlfrNAnrPG0BM1sYohXIZAcobZ6vWm9LZAIT2" not in out
+    assert "[redacted]" in out
+
+
+def test_base64_blob_redacted():
+    out = redact("file_bytes: VGVzdCBmaWxlIGZvciBwYXltZW50IHByb2Nlc3NpbmcgZGVtbw==", known_terms=[])
+    assert "VGVzdCBmaWxlIGZvciBwYXltZW50IHByb2Nlc3NpbmcgZGVtbw" not in out
+
+
+def test_jwt_redacted():
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36"
+    out = redact(f"token is {jwt}", known_terms=[])
+    assert "eyJhbGciOiJIUzI1NiJ9" not in out
+
+
+def test_hex_address_redacted():
+    out = redact("wallet 0x52908400098527886E0F7030069857D2E4169EE7 confirmed", known_terms=[])
+    assert "52908400098527886E0F7030069857D2E4169EE7" not in out
+
+
+def test_version_string_not_over_redacted():
+    out = redact("Upgrade to version 2.5.4.6 to fix this", known_terms=[])
+    assert "2.5.4.6" in out
+
+
+def test_ordinary_long_word_not_redacted():
+    out = redact("This is an internationalization problem in the module", known_terms=[])
+    assert "internationalization" in out
+
+
+def test_short_id_not_redacted():
+    out = redact("See order 75100 and ref AB12 for details", known_terms=[])
+    assert "75100" in out and "AB12" in out
