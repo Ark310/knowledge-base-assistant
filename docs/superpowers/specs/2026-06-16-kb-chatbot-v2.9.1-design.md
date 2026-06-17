@@ -1,7 +1,7 @@
 # KB Chatbot v2.9.1 — Token Efficiency, Model Parity, Branding, UI Polish & Security Review — Design Spec
 
 **Date:** 2026-06-16
-**Status:** Design approved (chat); pending spec review → implementation plan
+**Status:** Design approved (chat); security review completed and findings folded in; pending spec review → implementation plan
 **Builds on:** v2.8 (internal resourcing, client context, ticket/KB refs, conversation continuity). v3 retrieval overhaul is abandoned and deleted — do not reference it.
 
 ---
@@ -23,7 +23,7 @@ Plus: we want a **security analysis + review** before shipping, and a **latent b
 - **Brand the app**: Contoso logo in the header, welcome/empty state, About dialog, and a launch splash.
 - **Enterprise-grade UI**: cohesive theme, readable chat, tidy layout — without removing any existing feature.
 - **Smarter out-of-scope behavior** (3-tier) + more accurate topic matching.
-- **Security analysis + review** with findings; ship a hardened build.
+- **Security hardening** (from the completed review): close the secret-redaction gap so no secrets ship in the index, add an output-side PII/secret scrub, harden personal-name redaction and the Learn-Mode password, and lock chat rendering with a regression test.
 - **One single exe**, same one-folder layout style as v2.8.
 
 ## 3. Non-Goals
@@ -47,6 +47,8 @@ Plus: we want a **security analysis + review** before shipping, and a **latent b
 | Release shape | **One single exe**, same one-folder style as v2.8. No side build. |
 | Build gate | **Smoke test + explicit user confirmation before any exe compile** (standing rule). |
 | Security-affecting changes | **Ask the user first** before applying anything that changes behavior/goals. |
+| HIGH secret leak (bug-063) | **Fix in v2.9.1, sequenced first** — close the redaction gap + rebuild/re-ship a clean index. |
+| Security scope | Also fix: output-side PII/secret scrub, personal-name hardening, Learn-Mode KDF, rendering regression test (all four approved). |
 
 ## 5. Approach
 
@@ -56,7 +58,7 @@ Six independent workstreams, each verifiable on its own, sequenced so token work
 2. **Out-of-scope 3-tier + matching** — new threshold + messages in the orchestrator/prompt, tuned on the golden set.
 3. **Logo/branding** — rasterized assets bundled + loaded freeze-aware; header/welcome/About/splash.
 4. **UI polish** — app-wide QSS theme + chat restyle + control regrouping.
-5. **Security analysis + review** — full-corpus probe + bundle/keyring/logging/sandbox audit; report; user sign-off on goal-affecting changes.
+5. **Security hardening (review completed)** — secret-redaction fix (sequenced **first**, gates the ship) → output-side scrub → name hardening → Learn-Mode KDF → rendering regression test. See §6.5.
 6. **Version + housekeeping** — bump to 2.9.1, tests, fresh-workpath build, re-ship index.
 
 ## 6. Detailed Design
@@ -105,24 +107,41 @@ Today, gating keys off `result.rerank_top_score` against `CONFIDENCE_FLOOR` (0.0
 - **Layout tweaks:** group Product / AI Provider / Model into a tidy labeled control bar under the header; style the toolbar; uniform buttons/inputs. Thinking indicator, progress bar, attachment bar, Learn-Mode feedback bar, correction panel all restyled to the theme but functionally unchanged.
 - **Preserved behavior:** all signals/handlers, Learn Mode, attachments (drag-drop + Ctrl+V), reindex dialog, token-usage dialog, settings, STOP/cancel, provider preflight.
 
-### 6.5 Security analysis + review — (analysis task; code changes only with user sign-off)
+### 6.5 Security hardening — review completed; fixes folded into v2.9.1
 
-Produce a findings report covering:
-- **PII/secret redaction:** re-run the full-corpus probe (must stay **`email_leaks = 0`**); re-verify the v2.8 relaxation (org name dropped from `known_terms`) didn't open a leak; spot-check credential/secret patterns.
-- **Shipped index:** confirm the bundled Chroma index contains only **redacted** chunk text and metadata (no raw tickets, no customer-individual PII).
-- **Bundle:** confirm no secrets/keys/passwords are packaged into the exe; confirm the SDK's bundled `claude` CLI is still excluded.
-- **Keyring / auth:** Learn-Mode password remains hashed (`learn_mode_hash`); no plaintext secrets on disk; Codex/Claude auth stays in the user's CLI (no creds in app state).
-- **Logging:** verify `run.log` / `usage.jsonl` never record PII or secrets (usage records store token counts + ids only).
-- **Subprocess sandbox:** Codex stays `--sandbox read-only --ephemeral`; Claude SDK usage unchanged.
-- **Dependencies:** quick CVE/version sanity check on the pinned deps.
+A three-domain defensive review was performed (redaction/data-at-rest; secrets/keyring/logging/packaging; subprocess/rendering/injection). **Clean (verified):** emails/phones (0 leaks over the full corpus), field-derived header (org + staff usernames only, never customer-individual PII), keyring-only portal password (never logged/argv), no API keys in the repo, exe bundles no secrets/raw source (bundled `claude` CLI excluded), no unsafe deserialization, Codex prompt via stdin + `--sandbox read-only --ephemeral` (no command injection), no path traversal in `learn_writer`, chat rendering currently safe (escape-before-linkify, http(s)-only). Confirmed findings and their fixes (all approved for v2.9.1):
 
-Findings are reported to the user. **Hardening that changes behavior or goals is proposed and approved before implementation.** Per org policy, no API keys / passwords / customer PII are introduced or logged (staying account-based means no new secret).
+**(a) HIGH — secrets reach the shipped index — `chat/ticket_redactor.py`, `ticket_ingest.py`, `ingest.py`.**
+Root cause: credential redaction is keyword-anchored (`_CRED_LABEL`), captures only one `\S+` token for unquoted values, and has no secret-shape detector — so OAuth client IDs, `SK:`/non-standard-labelled keys, base64/JWT/hex blobs, and multi-word secret values survive into chunk text and the distributed Chroma index. (Confirmed over the live corpus: tickets 55997 / 47741 / 55876. Logged as bug-063.) Fix:
+- Add a **label-independent secret scrubber** run on every line: high-entropy tokens (≥ ~20 chars, mixed case+digits), base64/hex blobs (≥ 32 chars), JWTs (`eyJ…\.…\.…`), `0x`-hex addresses → `[redacted]`. Tuned conservatively to avoid eating ordinary IDs/version strings (see §9).
+- **Broaden `_CRED_LABEL`** keywords: `client[\s_-]?id`, `customer[\s_-]?id`, `gateway`, `sk`, `client[\s_-]?secret`, `bearer`.
+- **Redact unquoted values to end-of-line / next delimiter**, not just the first token.
+- **Bump `CHUNK_SCHEMA_VERSION`** to force a clean full re-embed; rebuild and re-ship the index (§6.6).
+- **Sequenced first** in implementation — it gates the ship.
+
+**(b) MEDIUM — output-side PII/secret scrub (defense-in-depth) — `chat/orchestrator.py`.**
+After the LLM responds and before render/persist, run the answer text through a scrub mirroring the redactor's email/phone/secret patterns (NOT the contextual name patterns, to avoid mangling legitimate prose/citations). A catch is logged as a security event. Applies to both providers. This bounds the prompt-injection / PII-echo vector regardless of upstream redaction.
+
+**(c) MEDIUM — personal-name redaction hardening — `chat/ticket_redactor.py`, `ticket_ingest.py`.**
+- Extend `_ACTION_NAME` to capture multi-token names (`[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}`) so surnames don't leak ("called Morgan **Blake**").
+- Add a signature-line heuristic (a short 1–3 capitalized-word line after a dropped sign-off / trailing the body).
+- Fix `_GREET_NAME` over-capture in `ticket_ingest` (expand `_STOPWORDS` with sentence-initial modals like Could/Would/Please, or require the harvested token to also appear in a person field) so legitimate words aren't redacted (quality).
+NER is out of scope; residual risk for zero-context names is documented in §9.
+
+**(d) MEDIUM — Learn-Mode password — `settings.py`.**
+Replace unsalted single-round SHA-256 (with a public shipped default) by a **salted slow KDF** (PBKDF2-HMAC-SHA256 or `scrypt`), per-install random salt stored beside the hash, compared with `hmac.compare_digest`. Migrate the existing `learn_mode_hash` on first run (or prompt to set a new password) and force a change off the shipped default. Failure logging stays metadata-only (never the attempt).
+
+**(e) LOW — rendering regression test — `tests`.**
+Assert that a crafted citation title/URL (`<img onerror>`, `"`-injection, `javascript:`/`file:` scheme) renders **inert** in `_append`, locking in the escape-before-linkify + http(s)-only behavior so a future refactor can't reintroduce XSS.
+
+Org-policy alignment: every change here **tightens** redaction/secret handling; nothing introduces a new secret (still account-based).
 
 ### 6.6 Version + housekeeping — `config.py`, `ContosoKBChatbot.spec`, tests
 
 - `APP_VERSION = "2.9.1"` (single source of truth; drives window title, splash/About, and exe name via the spec).
 - Update `test_version` to assert `2.9.1`.
 - Build into a **fresh `--workpath`** (OneDrive `WinError 5` avoidance, per cerebrum); `COLLECT --noconfirm` recreates `dist/<name>`, so **re-copy the prebuilt index** into `chatbot_state/` after the build (same one-folder layout as v2.8).
+- **Bump `CHUNK_SCHEMA_VERSION`** (`ingest.py`) so the §6.5(a) redaction fix forces a clean full re-embed; rebuild and re-ship the index (no secrets in the new index).
 - Tidy the stale "v3-beta bge rerankers" comment in the spec (the v3 line is gone).
 
 ## 7. Testing
@@ -133,7 +152,13 @@ Findings are reported to the user. **Hardening that changes behavior or goals is
 - **Golden set:** before/after token report for GPT-5.4 (input / output / reasoning) **and** accuracy (recall@8, MRR, false-abstain) showing **no measurable accuracy loss**; same run confirms format adherence at the chosen reasoning effort.
 - **Assets/branding:** `_asset_path` resolves in both frozen and source modes (mockable); About/splash construct without error in an offscreen test where feasible.
 - **Version:** `test_version` asserts `2.9.1`.
-- **Security:** full-corpus probe asserts external customer email/phone/secret leaks = 0 (org names + internal usernames allowed, as v2.8).
+- **Security (expanded):**
+  - Full-corpus probe extended to assert **secret-shaped tokens = 0** (entropy / base64 / JWT / hex / `0x`-hex), in addition to the existing email/phone = 0 (org names + internal usernames still allowed, as v2.8).
+  - Redactor units: unlabeled secrets, multi-word unquoted values, base64/JWT blobs, and the broadened credential labels are all redacted; legitimate IDs / version strings (e.g. `2.5.4.6`, short order numbers) are **NOT** over-redacted.
+  - Name hardening: multi-token action-verb names redacted; `_GREET_NAME` no longer captures stopword modals (Could/Would/Please).
+  - Output scrub: a planted email/secret in a model answer is redacted before render/persist.
+  - Learn-Mode: salted KDF round-trips; wrong password rejected; constant-time compare; migration off the shipped default doesn't lock the user out.
+  - Rendering regression: crafted citation title/URL (`<img onerror>`, quote-injection, `javascript:`/`file:`) renders inert.
 
 ## 8. Verification before build (standing rule)
 
@@ -141,7 +166,7 @@ Findings are reported to the user. **Hardening that changes behavior or goals is
 2. Golden-set token + accuracy report attached; reasoning effort chosen = lowest with no accuracy loss.
 3. Source-run scenarios on **both** providers: (a) in-scope how-to answers identically in substance; (b) clearly-unrelated question → "outside scope"; (c) related-but-vague → clarify + suggestions; (d) GPT-5.4 token usage visibly reduced in the Token Usage dialog.
 4. Branding visible from source: header logo, welcome state, About, splash.
-5. Security report reviewed; any goal-affecting hardening approved.
+5. Re-run the **extended full-corpus probe** on the rebuilt index: external email/phone leaks = 0 **and** secret-shaped tokens = 0; confirm the shipped index is clean before packaging.
 6. **Smoke test + user confirmation**, then bump version, build into fresh `--workpath`, re-copy the prebuilt index, confirm in the exe.
 
 ## 9. Risks
@@ -153,3 +178,6 @@ Findings are reported to the user. **Hardening that changes behavior or goals is
 - **UI restyle regressions** — functional handlers untouched; QSS/theme only; HTML-escaping in chat preserved (no rendering security regression).
 - **Re-enabling gpt-5.4-mini/5.5** — only if the spike confirms they pass with `_search` disabled; otherwise they stay out and gpt-5.4 remains the single ChatGPT model.
 - **OneDrive build lock** — fresh `--workpath` per cerebrum; re-copy index after `COLLECT`.
+- **Over-redaction from the entropy scrubber** — too-aggressive secret detection could eat legitimate IDs, version strings, or order numbers. Mitigated by conservative thresholds (length + mixed-class requirements), allow-listing known benign shapes, and unit tests asserting common legitimate tokens survive; tuned against the corpus.
+- **Learn-Mode KDF migration** — existing installs carry an old SHA-256 hash; migrate on first run or prompt for a new password so no one is locked out, and don't leave the shipped default usable.
+- **Secrets already shipped** — the HIGH fix cleans the *new* index; any previously distributed v2.8 build still contains the old index. Out of scope to remediate copies already in the field, but flagged here for awareness (internal-only distribution).
