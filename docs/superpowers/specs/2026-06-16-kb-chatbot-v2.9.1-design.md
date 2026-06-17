@@ -1,4 +1,4 @@
-# KB Chatbot v2.9.1 — Token Efficiency, Model Parity, Branding, UI Polish & Security Review — Design Spec
+# KB Chatbot v2.9.1 — Token Efficiency, Model Parity, Ticket-Answer Quality, Branding, UI Polish & Security Review — Design Spec
 
 **Date:** 2026-06-16
 **Status:** Design approved (chat); security review completed and findings folded in; pending spec review → implementation plan
@@ -8,12 +8,13 @@
 
 ## 1. Context & Problem
 
-v2.8 works on both providers (Claude + ChatGPT/GPT-5.4-over-Codex), but four things hold it back from an "enterprise-grade, ships-confidently" release:
+v2.8 works on both providers (Claude + ChatGPT/GPT-5.4-over-Codex), but five things hold it back from an "enterprise-grade, ships-confidently" release:
 
 1. **GPT-5.4 burns far more tokens than Claude.** The chatbot sends both providers the same payload (system prompt ~700 tok + 8 reranked chunks ~5k tok + short history). The gap is in *how* GPT-5.4 is reached: it runs through the **Codex CLI** (`codex exec`), which injects its own large coding-agent scaffold (system prompt + built-in tools incl. `_search`) on every stateless call (~55k input tok/turn, per v2.7 notes), and GPT-5.x emits **reasoning tokens** (billed as output) on top of the answer. GPT-5.4 is accurate but expensive.
 2. **No in-app branding.** The exe has a window/taskbar `.ico`, but nothing inside the app shows the Contoso logo — it looks unfinished.
 3. **UI reads like a terminal**, not an enterprise tool: default Qt chrome, monospace Consolas chat, ad-hoc inline colors, no cohesive theme.
 4. **Out-of-scope handling is blunt.** Unrelated questions get the same generic "not in the knowledge base" reply as borderline-but-related ones, and topic matching can be sharper.
+5. **Ticket answers are unreliable and incomplete (alpha feedback).** The same question can return a partial answer, then nothing, then a partial answer again; the full on-ticket solution + root cause isn't surfaced; supporting screenshots are never referenced. Confirmed in code: each ticket is **one chunk** (`ticket_ingest.py:201`), so a long ticket's embedding/rerank only "sees" its head (MiniLM ~256 / ms-marco ~512 token limits) → weak, phrasing-sensitive matches around the **0.06 abstain floor** (`retriever.py:120`) = the partial→none→partial flakiness; the **`max_tokens=1024`** answer cap (`orchestrator.py:259`) truncates long resolutions; the cause-explanation can be missed; images are saved but never referenced; and on Codex the rephrase-retry is broken (bug-062).
 
 Plus: we want a **security analysis + review** before shipping, and a **latent bug** was found during planning (the Codex query-rewrite path uses a model the current Codex CLI rejects — see §6.1).
 
@@ -23,13 +24,15 @@ Plus: we want a **security analysis + review** before shipping, and a **latent b
 - **Brand the app**: Contoso logo in the header, welcome/empty state, About dialog, and a launch splash.
 - **Enterprise-grade UI**: cohesive theme, readable chat, tidy layout — without removing any existing feature.
 - **Smarter out-of-scope behavior** (3-tier) + more accurate topic matching.
+- **Reliable, complete, expert-level ticket answers**: when the answer is on the ticket, surface the **full** on-ticket solution **and** the root cause, consistently (no partial→none flakiness); attach a related **KB article** when one exists; and **reference the ticket's screenshot(s)** (linking to the ticket — images are not shown/stored, per policy).
 - **Security hardening** (from the completed review): close the secret-redaction gap so no secrets ship in the index, add an output-side PII/secret scrub, harden personal-name redaction and the Learn-Mode password, and lock chat rendering with a regression test.
 - **One single exe**, same one-folder layout style as v2.8.
 
 ## 3. Non-Goals
 
 - **No OpenAI API-key path.** Stay account-based (Codex CLI). True token parity (which needs the direct API) is explicitly deferred. We narrow the gap; we do not claim identical counts.
-- **No retrieval-engine rewrite.** Threshold tuning + the existing rerank pipeline only; no BM25/hybrid/reranker swap (that was the abandoned v3 line).
+- **No retrieval-engine *swap*.** No BM25/hybrid/reranker-model change (that was the abandoned v3 line). But ticket **re-chunking**, **parent-document assembly**, threshold tuning, and a **secondary KB pass** ARE in scope (§6.7) — they reuse the existing embed+rerank pipeline.
+- **No images shown or stored by the app.** Ticket screenshots are referenced via a link to the ticket only (PII-safe); no image bytes are bundled, embedded, or rendered.
 - **No scraper changes.**
 - **No change to the redaction guarantees** — security review may *tighten*, never loosen, and any behavior/goal-affecting security change is brought to the user first.
 - **No functional removals** in the UI work (Learn Mode, attachments, reindex, token usage, drag-drop, Ctrl+V all preserved).
@@ -49,17 +52,21 @@ Plus: we want a **security analysis + review** before shipping, and a **latent b
 | Security-affecting changes | **Ask the user first** before applying anything that changes behavior/goals. |
 | HIGH secret leak (bug-063) | **Fix in v2.9.1, sequenced first** — close the redaction gap + rebuild/re-ship a clean index. |
 | Security scope | Also fix: output-side PII/secret scrub, personal-name hardening, Learn-Mode KDF, rendering regression test (all four approved). |
+| Ticket completeness | **Completeness wins** — always surface the full on-ticket solution + root cause; token savings come from reasoning effort + input trim, never from clipping answers. |
+| Ticket images | **Link to the ticket** + a note that the ticket's screenshot may hold extra detail. No images shown/stored/bundled (PII-safe). |
+| Ticket retrieval | **Re-chunk tickets for retrieval + assemble the full ticket for the answer** (parent-document); don't hard-abstain on a clear ticket match; attach a related KB article when one exists. |
 
 ## 5. Approach
 
-Six independent workstreams, each verifiable on its own, sequenced so token work (highest uncertainty) is proven before the cosmetic work:
+Seven independent workstreams, each verifiable on its own, sequenced so the security fix and the highest-uncertainty work are proven before the cosmetic work:
 
 1. **Codex token reduction** — measurement spike → flag tuning (reasoning effort, disable injected tool) → rewrite-model fix → optional shared-context trim, each gated by the golden set.
 2. **Out-of-scope 3-tier + matching** — new threshold + messages in the orchestrator/prompt, tuned on the golden set.
 3. **Logo/branding** — rasterized assets bundled + loaded freeze-aware; header/welcome/About/splash.
 4. **UI polish** — app-wide QSS theme + chat restyle + control regrouping.
 5. **Security hardening (review completed)** — secret-redaction fix (sequenced **first**, gates the ship) → output-side scrub → name hardening → Learn-Mode KDF → rendering regression test. See §6.5.
-6. **Version + housekeeping** — bump to 2.9.1, tests, fresh-workpath build, re-ship index.
+6. **Ticket-answer quality** — re-chunk tickets + parent-document assembly, lift the answer cap, reliability tuning, ticket-image link note, KB-alongside-ticket, expert-format prompt. See §6.7. (Shares the §6.5 reindex / `CHUNK_SCHEMA_VERSION` bump.)
+7. **Version + housekeeping** — bump to 2.9.1, tests, fresh-workpath build, re-ship index.
 
 ## 6. Detailed Design
 
@@ -141,8 +148,33 @@ Org-policy alignment: every change here **tightens** redaction/secret handling; 
 - `APP_VERSION = "2.9.1"` (single source of truth; drives window title, splash/About, and exe name via the spec).
 - Update `test_version` to assert `2.9.1`.
 - Build into a **fresh `--workpath`** (OneDrive `WinError 5` avoidance, per cerebrum); `COLLECT --noconfirm` recreates `dist/<name>`, so **re-copy the prebuilt index** into `chatbot_state/` after the build (same one-folder layout as v2.8).
-- **Bump `CHUNK_SCHEMA_VERSION`** (`ingest.py`) so the §6.5(a) redaction fix forces a clean full re-embed; rebuild and re-ship the index (no secrets in the new index).
+- **Bump `CHUNK_SCHEMA_VERSION`** (`ingest.py`) so the §6.5(a) redaction fix **and** the §6.7 ticket re-chunking force a clean full re-embed; rebuild and re-ship the index (no secrets in the new index).
 - Tidy the stale "v3-beta bge rerankers" comment in the spec (the v3 line is gone).
+
+### 6.7 Ticket-answer quality, completeness & reliability — `Dev/kb_chatbot/ticket_ingest.py`, `chat/orchestrator.py`, `retriever.py`, `prompt.py`, `config.py`
+
+**Problem (alpha feedback + code):** tickets are single-chunk, so a long ticket embeds/reranks only its head → flaky, partial retrieval around the abstain floor; the 1024-token cap clips long answers; the cause-explanation can be missed; images are never referenced. Fixes:
+
+**(a) Re-chunk tickets for retrieval + parent-document assembly for the answer — `ticket_ingest.py`, `retriever.py`, `orchestrator.py`.**
+Split a ticket into multiple retrieval chunks (~`CHUNK_TARGET_WORDS` with overlap): the problem, the root-cause note, and each resolution comment, all sharing the same `ticket_id` and an ordered `chunk_index`; each chunk's text leads with `Ticket #<id> — <title>` for standalone context, and the structured staff/client header rides on the first chunk. Short tickets stay single-chunk. At answer time, when **any** ticket chunk lands in the reranked top-K, **expand to the whole ticket**: fetch all sibling chunks via `get_by_ticket_ids`, order by `chunk_index`, and assemble them into ONE context entry (deduped so the ticket appears once with its full problem + cause + resolution). The LLM always sees the complete ticket; recall is driven by whichever part matched.
+
+**(b) Lift/adapt the answer length cap — `orchestrator.py`.**
+Raise `max_tokens` from 1024 to fit a full resolution (e.g. 2048, or adaptive to assembled-context size) so complete answers aren't truncated. **Completeness wins** (locked); the token budget is protected by §6.1 (reasoning effort + input trim), not by clipping answers. Same cap on both providers for parity.
+
+**(c) Capture the complete ticket content — `ticket_ingest.py`.**
+Ensure the chunk(s) include the problem, the root-cause/why-it-occurred explanation, and the full resolution. Broaden extraction so a cause stated in a staff comment isn't dropped (all staff resolution comments already included). Redaction — incl. the §6.5 secret scrubber — runs on every part.
+
+**(d) Reliability — no spurious abstain on a clear ticket match — `orchestrator.py`, `retriever.py`, `config.py`.**
+A confident ticket hit must answer consistently. Parent expansion already stabilizes this (any matching part pulls the whole ticket in); additionally, don't abstain/clarify when a strong ticket match exists, and the §6.1 rephrase fix (bug-062) lets the 2nd ask self-recover on Codex. Determinism is asserted by tests (same Q + light rephrase → answer both times).
+
+**(e) Ticket images → link note (PII-safe) — `ticket_ingest.py`, `orchestrator.py`, `prompt.py`.**
+`ticket_ingest` sets `has_images` (bool/count) in chunk metadata from the ticket JSON's `attachment_images` (no bytes/paths in the index). When a **cited** ticket chunk has `has_images`, the orchestrator **deterministically appends** a note — e.g. *"📎 This ticket includes a screenshot that may contain extra detail — open the ticket to view it: [Ticket #N](url)."* No images are bundled, embedded, or rendered; the note + ticket link is the only surfacing (matches the locked decision).
+
+**(f) KB article alongside the ticket — `orchestrator.py`, `retriever.py`.**
+When the top results are ticket-dominated, run a **secondary KB-only retrieval** (filter `kind != ticket`) for the same query and merge the best KB chunk(s) into context, so steps can cite both `[Ticket #N](url)` and the KB `[Title](url)`. If no KB match clears a small relevance floor, none is added ("if there is one"). Reuses the existing pipeline; bounded extra cost.
+
+**(g) Expert-format prompt — `prompt.py`.**
+Strengthen the ticket-answer format (reusing rules 6–11): **Problem → Root cause → Resolution (every step, each cited) → KB references (if any) → screenshot note (if any) → Sources**. The completeness + full-context changes deliver the "expert" depth; the prompt makes the structure explicit.
 
 ## 7. Testing
 
@@ -159,12 +191,20 @@ Org-policy alignment: every change here **tightens** redaction/secret handling; 
   - Output scrub: a planted email/secret in a model answer is redacted before render/persist.
   - Learn-Mode: salted KDF round-trips; wrong password rejected; constant-time compare; migration off the shipped default doesn't lock the user out.
   - Rendering regression: crafted citation title/URL (`<img onerror>`, quote-injection, `javascript:`/`file:`) renders inert.
+- **Ticket-answer quality (deterministic, CI-green via FakeProvider + a fixed fixture index):**
+  - **Completeness:** for a fixture ticket with a known multi-part resolution + cause, retrieval + parent expansion assembles the FULL ticket (all parts, ordered) into one context entry; the built prompt contains every resolution step and the root cause.
+  - **Reliability/determinism:** the same question and a light rephrase both return a non-abstain answer containing the resolution (reproduces, then proves the fix for, the partial→none→partial flakiness).
+  - **Not truncated:** with the raised cap, a long resolution renders in full (no mid-answer cut).
+  - **Image note:** a fixture ticket whose JSON has `attachment_images` → metadata `has_images` true → the answer appends the screenshot note + ticket link; assert NO image bytes/paths appear anywhere in context or output.
+  - **KB-alongside:** a query matching both a ticket and a KB article → context includes both → answer cites `[Ticket #N](url)` and the KB `[Title](url)`; a ticket with no KB match attaches none.
+  - **No leak:** the assembled ticket context + the answer pass the §6.5 secret/PII scrub.
+- **Golden ticket Q&A with expected answers (accuracy gate — real provider, both Claude + GPT-5.4):** a curated set of `question → expected key facts + required citations + screenshot-note presence`, asserting the answer contains the expected on-ticket solution facts and the right citations. The deterministic pipeline tests above stay green in CI; this live set (LLM-nondeterministic) must be **green at the build gate**. Extends `tests/fixtures/golden_qa.json` with ticket cases (incl. the alpha-reported scenario).
 
 ## 8. Verification before build (standing rule)
 
 1. Full test suite green (Claude + Codex provider paths, orchestrator tiers, version).
 2. Golden-set token + accuracy report attached; reasoning effort chosen = lowest with no accuracy loss.
-3. Source-run scenarios on **both** providers: (a) in-scope how-to answers identically in substance; (b) clearly-unrelated question → "outside scope"; (c) related-but-vague → clarify + suggestions; (d) GPT-5.4 token usage visibly reduced in the Token Usage dialog.
+3. Source-run scenarios on **both** providers: (a) in-scope how-to answers identically in substance; (b) clearly-unrelated question → "outside scope"; (c) related-but-vague → clarify + suggestions; (d) GPT-5.4 token usage visibly reduced in the Token Usage dialog; (e) **ticket question → full resolution + root cause + KB link (if any) + screenshot note**, and the **same question asked twice returns a consistent, complete answer** (the alpha-reported flakiness is gone).
 4. Branding visible from source: header logo, welcome state, About, splash.
 5. Re-run the **extended full-corpus probe** on the rebuilt index: external email/phone leaks = 0 **and** secret-shaped tokens = 0; confirm the shipped index is clean before packaging.
 6. **Smoke test + user confirmation**, then bump version, build into fresh `--workpath`, re-copy the prebuilt index, confirm in the exe.
@@ -181,3 +221,7 @@ Org-policy alignment: every change here **tightens** redaction/secret handling; 
 - **Over-redaction from the entropy scrubber** — too-aggressive secret detection could eat legitimate IDs, version strings, or order numbers. Mitigated by conservative thresholds (length + mixed-class requirements), allow-listing known benign shapes, and unit tests asserting common legitimate tokens survive; tuned against the corpus.
 - **Learn-Mode KDF migration** — existing installs carry an old SHA-256 hash; migrate on first run or prompt for a new password so no one is locked out, and don't leave the shipped default usable.
 - **Secrets already shipped** — the HIGH fix cleans the *new* index; any previously distributed v2.8 build still contains the old index. Out of scope to remediate copies already in the field, but flagged here for awareness (internal-only distribution).
+- **Ticket re-chunking reindex** — multi-chunk tickets change chunk IDs/counts; the `CHUNK_SCHEMA_VERSION` bump forces a clean re-embed and the index is re-shipped; parent expansion must reconstruct ticket order correctly (tested via the completeness test).
+- **Parent-expansion context size** — assembling a whole long ticket can be large; bounded by a sensible per-ticket assembled-length cap and by retrieval still selecting only relevant tickets (not all). Watched in the token report.
+- **Longer ticket answers raise output tokens** — accepted per "completeness wins"; the GPT-5.4 vs Claude comparison stays apples-to-apples (same completeness both providers); savings come from reasoning effort + input trim.
+- **KB-alongside false attach** — a weak KB match could attach an irrelevant article; gated by a small relevance floor and "if there is one" (never a forced attach).
