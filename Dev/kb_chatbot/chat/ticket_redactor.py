@@ -150,14 +150,36 @@ def redact(text: str, *, known_terms: list[str]) -> str:
     return out.strip()
 
 
+# Mirrors citations._CITE_RE / gui._LINK_RE — matches [Title](https://...) spans.
+# Used by scrub_answer to protect citation links from all scrub substitutions.
+_CITE_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)")
+
+
 def scrub_answer(text: str) -> str:
     """Defense-in-depth: strip emails / credential pairs / labelled secrets /
     secret-shaped tokens / phones from an LLM answer before it is shown or
     persisted. Deliberately does NOT run the contextual name patterns or
     known_terms — internal staff usernames and ordinary prose must survive,
-    and citations must stay intact."""
+    and citations must stay intact.
+
+    Citation links [Title](url) are protected verbatim: each matched span is
+    replaced with a placeholder before scrubbing, then restored afterward, so
+    numeric page IDs in URLs (matched by _PHONE) and long URL slug segments
+    (matched by _LONG_TOKEN) are never corrupted."""
     if not text:
         return ""
+
+    # ── 1. Protect citation links ─────────────────────────────────────────────
+    saved: list[str] = []
+
+    def _save_cite(m: re.Match) -> str:
+        idx = len(saved)
+        saved.append(m.group(0))
+        return f"\x00CITE{idx}\x00"
+
+    text = _CITE_LINK_RE.sub(_save_cite, text)
+
+    # ── 2. Scrub per-line (citations are now placeholders, safe from patterns) ─
     out_lines: list[str] = []
     for line in text.replace("\r", "").split("\n"):
         line = _EMAIL.sub("[redacted]", line)
@@ -166,4 +188,10 @@ def scrub_answer(text: str) -> str:
         line = _redact_secret_shapes(line)
         line = _PHONE.sub("[redacted]", line)
         out_lines.append(line)
-    return "\n".join(out_lines)
+    scrubbed = "\n".join(out_lines)
+
+    # ── 3. Restore citation links verbatim ────────────────────────────────────
+    for idx, original in enumerate(saved):
+        scrubbed = scrubbed.replace(f"\x00CITE{idx}\x00", original)
+
+    return scrubbed

@@ -1,4 +1,4 @@
-from Dev.kb_chatbot.chat.ticket_redactor import redact
+from Dev.kb_chatbot.chat.ticket_redactor import redact, scrub_answer
 
 
 def test_emails_removed():
@@ -224,8 +224,6 @@ def test_non_signoff_short_capitalized_line_survives():
     assert "Click Save Now" in out
 
 
-from Dev.kb_chatbot.chat.ticket_redactor import scrub_answer
-
 def test_scrub_answer_removes_email_and_secret():
     out = scrub_answer("Contact bob@acme.com with key sk_live_AbCd1234EfGh5678WxYz")
     assert "bob@acme.com" not in out
@@ -242,3 +240,19 @@ def test_scrub_answer_does_not_redact_capitalized_names_in_prose():
     out = scrub_answer("The CSQA owner p.shah handled this; ask Sarah on the team.")
     assert "p.shah" in out
     assert "Sarah" in out
+
+
+def test_scrub_answer_preserves_citation_with_numeric_and_slug_urls():
+    text = ("Resolved. See [Booking a Spot Deal v2]"
+            "(https://help.contoso.example/display/TD/Booking+a+Spot+Deal+v2) "
+            "and [Ticket #75919](https://support.contoso.example/viewpage.action?pageId=12345678).")
+    out = scrub_answer(text)
+    assert "https://help.contoso.example/display/TD/Booking+a+Spot+Deal+v2" in out
+    assert "https://support.contoso.example/viewpage.action?pageId=12345678" in out
+    assert "Booking a Spot Deal v2" in out
+
+
+def test_scrub_answer_still_strips_prose_email_outside_links():
+    out = scrub_answer("Email bob@acme.com then see [KB](https://help.contoso.example/x).")
+    assert "bob@acme.com" not in out
+    assert "https://help.contoso.example/x" in out
