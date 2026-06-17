@@ -15,6 +15,7 @@ from Dev.kb_chatbot.citations import validate as validate_citations
 from Dev.kb_chatbot.llm.base import LLMProvider
 from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeNotFoundError
 from Dev.kb_chatbot.prompt import build_system_prompt, build_messages, format_suggestions
+from Dev.kb_chatbot.chat.ticket_redactor import scrub_answer
 from Dev.kb_chatbot.retriever import Retriever, Filters, assemble_ticket
 
 log = logging.getLogger("kb_chatbot.orchestrator")
@@ -291,7 +292,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             deps.usage_logger(turn)
             return turn
 
-        vr = validate_citations(resp.text, result.chunks)
+        vr = validate_citations(scrub_answer(resp.text), result.chunks)
         answer_text = vr.stripped_text
         # Footer fires for scores in [CONFIDENCE_FLOOR, LOW_CONFIDENCE_CEILING)
         if result.rerank_top_score < LOW_CONFIDENCE_CEILING:

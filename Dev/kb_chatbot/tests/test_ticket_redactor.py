@@ -222,3 +222,23 @@ def test_signature_line_after_signoff_dropped():
 def test_non_signoff_short_capitalized_line_survives():
     out = redact("Open the panel.\nClick Save Now", known_terms=[])
     assert "Click Save Now" in out
+
+
+from Dev.kb_chatbot.chat.ticket_redactor import scrub_answer
+
+def test_scrub_answer_removes_email_and_secret():
+    out = scrub_answer("Contact bob@acme.com with key sk_live_AbCd1234EfGh5678WxYz")
+    assert "bob@acme.com" not in out
+    assert "sk_live_AbCd1234EfGh5678WxYz" not in out
+
+def test_scrub_answer_keeps_normal_prose_and_links():
+    text = "Open the dealing screen. See [Ticket #5](https://support.contoso.example/x)."
+    out = scrub_answer(text)
+    assert "Open the dealing screen." in out
+    assert "[Ticket #5](https://support.contoso.example/x)" in out
+
+def test_scrub_answer_does_not_redact_capitalized_names_in_prose():
+    # name patterns must NOT run here (would mangle legitimate staff usernames/prose)
+    out = scrub_answer("The CSQA owner p.shah handled this; ask Sarah on the team.")
+    assert "p.shah" in out
+    assert "Sarah" in out

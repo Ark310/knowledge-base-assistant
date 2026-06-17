@@ -148,3 +148,22 @@ def redact(text: str, *, known_terms: list[str]) -> str:
     out = "\n".join(cleaned_lines)
     out = re.sub(r"[ \t]{2,}", " ", out)
     return out.strip()
+
+
+def scrub_answer(text: str) -> str:
+    """Defense-in-depth: strip emails / credential pairs / labelled secrets /
+    secret-shaped tokens / phones from an LLM answer before it is shown or
+    persisted. Deliberately does NOT run the contextual name patterns or
+    known_terms — internal staff usernames and ordinary prose must survive,
+    and citations must stay intact."""
+    if not text:
+        return ""
+    out_lines: list[str] = []
+    for line in text.replace("\r", "").split("\n"):
+        line = _EMAIL.sub("[redacted]", line)
+        line = _CRED_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
+        line = _CRED_LABEL.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
+        line = _redact_secret_shapes(line)
+        line = _PHONE.sub("[redacted]", line)
+        out_lines.append(line)
+    return "\n".join(out_lines)

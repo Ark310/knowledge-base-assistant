@@ -69,3 +69,11 @@ def test_answer_uses_raised_max_tokens():
                 Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
     assert llm.calls[-1]["max_tokens"] == config.ANSWER_MAX_TOKENS
     assert config.ANSWER_MAX_TOKENS >= 2048
+
+
+def test_orchestrator_scrubs_answer_before_render():
+    llm = FakeProvider(canned_text=f"resolved [Ticket #75919]({URL}) email leaked@acme.com")
+    d = Deps(retriever=FragmentRetriever(), llm=llm)
+    turn = handle_turn("why did GetWebDeal return null buy amount",
+                       Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
+    assert "leaked@acme.com" not in turn.content
