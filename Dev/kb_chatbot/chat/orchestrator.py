@@ -26,6 +26,12 @@ ABSTAIN_MESSAGE = (
     "a related keyword, or a how-to topic."
 )
 
+OUT_OF_SCOPE_MESSAGE = (
+    "That's outside the scope of the Contoso knowledge base — it covers the API, "
+    "TradeDesk, SalesHub, Web2, Web4 and related product documentation and support tickets. "
+    "If your question is about one of those, try naming the product and what you're trying to do."
+)
+
 ABSTAIN_WITH_SUGGESTIONS_TEMPLATE = """\
 I don't have enough information in the knowledge base to answer this confidently.
 
@@ -212,7 +218,8 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
 
     # Escalation: one stateless LLM rewrite when post-fusion retrieval abstains
     # and there is conversation context to rewrite from.
-    if result.abstain_reason and deps.rewriter is not None and history:
+    if (result.abstain_reason and deps.rewriter is not None and history
+            and result.rerank_top_score >= config.OUT_OF_SCOPE_FLOOR):
         deps.on_progress("rephrase")
         rw = deps.rewriter(user_msg, history)
         if rw is not None:
@@ -313,6 +320,12 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             attachments=[a.filename for a in (deps.attachments or [])],
         )
         session.last_context_ids = [c.id for c in result.chunks]  # focus for follow-ups
+        session.add(turn)
+        deps.usage_logger(turn)
+        return turn
+
+    if result.rerank_top_score < config.OUT_OF_SCOPE_FLOOR:
+        turn = Turn(role="assistant", kind="abstain", content=OUT_OF_SCOPE_MESSAGE)
         session.add(turn)
         deps.usage_logger(turn)
         return turn
