@@ -39,9 +39,11 @@ _PAREN_NAME = re.compile(r"\(([A-Z][a-z]+)\)")
 _CRED_LABEL = re.compile(
     r"(?i)\b(pass(?:word|phrase)?|pwd|user\s?name|username|login|"
     r"api[\s_-]?key|secret(?:\s*key)?|access[\s_-]?key|private[\s_-]?key|"
-    r"decrypt\s*key|auth[\s_-]?token|token|credentials?)\b"
+    r"decrypt\s*key|auth[\s_-]?token|token|credentials?|"
+    r"client[\s_-]?id|customer[\s_-]?id|gateway(?:\s*customer)?(?:\s*id)?|"
+    r"sk|client[\s_-]?secret|bearer)\b"
     r"""(["']?\s*(?:for[^:=\n]*)?[:=]\s*)"""
-    r"""(?:(["'])[^"'\n]*\2|\S+)"""
+    r"""(?:(["'])[^"'\n]*\2|[^\n;,]+)"""
 )
 # Credential pairs in URL/query form: password=..., pwd=..., secret=..., token=...
 _CRED_KV = re.compile(

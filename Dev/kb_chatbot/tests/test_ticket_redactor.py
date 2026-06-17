@@ -186,3 +186,24 @@ def test_ordinary_long_word_not_redacted():
 def test_short_id_not_redacted():
     out = redact("See order 75100 and ref AB12 for details", known_terms=[])
     assert "75100" in out and "AB12" in out
+
+
+def test_clientid_label_redacted():
+    out = redact("ClientID: G5qjl8ujMGHJ", known_terms=[])
+    assert "G5qjl8ujMGHJ" not in out
+
+
+def test_gateway_customer_id_redacted():
+    out = redact("Gateway Customer ID: Comerica22964e769bbf2527", known_terms=[])
+    assert "Comerica22964e769bbf2527" not in out
+
+
+def test_multi_word_credential_value_redacted():
+    out = redact("Password: my secret pass phrase", known_terms=[])
+    assert "secret pass phrase" not in out
+    assert "Password" in out  # the label survives
+
+
+def test_credential_prose_without_separator_survives():
+    out = redact("Please reset the password to continue", known_terms=[])
+    assert "reset the password to continue" in out
