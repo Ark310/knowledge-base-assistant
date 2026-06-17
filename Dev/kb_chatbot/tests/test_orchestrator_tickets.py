@@ -107,3 +107,29 @@ def test_ticket_without_images_has_no_note():
     turn = handle_turn("why did GetWebDeal return null buy amount",
                        Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
     assert "screenshot" not in turn.content.lower()
+
+
+class TicketPlusKbRetriever(FragmentRetriever):
+    def retrieve_quick(self, query, limit=10):
+        return [Chunk(id="kb1", text="How-to: GetWebDeal fields",
+                      metadata={"product": "tradedesk", "category": "api",
+                                "title": "GetWebDeal How-To",
+                                "url": "https://help.contoso.example/getwebdeal"})]
+
+
+def test_kb_article_attached_alongside_ticket():
+    llm = FakeProvider(canned_text=f"resolved [Ticket #75919]({URL})")
+    d = Deps(retriever=TicketPlusKbRetriever(), llm=llm)
+    handle_turn("why did GetWebDeal return null buy amount",
+                Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
+    sent = llm.calls[-1]["messages"][-1]["content"]
+    assert "GetWebDeal How-To" in sent            # KB article merged into context
+    assert "https://help.contoso.example/getwebdeal" in sent
+
+
+def test_no_kb_attached_when_none_exists():
+    llm = FakeProvider(canned_text=f"resolved [Ticket #75919]({URL})")
+    d = Deps(retriever=FragmentRetriever(), llm=llm)  # retrieve_quick returns []
+    turn = handle_turn("why did GetWebDeal return null buy amount",
+                       Session.new(), Filters(), "claude-haiku-4-5-20251001", deps=d)
+    assert turn.kind == "answer"   # no crash, no KB added

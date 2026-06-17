@@ -184,6 +184,21 @@ def _expand_ticket_chunks(chunks: list[Chunk], retriever) -> list[Chunk]:
     return out
 
 
+def _ensure_kb_alongside(query: str, chunks: list[Chunk], retriever) -> list[Chunk]:
+    """If the context has a ticket but no KB article, attach the best-matching KB
+    chunk (best-effort, 'if there is one'). Reuses the wide-net retrieve_quick."""
+    has_ticket = any(c.metadata.get("kind") == "ticket" for c in chunks)
+    has_kb = any(c.metadata.get("kind") != "ticket" for c in chunks)
+    if not has_ticket or has_kb:
+        return chunks
+    seen = {c.id for c in chunks}
+    for cand in retriever.retrieve_quick(query, limit=10):
+        if cand.metadata.get("kind") != "ticket" and cand.metadata.get("url") \
+                and cand.id not in seen:
+            return [*chunks, cand]
+    return chunks
+
+
 def _merge_chunks(primary: list[Chunk], secondary: list[Chunk], *, limit: int) -> list[Chunk]:
     out: list[Chunk] = []
     seen: set[str] = set()
@@ -278,6 +293,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
                 return turn
 
         result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)
+        result.chunks = _ensure_kb_alongside(retrieval_query, result.chunks, deps.retriever)
         try:
             messages = build_messages(
                 context_chunks=result.chunks,
