@@ -26,7 +26,7 @@ COLLECTION_NAME = "kbs"
 BATCH_SIZE = 64
 DELETE_BATCH = 256
 MANIFEST_NAME = "index_manifest.json"
-CHUNK_SCHEMA_VERSION = 2  # bump when ticket/article chunk text or metadata layout changes -> forces a clean re-embed
+CHUNK_SCHEMA_VERSION = 3  # bump when ticket/article chunk text or metadata layout changes -> forces a clean re-embed
 
 OnEvent = Callable[[dict], None]
 

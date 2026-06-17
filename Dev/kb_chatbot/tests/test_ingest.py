@@ -231,3 +231,8 @@ def test_chunk_schema_change_forces_rebuild(tmp_path):
     mf.write_text(json.dumps(data), encoding="utf-8")
     r2 = ingest(lib, chroma)
     assert r2.chunks_embedded == r1.chunks_embedded       # all re-embedded
+
+
+def test_chunk_schema_version_is_3():
+    from Dev.kb_chatbot.ingest import CHUNK_SCHEMA_VERSION
+    assert CHUNK_SCHEMA_VERSION == 3
