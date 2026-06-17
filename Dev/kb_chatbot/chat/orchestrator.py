@@ -15,7 +15,7 @@ from Dev.kb_chatbot.citations import validate as validate_citations
 from Dev.kb_chatbot.llm.base import LLMProvider
 from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeNotFoundError
 from Dev.kb_chatbot.prompt import build_system_prompt, build_messages, format_suggestions
-from Dev.kb_chatbot.retriever import Retriever, Filters
+from Dev.kb_chatbot.retriever import Retriever, Filters, assemble_ticket
 
 log = logging.getLogger("kb_chatbot.orchestrator")
 
@@ -153,6 +153,25 @@ def _is_reference_followup(text: str) -> bool:
             or bool(_FOLLOWUP_HINT.search(text)))
 
 
+def _expand_ticket_chunks(chunks: list[Chunk], retriever) -> list[Chunk]:
+    """Replace each ticket fragment with the full assembled ticket (parent-document
+    retrieval). One assembled chunk per ticket_id, kept at the position of first
+    occurrence; non-ticket chunks are left untouched; order is otherwise preserved."""
+    out: list[Chunk] = []
+    seen_tickets: set[str] = set()
+    for c in chunks:
+        tid = c.metadata.get("ticket_id") if c.metadata.get("kind") == "ticket" else None
+        if not tid:
+            out.append(c)
+            continue
+        if tid in seen_tickets:
+            continue
+        seen_tickets.add(tid)
+        siblings = retriever.get_by_ticket_ids([tid]) or [c]
+        out.append(assemble_ticket(siblings))
+    return out
+
+
 def _merge_chunks(primary: list[Chunk], secondary: list[Chunk], *, limit: int) -> list[Chunk]:
     out: list[Chunk] = []
     seen: set[str] = set()
@@ -245,6 +264,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
                 deps.usage_logger(turn)
                 return turn
 
+        result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)
         try:
             messages = build_messages(
                 context_chunks=result.chunks,
