@@ -817,6 +817,10 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(12, 0, 12, 12)
         outer.setSpacing(8)
 
+        # Brand header — installed as the QMainWindow menu-widget so it renders
+        # ABOVE the toolbar dock area (the very top of the window chrome).
+        self.setMenuWidget(self._build_header())
+
         tb = QToolBar(); tb.setMovable(False); self.addToolBar(tb)
         self._act_reindex = QAction("Reindex", self); tb.addAction(self._act_reindex)
         self._act_reindex.setToolTip("Run after adding new articles to the knowledge base")
@@ -834,10 +838,6 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         self._act_about = QAction("About", self)
         tb.addAction(self._act_about)
-
-        # Header bar — logo + title at the very top of the central layout, with a
-        # 2px brand-blue underline. Sits above the controls bar.
-        outer.addWidget(self._build_header())
 
         # Controls bar — Product / AI Provider / Model grouped into a tidy card.
         controls = QFrame()

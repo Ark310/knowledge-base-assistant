@@ -4,7 +4,8 @@ grabs PNGs for the user's visual sign-off, WITHOUT touching the heavy InitWorker
 QTextBrowser sample bubble HTML / construct AboutDialog directly.
 
 Run:  set QT_QPA_PLATFORM=offscreen & scraper\\venv\\Scripts\\python.exe _v291_ui_shots.py
-Output: .wolf/designqc-captures/ui_header.png, ui_chat.png, ui_welcome.png, ui_about.png
+Output: .wolf/designqc-captures/ui_header.png, ui_chat.png, ui_welcome.png, ui_about.png,
+        ui_window.png (full MainWindow, InitWorker stubbed)
 """
 from __future__ import annotations
 import os
@@ -110,10 +111,32 @@ def shoot_about() -> Path:
     return _save(dlg, "ui_about.png")
 
 
+def shoot_window() -> Path:
+    """Full MainWindow at 1100×780 with InitWorker stubbed (no torch/chroma/LLM).
+    Confirms the brand header sits at the very top (above the QToolBar) as
+    set via setMenuWidget in the approved layout."""
+    # Stub out the heavy background worker before constructing MainWindow.
+    # _start_init_worker() fires inside __init__ after _build_ui(); replacing it
+    # with a no-op means QApplication shows the window but never touches ML models.
+    original = gui.MainWindow._start_init_worker
+    gui.MainWindow._start_init_worker = lambda self: None
+    try:
+        win = gui.MainWindow()
+        win._retriever = None   # ensure retriever is not expected
+        win.resize(1100, 780)
+        win.show()
+        path = _save(win, "ui_window.png")
+    finally:
+        gui.MainWindow._start_init_worker = original
+        win.close()
+    return path
+
+
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyleSheet(gui._app_stylesheet())
-    produced = [shoot_header(), shoot_chat(), shoot_welcome(), shoot_about()]
+    produced = [shoot_header(), shoot_chat(), shoot_welcome(), shoot_about(),
+                shoot_window()]
     for p in produced:
         size = p.stat().st_size if p.exists() else 0
         print(f"wrote {p}  ({size} bytes)")
