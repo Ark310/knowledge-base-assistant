@@ -80,12 +80,42 @@ def provider_of_model(model_id: str) -> Optional[str]:
             return pid
     return None
 
-# ── Products (six) ────────────────────────────────────────────────────────────
-PRODUCTS = ("api", "tradedesk", "saleshub", "web2", "web4", "other")
+# ── Products (seven) ─────────────────────────────────────────────────────────
+PRODUCTS = ("api", "tradedesk", "saleshub", "formflow", "web2", "web4", "other")
 PRODUCT_DISPLAY = {
     "api": "API", "tradedesk": "TradeDesk", "saleshub": "SalesHub",
-    "web2": "Web2", "web4": "Web4", "other": "Other",
+    "formflow": "FormFlow", "web2": "Web2", "web4": "Web4", "other": "Other",
 }
+
+# FormFlow (standalone) == FormFlow (legacy, embedded in TradeDesk/others) — one
+# forms product. SalesHub is separate.
+_PRODUCT_SYNONYMS = {
+    "formflow": "formflow", "formflow": "formflow",
+    "formflow": "formflow", "formflow": "formflow",
+    "saleshub": "saleshub", "saleshub": "saleshub",
+    "tradedesk": "tradedesk", "td": "tradedesk",
+    "web2": "web2", "web4": "web4", "api": "api", "other": "other",
+}
+
+
+def resolve_product(name: str) -> Optional[str]:
+    """Map a product name/synonym typed by a user to a canonical slug, or None."""
+    return _PRODUCT_SYNONYMS.get((name or "").strip().lower())
+
+
+# Raw ticket "Project" value -> canonical product slug (tickets store rich Project
+# names that don't match KB slugs). Unknown -> "other"; raw value kept separately.
+_TICKET_PROJECT_MAP = {
+    "td client server": "tradedesk", "business modeling": "tradedesk",
+    "td web api": "api", "rest api": "api",
+    "td web portal v4.0": "web4",
+    "td web portal v2.0": "web2", "td web portal v1": "web2",
+    "formflow": "formflow", "saleshub": "saleshub",
+}
+
+
+def normalize_ticket_product(raw: str) -> str:
+    return _TICKET_PROJECT_MAP.get((raw or "").strip().lower(), "other")
 
 # ── Retrieval defaults ────────────────────────────────────────────────────────
 TOP_K_RETRIEVE      = 30

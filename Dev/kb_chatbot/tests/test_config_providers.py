@@ -79,3 +79,28 @@ def test_openai_offers_gpt54_mini():
     assert "gpt-5.4-mini" in models.values()
     # gpt-5.4 stays the default
     assert config.PROVIDERS["openai"]["default_model"] == "gpt-5.4"
+
+
+def test_formflow_is_first_class_product():
+    from Dev.kb_chatbot import config
+    assert "formflow" in config.PRODUCTS
+    assert config.PRODUCT_DISPLAY["formflow"] == "FormFlow"
+    assert "saleshub" in config.PRODUCTS  # stays separate
+
+
+def test_resolve_product_synonyms():
+    from Dev.kb_chatbot import config
+    for s in ("FormFlow", "formflow", "formflow", "FormFlow"):
+        assert config.resolve_product(s) == "formflow"
+    assert config.resolve_product("SalesHub") == "saleshub"
+    assert config.resolve_product("nonsense") is None
+
+
+def test_normalize_ticket_product():
+    from Dev.kb_chatbot import config
+    assert config.normalize_ticket_product("FormFlow") == "formflow"
+    assert config.normalize_ticket_product("SalesHub") == "saleshub"
+    assert config.normalize_ticket_product("TD Client Server") == "tradedesk"
+    assert config.normalize_ticket_product("TD Web Portal V4.0") == "web4"
+    assert config.normalize_ticket_product("Rest API") == "api"
+    assert config.normalize_ticket_product("Totally Unknown") == "other"
