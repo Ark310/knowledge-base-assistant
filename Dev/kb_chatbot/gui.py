@@ -52,6 +52,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("kb_chatbot.gui")
 
+
+def _asset_path(name: str):
+    """Absolute path to a bundled asset. Frozen: <_MEIPASS>/assets/<name>;
+    source: <repo>/assets/<name>. Returns None if the file is absent."""
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        cand = os.path.join(base, "assets", name)
+    else:
+        cand = os.path.join(str(Path(__file__).parent.parent.parent), "assets", name)
+    return cand if os.path.isfile(cand) else None
+
+
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _TEXT_EXTS  = {".md", ".txt", ".json", ".log"}
 _ALL_EXTS   = _IMAGE_EXTS | _TEXT_EXTS

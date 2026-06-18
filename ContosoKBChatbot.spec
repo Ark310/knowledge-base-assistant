@@ -14,6 +14,13 @@ for pkg in ("PySide6", "sentence_transformers", "chromadb", "claude_agent_sdk", 
 datas = [(s, d) for (s, d) in datas if "_bundled" not in str(s).replace("\\", "/")]
 binaries = [(s, d) for (s, d) in binaries if "_bundled" not in str(s).replace("\\", "/")]
 
+# Bundle logo assets (rasterized PNGs)
+import os as _os2
+for _png in ("contoso_logo.png", "contoso_logo_lg.png"):
+    _ap = _os2.path.join("assets", _png)
+    if _os2.path.isfile(_ap):
+        datas.append((_ap, "assets"))
+
 hiddenimports += [
     "torch", "transformers", "tokenizers",
     "sklearn.utils._cython_blas",
