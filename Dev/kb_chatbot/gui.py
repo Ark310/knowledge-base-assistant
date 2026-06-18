@@ -26,14 +26,18 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from PySide6.QtCore import QEvent, QObject, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QTextCursor, QAction, QFont, QColor, QTextCharFormat, QKeySequence
+from PySide6.QtCore import QEvent, QObject, QThread, QTimer, Signal, Slot, Qt
+from PySide6.QtGui import (
+    QTextCursor, QAction, QFont, QColor, QTextCharFormat, QKeySequence,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QTextBrowser, QLineEdit, QToolBar,
     QStatusBar, QMessageBox, QDialog, QDialogButtonBox, QFormLayout,
     QFileDialog, QProgressBar, QPlainTextEdit, QInputDialog,
-    QTableWidget, QTableWidgetItem, QCheckBox,
+    QTableWidget, QTableWidgetItem, QCheckBox, QFrame, QSplashScreen,
+    QSizePolicy,
 )
 
 from Dev.kb_chatbot import config, settings as settings_mod
@@ -51,6 +55,141 @@ logging.basicConfig(
     handlers=[logging.FileHandler(config.LOG_FILE, encoding="utf-8")],
 )
 log = logging.getLogger("kb_chatbot.gui")
+
+
+def _asset_path(name: str):
+    """Absolute path to a bundled asset. Frozen: <_MEIPASS>/assets/<name>;
+    source: <repo>/assets/<name>. Returns None if the file is absent."""
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        cand = os.path.join(base, "assets", name)
+    else:
+        cand = os.path.join(str(Path(__file__).parent.parent.parent), "assets", name)
+    return cand if os.path.isfile(cand) else None
+
+
+def _asset_file_url(name: str) -> str:
+    """A file:// URL for a bundled asset (for <img src=…> inside QTextBrowser HTML).
+    Returns '' if the asset is absent, so callers can skip the image cleanly."""
+    p = _asset_path(name)
+    if not p:
+        return ""
+    return Path(p).resolve().as_uri()
+
+
+# ── Contoso enterprise palette ───────────────────────────────────────────────
+# Light theme; brand blue extracted from the Contoso logo. Centralised so the
+# ad-hoc inline setStyleSheet calls (feedback bar, correction panel, chips) and
+# the app-wide QSS all read from one place. Keep WCAG contrast in mind when
+# pairing text on surfaces.
+PALETTE = {
+    "primary":        "#51639e",   # brand blue — header rule, links, Send, focus
+    "primary_dark":   "#3f4f82",   # hover / pressed
+    "primary_tint":   "#eef1f8",   # very light blue fill (AI bubble, focus glow)
+    "secondary":      "#de9b6f",   # warm accent — sparing highlights only
+    "secondary_tint": "#fbf1ea",
+    "bg":             "#f5f6f8",   # window / panel background
+    "surface":        "#ffffff",   # cards, inputs, chat canvas
+    "text":           "#1f2430",   # primary text
+    "muted":          "#6b7280",   # secondary text / timestamps
+    "border":         "#e3e6ec",   # subtle borders
+    # message-bubble accents
+    "you_bg":         "#51639e",   # YOU bubble fill (white text)
+    "you_text":       "#ffffff",
+    "ai_bg":          "#ffffff",   # AI bubble fill
+    "ai_border":      "#e3e6ec",
+    "system_bg":      "#f0f2f5",   # neutral system note
+    "system_text":    "#5a6172",
+    "abstain_bg":     "#f4efe9",   # warm-neutral (ABSTAIN)
+    "abstain_text":   "#6d5740",
+    "clarify_bg":     "#fbf1ea",   # warm tint (CLARIFY)
+    "clarify_text":   "#a85d2b",
+    "error_bg":       "#fdecea",
+    "error_text":     "#b3261e",
+    "ok_bg":          "#e9f5ec",
+    "ok_text":        "#1e7d34",
+}
+
+FONT_STACK = '"Segoe UI", "Helvetica Neue", Arial, sans-serif'
+
+
+def _app_stylesheet() -> str:
+    """App-wide QSS for the light Contoso enterprise theme. Applied in main()
+    via app.setStyleSheet(...). Uses the PALETTE constants above."""
+    P = PALETTE
+    return f"""
+    * {{ font-family: {FONT_STACK}; }}
+    QMainWindow, QWidget {{ background: {P['bg']}; color: {P['text']}; }}
+    QToolBar {{
+        background: {P['surface']}; border: none;
+        border-bottom: 1px solid {P['border']}; padding: 4px 6px; spacing: 4px;
+    }}
+    QToolBar QToolButton {{
+        color: {P['text']}; background: transparent;
+        padding: 5px 12px; border-radius: 6px; font-size: 9.5pt;
+    }}
+    QToolBar QToolButton:hover {{ background: {P['primary_tint']}; color: {P['primary_dark']}; }}
+    QToolBar QToolButton:pressed {{ background: {P['border']}; }}
+    QToolBar::separator {{ background: {P['border']}; width: 1px; margin: 4px 6px; }}
+    QLabel {{ color: {P['text']}; background: transparent; }}
+    QComboBox, QLineEdit, QPlainTextEdit, QSpinBox {{
+        background: {P['surface']}; color: {P['text']};
+        border: 1px solid {P['border']}; border-radius: 6px;
+        padding: 5px 8px; selection-background-color: {P['primary']};
+        selection-color: #ffffff;
+    }}
+    QComboBox:focus, QLineEdit:focus, QPlainTextEdit:focus {{
+        border: 1px solid {P['primary']};
+    }}
+    QComboBox::drop-down {{ border: none; width: 20px; }}
+    QComboBox QAbstractItemView {{
+        background: {P['surface']}; color: {P['text']};
+        border: 1px solid {P['border']};
+        selection-background-color: {P['primary_tint']};
+        selection-color: {P['primary_dark']};
+    }}
+    QPushButton {{
+        background: {P['surface']}; color: {P['text']};
+        border: 1px solid {P['border']}; border-radius: 6px;
+        padding: 6px 14px; font-size: 9.5pt;
+    }}
+    QPushButton:hover {{ background: {P['primary_tint']}; border-color: {P['primary']}; }}
+    QPushButton:pressed {{ background: {P['border']}; }}
+    QPushButton:disabled {{ color: {P['muted']}; background: {P['bg']}; border-color: {P['border']}; }}
+    QPushButton#PrimaryButton {{
+        background: {P['primary']}; color: #ffffff; border: 1px solid {P['primary']};
+        font-weight: 600;
+    }}
+    QPushButton#PrimaryButton:hover {{ background: {P['primary_dark']}; border-color: {P['primary_dark']}; }}
+    QPushButton#PrimaryButton:pressed {{ background: {P['primary_dark']}; }}
+    QPushButton#PrimaryButton:disabled {{ background: #aab2cc; border-color: #aab2cc; color: #f0f0f5; }}
+    QTextBrowser {{
+        background: {P['surface']}; color: {P['text']};
+        border: 1px solid {P['border']}; border-radius: 8px; padding: 8px;
+    }}
+    QTextBrowser a {{ color: {P['primary']}; }}
+    QStatusBar {{ background: {P['surface']}; color: {P['muted']}; border-top: 1px solid {P['border']}; }}
+    QStatusBar::item {{ border: none; }}
+    QDialog {{ background: {P['bg']}; color: {P['text']}; }}
+    QProgressBar {{
+        background: {P['bg']}; border: 1px solid {P['border']};
+        border-radius: 6px; text-align: center; height: 14px;
+    }}
+    QProgressBar::chunk {{ background: {P['primary']}; border-radius: 5px; }}
+    QTableWidget {{
+        background: {P['surface']}; alternate-background-color: {P['bg']};
+        gridline-color: {P['border']}; border: 1px solid {P['border']}; border-radius: 6px;
+    }}
+    QHeaderView::section {{
+        background: {P['bg']}; color: {P['muted']};
+        border: none; border-bottom: 1px solid {P['border']}; padding: 5px 8px;
+    }}
+    QToolTip {{
+        background: {P['text']}; color: #ffffff; border: none;
+        padding: 4px 8px; border-radius: 4px;
+    }}
+    """
+
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _TEXT_EXTS  = {".md", ".txt", ".json", ".log"}
@@ -214,7 +353,7 @@ class ThinkingIndicator(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("color:#7e57c2; font-style:italic; padding:2px 8px;")
+        self.setStyleSheet(f"color:{PALETTE['primary']}; font-style:italic; padding:2px 8px;")
         self.setVisible(False)
         self._words: list[str] = []
         self._word_idx = 0
@@ -377,10 +516,12 @@ class TokenUsageDialog(QDialog):
 
         footer = QLabel(
             "Rates: API-equivalent, Anthropic & OpenAI published pricing (June 2026). "
-            "ChatGPT counts include Codex's agent overhead, so they read higher than Claude. "
+            "ChatGPT (Codex) runs at low reasoning effort to minimize output tokens, but "
+            "its requests carry a fixed Codex agent scaffold (~17k input tokens/turn) that "
+            "the account-based CLI always sends, so ChatGPT input reads higher than Claude. "
             "Edit config.COST_TABLE if rates change."
         )
-        footer.setStyleSheet("color:#777; font-size:9pt;")
+        footer.setStyleSheet(f"color:{PALETTE['muted']}; font-size:9pt;")
         footer.setWordWrap(True)
         layout.addWidget(footer)
 
@@ -409,7 +550,7 @@ class IndexingDialog(QDialog):
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         self._counts = QLabel("Idle. Press Start to index.")
-        self._counts.setStyleSheet("color:#555;")
+        self._counts.setStyleSheet(f"color:{PALETTE['muted']};")
         layout.addWidget(self._counts)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -514,6 +655,131 @@ class IndexingDialog(QDialog):
         event.accept()
 
 
+def _bubble_style(tag: str) -> dict:
+    """Pick bubble colours/alignment for a message by its tag. Falls back to a
+    neutral system style for any unrecognised tag, so callers can pass anything."""
+    P = PALETTE
+    t = (tag or "").upper()
+    if t.startswith("YOU"):
+        return {"bg": P["you_bg"], "fg": P["you_text"], "border": P["you_bg"],
+                "tag_fg": "#dde3f2", "align": "right", "max": "78%"}
+    if t.startswith("AI"):
+        return {"bg": P["ai_bg"], "fg": P["text"], "border": P["ai_border"],
+                "tag_fg": P["primary"], "align": "left", "max": "88%"}
+    if t.startswith("ABSTAIN"):
+        return {"bg": P["abstain_bg"], "fg": P["abstain_text"], "border": "#e6dccd",
+                "tag_fg": P["abstain_text"], "align": "left", "max": "88%"}
+    if t.startswith("CLARIFY"):
+        return {"bg": P["clarify_bg"], "fg": P["clarify_text"], "border": "#f0dcc9",
+                "tag_fg": P["clarify_text"], "align": "left", "max": "88%"}
+    if t.startswith("ERROR"):
+        return {"bg": P["error_bg"], "fg": P["error_text"], "border": "#f5cdc8",
+                "tag_fg": P["error_text"], "align": "left", "max": "88%"}
+    # PROVIDER / FILES / SYSTEM / anything else → neutral note
+    return {"bg": P["system_bg"], "fg": P["system_text"], "border": P["border"],
+            "tag_fg": P["muted"], "align": "left", "max": "88%"}
+
+
+def _build_message_html(role: str, text: str, colour: str, tag: str, ts: str) -> str:
+    """Build an HTML chat *bubble* with escaped text and optional linkified URLs.
+
+    SECURITY: escapes HTML in text FIRST, then converts [Title](https?://...)
+    markdown links to HTML hyperlinks (only http(s) links — javascript: is blocked
+    by _LINK_RE, and the title is already escaped so it stays inert). This
+    escape-then-linkify order is load-bearing — test_render.py guards it.
+
+    The legacy `role`/`colour`/`tag`/`ts` parameters are all still honoured:
+    `role == "ai"` gates linkification; `tag` drives the bubble palette; `ts` is
+    the timestamp; `colour` is retained for backwards-compatibility (the per-tag
+    palette now supplies the actual colours).
+    """
+    safe_text = html_module.escape(text)
+    if role == "ai":
+        # Convert [Title](url) markdown links to HTML hyperlinks
+        safe_text = _LINK_RE.sub(r'<a href="\2">\1</a>', safe_text)
+    safe_text = safe_text.replace("\n", "<br>")
+
+    st = _bubble_style(tag)
+    safe_tag = html_module.escape(tag)
+    # QTextBrowser uses a Qt rich-text subset (no flexbox); a single-cell <table>
+    # with a width gives a rounded, padded, alignable bubble that renders reliably.
+    bubble = (
+        f'<table cellspacing="0" cellpadding="0" '
+        f'style="margin:6px 0; border-collapse:separate;" '
+        f'align="{st["align"]}">'
+        f'<tr><td style="background:{st["bg"]}; color:{st["fg"]}; '
+        f'border:1px solid {st["border"]}; border-radius:10px; '
+        f'padding:8px 12px; font-family:{FONT_STACK}; font-size:10pt;">'
+        f'<span style="color:{st["tag_fg"]}; font-weight:600; font-size:8.5pt; '
+        f'letter-spacing:0.3px;">{safe_tag}</span>'
+        f'<span style="color:{PALETTE["muted"]}; font-size:8pt;">&nbsp;{ts}</span>'
+        f'<br><span style="color:{st["fg"]};">{safe_text}</span>'
+        f'</td></tr></table>'
+    )
+    return bubble
+
+
+def _welcome_html() -> str:
+    """Centered welcome / empty-state content for the chat canvas: the large
+    Contoso logo + a one-line hint. Rendered as the initial QTextBrowser HTML
+    and naturally replaced when the first real message is appended."""
+    logo = _asset_file_url("contoso_logo_lg.png")
+    img = (f'<img src="{logo}" width="300" '
+           f'style="margin-bottom:18px;">') if logo else ""
+    return (
+        f'<div style="margin-top:120px; text-align:center; font-family:{FONT_STACK};">'
+        f'{img}'
+        f'<div style="color:{PALETTE["muted"]}; font-size:11pt; margin-top:6px;">'
+        f'Ask me about the Contoso knowledge base…</div>'
+        f'</div>'
+    )
+
+
+class AboutDialog(QDialog):
+    """Branded About box: large logo, product name, version, provider/CLI status."""
+
+    def __init__(self, parent=None, status_text: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("About Contoso KB Assistant")
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 20)
+        layout.setSpacing(10)
+
+        logo = QLabel()
+        logo.setAlignment(Qt.AlignCenter)
+        lg = _asset_path("contoso_logo_lg.png")
+        if lg:
+            pm = QPixmap(lg)
+            if not pm.isNull():
+                logo.setPixmap(pm.scaledToWidth(300, Qt.SmoothTransformation))
+        layout.addWidget(logo)
+
+        title = QLabel("Contoso KB Assistant")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(
+            f"font-size:15pt; font-weight:600; color:{PALETTE['text']}; margin-top:8px;")
+        layout.addWidget(title)
+
+        version = QLabel(f"v{config.APP_VERSION}")
+        version.setAlignment(Qt.AlignCenter)
+        version.setStyleSheet(f"color:{PALETTE['primary']}; font-size:10.5pt;")
+        layout.addWidget(version)
+
+        if not status_text:
+            status_text = "Local retrieval over the Contoso knowledge base."
+        status = QLabel(status_text)
+        status.setAlignment(Qt.AlignCenter)
+        status.setWordWrap(True)
+        status.setStyleSheet(f"color:{PALETTE['muted']}; font-size:9.5pt; margin-top:6px;")
+        layout.addWidget(status)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.reject)
+        bb.accepted.connect(self.accept)
+        layout.addWidget(bb)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -533,6 +799,7 @@ class MainWindow(QMainWindow):
         self._suppress_dropdown_notices = True   # silenced until first real user change
         self._learn_mode = False
         self._last_assistant_turn: Optional[Turn] = None
+        self._welcome_showing = True   # chat starts on the welcome/empty state
         self._build_ui()
         # Window shows immediately; models + LLM warm-up load in background
         self._set_chat_enabled(False)
@@ -547,6 +814,12 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         central = QWidget(); self.setCentralWidget(central)
         outer = QVBoxLayout(central)
+        outer.setContentsMargins(12, 0, 12, 12)
+        outer.setSpacing(8)
+
+        # Brand header — installed as the QMainWindow menu-widget so it renders
+        # ABOVE the toolbar dock area (the very top of the window chrome).
+        self.setMenuWidget(self._build_header())
 
         tb = QToolBar(); tb.setMovable(False); self.addToolBar(tb)
         self._act_reindex = QAction("Reindex", self); tb.addAction(self._act_reindex)
@@ -562,14 +835,26 @@ class MainWindow(QMainWindow):
         self._act_exit_learn = QAction("Exit Learn Mode", self)
         self._act_exit_learn.setVisible(False)
         tb.addAction(self._act_exit_learn)
+        tb.addSeparator()
+        self._act_about = QAction("About", self)
+        tb.addAction(self._act_about)
 
-        filter_row = QHBoxLayout()
+        # Controls bar — Product / AI Provider / Model grouped into a tidy card.
+        controls = QFrame()
+        controls.setObjectName("ControlsBar")
+        controls.setStyleSheet(
+            f"#ControlsBar {{ background:{PALETTE['surface']}; "
+            f"border:1px solid {PALETTE['border']}; border-radius:8px; }}")
+        filter_row = QHBoxLayout(controls)
+        filter_row.setContentsMargins(10, 6, 10, 6)
+        filter_row.setSpacing(8)
         filter_row.addWidget(QLabel("Product:"))
         self.product_box = QComboBox()
         self.product_box.addItem("Any", "")
         for p in config.PRODUCTS:
             self.product_box.addItem(config.PRODUCT_DISPLAY.get(p, p), p)
         filter_row.addWidget(self.product_box)
+        filter_row.addSpacing(8)
         filter_row.addWidget(QLabel("AI Provider:"))
         self.provider_box = QComboBox()
         for pid, prov in config.PROVIDERS.items():
@@ -578,18 +863,19 @@ class MainWindow(QMainWindow):
         if pidx >= 0:
             self.provider_box.setCurrentIndex(pidx)
         filter_row.addWidget(self.provider_box)
-
+        filter_row.addSpacing(8)
         filter_row.addWidget(QLabel("Model:"))
         self.model_box = QComboBox()
         self._populate_model_box(self.settings.default_provider, self.settings.default_model)
         filter_row.addWidget(self.model_box)
         filter_row.addStretch()
-        outer.addLayout(filter_row)
+        outer.addWidget(controls)
 
         self.chat_view = QTextBrowser()
-        self.chat_view.setFont(QFont("Consolas", 10))
+        self.chat_view.setFont(QFont("Segoe UI", 10))
         self.chat_view.setOpenExternalLinks(True)
         self.chat_view.setReadOnly(True)
+        self.chat_view.setHtml(_welcome_html())   # welcome / empty state
         outer.addWidget(self.chat_view, stretch=1)
 
         self._thinking = ThinkingIndicator()
@@ -603,9 +889,13 @@ class MainWindow(QMainWindow):
         fb_layout = QHBoxLayout(self._feedback_bar)
         fb_layout.setContentsMargins(4, 4, 4, 4)
         self._btn_mark_correct = QPushButton("✓ Mark as Correct")
-        self._btn_mark_correct.setStyleSheet("background:#e8f5e9; color:#2e7d32;")
+        self._btn_mark_correct.setStyleSheet(
+            f"background:{PALETTE['ok_bg']}; color:{PALETTE['ok_text']}; "
+            f"border:1px solid {PALETTE['ok_text']}; border-radius:6px; padding:6px 14px;")
         self._btn_correct_add = QPushButton("✎ Correct / Add to KB")
-        self._btn_correct_add.setStyleSheet("background:#fff8e1; color:#f57f17;")
+        self._btn_correct_add.setStyleSheet(
+            f"background:{PALETTE['secondary_tint']}; color:{PALETTE['clarify_text']}; "
+            f"border:1px solid {PALETTE['secondary']}; border-radius:6px; padding:6px 14px;")
         fb_layout.addWidget(self._btn_mark_correct)
         fb_layout.addWidget(self._btn_correct_add)
         fb_layout.addStretch()
@@ -639,6 +929,7 @@ class MainWindow(QMainWindow):
         self._clip_btn.setToolTip("Attach file (image or text)")
         self._clip_btn.clicked.connect(self._open_file_picker)
         self.send_btn = QPushButton("Send")
+        self.send_btn.setObjectName("PrimaryButton")
         self.send_btn.clicked.connect(self._send)
         input_row.addWidget(self.input)
         input_row.addWidget(self._clip_btn)
@@ -657,13 +948,59 @@ class MainWindow(QMainWindow):
         self._act_logs.triggered.connect(self._open_logs)
         self._act_learn.triggered.connect(self._enter_learn_mode)
         self._act_exit_learn.triggered.connect(self._exit_learn_mode)
+        self._act_about.triggered.connect(self._show_about)
         self.provider_box.currentIndexChanged.connect(self._on_provider_changed)
         self.model_box.currentIndexChanged.connect(self._on_model_changed)
         self._set_inputs_enabled(True)
 
+    def _build_header(self) -> QWidget:
+        """Top brand bar: logo + 'KB Assistant' title + right-aligned version,
+        with a 2px brand-blue bottom border."""
+        header = QFrame()
+        header.setObjectName("HeaderBar")
+        header.setStyleSheet(
+            f"#HeaderBar {{ background:{PALETTE['surface']}; "
+            f"border-bottom:2px solid {PALETTE['primary']}; }}")
+        row = QHBoxLayout(header)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(10)
+
+        logo = QLabel()
+        lp = _asset_path("contoso_logo.png")
+        if lp:
+            pm = QPixmap(lp)
+            if not pm.isNull():
+                logo.setPixmap(pm.scaledToHeight(28, Qt.SmoothTransformation))
+        row.addWidget(logo)
+
+        title = QLabel("KB Assistant")
+        title.setStyleSheet(
+            f"font-size:13pt; font-weight:600; color:{PALETTE['text']};")
+        row.addWidget(title)
+        row.addStretch()
+
+        ver = QLabel(f"v{config.APP_VERSION}")
+        ver.setStyleSheet(f"color:{PALETTE['muted']}; font-size:9.5pt;")
+        row.addWidget(ver)
+        return header
+
+    def _provider_status_text(self) -> str:
+        """One line describing the active provider/model for the About dialog."""
+        prov_id = self.provider_box.currentData() if hasattr(self, "provider_box") else \
+            getattr(self.settings, "default_provider", "claude")
+        display = config.PROVIDERS.get(prov_id, config.PROVIDERS["claude"])["display"]
+        model = self.model_box.currentText() if hasattr(self, "model_box") else ""
+        suffix = f" · {model}" if model else ""
+        return f"Provider: {display}{suffix} — local retrieval over the Contoso knowledge base."
+
+    def _show_about(self):
+        AboutDialog(self, status_text=self._provider_status_text()).exec()
+
     def _build_correction_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setStyleSheet("background:#fffde7; border:1px solid #f9a825; border-radius:4px;")
+        panel.setStyleSheet(
+            f"background:{PALETTE['secondary_tint']}; "
+            f"border:1px solid {PALETTE['secondary']}; border-radius:6px;")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
 
@@ -700,7 +1037,9 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         save_btn = QPushButton("Save to KB")
-        save_btn.setStyleSheet("background:#4caf50; color:white;")
+        save_btn.setStyleSheet(
+            f"background:{PALETTE['ok_text']}; color:#ffffff; "
+            f"border:1px solid {PALETTE['ok_text']}; border-radius:6px; padding:6px 14px;")
         save_btn.clicked.connect(self._on_save_correction)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(lambda: self._correction_panel.setVisible(False))
@@ -855,18 +1194,11 @@ class MainWindow(QMainWindow):
 
     def _append(self, role: str, text: str, colour: str, tag: str):
         ts = datetime.now().strftime("%H:%M:%S")
-        safe_text = html_module.escape(text)
-        if role == "ai":
-            # Convert [Title](url) markdown links to HTML hyperlinks
-            safe_text = _LINK_RE.sub(r'<a href="\2">\1</a>', safe_text)
-        safe_text = safe_text.replace("\n", "<br>")
-        block = (
-            f'<p style="margin:4px 0; font-family:Consolas,monospace; font-size:10pt;">'
-            f'<span style="color:#555;">{ts}</span> '
-            f'<b style="color:{colour};">{html_module.escape(tag)}</b> '
-            f'<span style="color:{colour};">{safe_text}</span>'
-            f'</p>'
-        )
+        block = _build_message_html(role, text, colour, tag, ts)
+        if self._welcome_showing:
+            # Replace the centered welcome/empty state with the first real message.
+            self.chat_view.clear()
+            self._welcome_showing = False
         self.chat_view.append(block)
         self.chat_view.ensureCursorVisible()
 
@@ -1050,10 +1382,12 @@ class MainWindow(QMainWindow):
             row.setContentsMargins(4, 2, 4, 2)
             row.setSpacing(3)
             lbl = QLabel(f"📎 {att.filename}")
-            lbl.setStyleSheet("background:#e3f2fd; border-radius:4px; padding:2px 6px;")
+            lbl.setStyleSheet(
+                f"background:{PALETTE['primary_tint']}; color:{PALETTE['primary_dark']}; "
+                f"border-radius:6px; padding:2px 6px;")
             rm_btn = QPushButton("×")
             rm_btn.setFixedSize(20, 20)
-            rm_btn.setStyleSheet("border:none; color:#555;")
+            rm_btn.setStyleSheet(f"border:none; color:{PALETTE['muted']};")
             rm_btn.clicked.connect(lambda _=False, idx=i: self._remove_attachment(idx))
             row.addWidget(lbl)
             row.addWidget(rm_btn)
@@ -1154,6 +1488,8 @@ class MainWindow(QMainWindow):
 
     def _clear_chat(self):
         self.chat_view.clear()
+        self.chat_view.setHtml(_welcome_html())   # restore welcome/empty state
+        self._welcome_showing = True
         self.session = Session.new()
         self._last_assistant_turn = None
         self._feedback_bar.setVisible(False)
@@ -1235,16 +1571,53 @@ def _preflight_provider(provider_id: str) -> Optional[str]:
             "and re-launch this app.")
 
 
+def _make_splash() -> Optional[QSplashScreen]:
+    """A branded splash screen built from the large logo on a white card.
+    Returns None if the logo asset is missing (degrade gracefully)."""
+    lg = _asset_path("contoso_logo_lg.png")
+    if not lg:
+        return None
+    logo = QPixmap(lg)
+    if logo.isNull():
+        return None
+    logo = logo.scaledToWidth(360, Qt.SmoothTransformation)
+    canvas = QPixmap(560, 320)
+    canvas.fill(QColor(PALETTE["surface"]))
+    from PySide6.QtGui import QPainter
+    painter = QPainter(canvas)
+    x = (canvas.width() - logo.width()) // 2
+    y = (canvas.height() - logo.height()) // 2 - 18
+    painter.drawPixmap(x, y, logo)
+    painter.setPen(QColor(PALETTE["muted"]))
+    painter.setFont(QFont("Segoe UI", 10))
+    painter.drawText(0, y + logo.height() + 28, canvas.width(), 24,
+                     Qt.AlignHCenter, f"KB Assistant  ·  v{config.APP_VERSION}")
+    painter.setPen(QColor(PALETTE["primary"]))
+    painter.fillRect(0, canvas.height() - 4, canvas.width(), 4, QColor(PALETTE["primary"]))
+    painter.end()
+    splash = QSplashScreen(canvas)
+    return splash
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(f"Contoso KB Chatbot v{config.APP_VERSION}")
+    app.setStyleSheet(_app_stylesheet())
+    splash = _make_splash()
+    if splash is not None:
+        splash.show()
+        app.processEvents()
     saved = settings_mod.load_settings()
     err = _preflight_provider(saved.default_provider)
     if err:
+        if splash is not None:
+            splash.close()
         QMessageBox.critical(None, "AI provider not ready", err)
         sys.exit(1)
     win = MainWindow()
     win.show()
+    if splash is not None:
+        splash.finish(win)
     sys.exit(app.exec())
 
 

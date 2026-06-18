@@ -147,3 +147,46 @@ def test_handled_by_ignores_header_noise(tmp_path):
     h = _handled_by(data)
     assert "email" not in [x.lower() for x in h]
     assert "jchen" in h
+
+
+def test_greeting_modal_not_harvested_as_term():
+    from Dev.kb_chatbot.ticket_ingest import _known_terms
+    data = {"comments": [{"type": "comment", "author": "a.user",
+                          "header": "", "body": "Thanks. Could you re-run the batch?"}]}
+    terms = _known_terms(data)
+    assert "Could" not in terms and "could" not in [t.lower() for t in terms]
+
+
+def test_short_ticket_single_chunk(tmp_path):
+    data, p = _ticket(tmp_path, [
+        {"type": "email", "header": "", "body": "Login fails with error 500."},
+        {"type": "comment", "author": "a.user", "header": "", "body": "Cleared the cache; resolved."},
+    ])
+    chunks = build_ticket_chunks(data, p)
+    assert len(chunks) == 1
+    assert chunks[0].metadata["chunk_index"] == 0
+    assert chunks[0].metadata["has_images"] is False
+    assert "Problem:" in chunks[0].text and "Resolution:" in chunks[0].text
+
+
+def test_long_ticket_multi_chunk_shares_ticket_id(tmp_path):
+    big = " ".join(f"step{i} do the thing carefully" for i in range(300))  # ~1500 words
+    data, p = _ticket(tmp_path, [
+        {"type": "email", "header": "", "body": "It broke."},
+        {"type": "comment", "author": "a.user", "header": "", "body": big},
+    ])
+    chunks = build_ticket_chunks(data, p)
+    assert len(chunks) > 1
+    assert all(c.metadata["ticket_id"] == "75100" for c in chunks)
+    assert [c.metadata["chunk_index"] for c in chunks] == list(range(len(chunks)))
+    assert all(c.text.startswith("Ticket #75100") for c in chunks)
+    assert len({c.id for c in chunks}) == len(chunks)  # unique ids
+
+
+def test_has_images_flag_set(tmp_path):
+    data, p = _ticket(tmp_path, [
+        {"type": "email", "header": "", "body": "See screenshot."},
+        {"type": "comment", "author": "a.user", "header": "", "body": "Fixed per the image."},
+    ], attachment_images=[{"mime": "image/png", "saved_path": "attachments/75100/c1.png"}])
+    chunks = build_ticket_chunks(data, p)
+    assert all(c.metadata["has_images"] is True for c in chunks)

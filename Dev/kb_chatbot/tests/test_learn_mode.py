@@ -165,3 +165,29 @@ def test_settings_dialog_preserves_learn_mode_hash():
     from Dev.kb_chatbot import gui
     src = inspect.getsource(gui.SettingsDialog.values)
     assert "learn_mode_hash" in src
+
+
+# ── Task 2: Salted PBKDF2 password hash tests ────────────────────────────────
+
+from Dev.kb_chatbot.settings import hash_password, check_learn_password
+
+
+def test_hash_password_pbkdf2_format_roundtrips():
+    h = hash_password("hunter2")
+    assert h.startswith("pbkdf2_sha256$")
+    assert check_learn_password("hunter2", h) is True
+    assert check_learn_password("wrong", h) is False
+
+
+def test_hash_password_salts_are_random():
+    assert hash_password("same") != hash_password("same")  # per-call random salt
+
+
+def test_check_legacy_sha256_still_verifies():
+    legacy = hashlib.sha256("oldpw".encode()).hexdigest()
+    assert check_learn_password("oldpw", legacy) is True
+    assert check_learn_password("nope", legacy) is False
+
+
+def test_check_empty_password_rejected():
+    assert check_learn_password("", hash_password("x")) is False

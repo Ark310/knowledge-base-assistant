@@ -213,3 +213,20 @@ def test_rewrite_query_codex_none_on_failure(monkeypatch):
         raise RuntimeError("codex down")
     monkeypatch.setattr(qr, "_run_codex_exec_for_rewrite", boom)
     assert qr.rewrite_query_codex("undo it", [{"role": "user", "content": "x"}]) is None
+
+
+def test_codex_rewrite_inherits_reasoning_low(monkeypatch):
+    """bug-062: the OpenAI rewrite path goes through _run_codex_exec, so it now
+    pins reasoning=low (which makes gpt-5.4-mini work) and returns a query."""
+    from Dev.kb_chatbot.chat import query_rewriter as qr
+    captured = {}
+
+    def fake_exec(prompt, model):
+        captured["model"] = model
+        return ("booking spot deal api", 100, 8)
+
+    monkeypatch.setattr(qr, "_run_codex_exec_for_rewrite", fake_exec)
+    res = qr.rewrite_query_codex("how do i do it", [{"role": "user", "content": "spot deal"}])
+    assert res is not None
+    assert res.query == "booking spot deal api"
+    assert captured["model"] == qr.REWRITE_MODEL_OPENAI

@@ -13,6 +13,18 @@ import re
 from Dev.kb_chatbot.chunker import Chunk
 from Dev.kb_chatbot.chat.ticket_redactor import redact
 
+TICKET_CHUNK_WORDS = 350  # retrieval window kept below embed (~256) / rerank (~512) truncation
+
+
+def _split_words(text: str, size: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return []
+    if len(words) <= size:
+        return [text.strip()]
+    return [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
+
+
 # "received from Sam Rivera" / "sent to Priya Patel" in header strings.
 # Keywords are case-insensitive via inline flag; name class is case-SENSITIVE so
 # lowercase prose words (e.g. "the outgoing wire template" after "from") are never
@@ -52,6 +64,8 @@ _STOPWORDS = {
     "on", "at", "it", "we", "i", "a", "an", "be", "as", "or", "but", "not", "your", "my",
     "contoso", "customer", "client", "user", "hi", "hello", "dear", "regards", "cheers",
     "now", "me", "let", "get", "sent", "received",
+    "could", "would", "should", "also", "however", "therefore", "moreover",
+    "additionally", "furthermore", "regarding", "hello",
 }
 
 
@@ -199,9 +213,12 @@ def _staff_block(data: dict) -> str:
 
 
 def build_ticket_chunks(data: dict, path) -> list[Chunk]:
-    """Return at most one Chunk for the ticket. Skips tickets with no internal
-    resolution comment. The chunk carries a field-derived team/client header and
-    cites the actual ticket page (not the resolution page)."""
+    """Return 1..N Chunks for the ticket (split for retrieval; reassembled to the
+    full ticket at answer time via ticket_id + chunk_index). Skips tickets with no
+    internal resolution comment. Each chunk leads with the ticket title; the
+    field-derived staff/client header rides on the first chunk. `has_images` flags
+    that the ticket page carries screenshot(s) — the images themselves are never
+    indexed, stored, or surfaced."""
     known = _known_terms(data)
     resolution = _resolution_text(data, known)
     if not resolution:
@@ -213,33 +230,40 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
     ticket_id = str(data.get("ticket_id", ""))
     ticket_url = data.get("url", "") or data.get("resolution_url", "")
     resolution_url = data.get("resolution_url", "") or data.get("url", "")
-
     safe_title = redact(raw_title, known_terms=known) or f"Ticket {ticket_id}"
     handled = _handled_by(data)
     header = _staff_block(data)
+    has_images = bool(data.get("attachment_images"))
 
-    text = f"Ticket #{ticket_id} — {safe_title}"
-    if header:
-        text += "\n" + header
-    text += f"\n\nProblem: {problem}\n\nResolution: {resolution}"
+    body = f"Problem: {problem}\n\nResolution: {resolution}"
+    segments = _split_words(body, TICKET_CHUNK_WORDS) or [body]
+    title_line = f"Ticket #{ticket_id} — {safe_title}"
 
-    cid = "ticket_" + hashlib.sha1(f"{ticket_id}:{raw_title}".encode()).hexdigest()[:16]
-
-    return [Chunk(
-        id=cid,
-        text=text,
-        metadata={
-            "kind": "ticket",
-            "product": product,
-            "category": data.get("category", "") or "ticket",
-            "title": f"Ticket #{ticket_id}",
-            "ticket_id": ticket_id,
-            "url": ticket_url,                # v2.8: link to the ticket itself
-            "resolution_url": resolution_url,
-            "organization": data.get("organization", "") or "",
-            "csqa_owner": data.get("csqa_owner", "") or "",
-            "assignee": data.get("assignee", "") or "",
-            "handled_by": ", ".join(handled),
-            "chunk_index": 0,
-        },
-    )]
+    chunks: list[Chunk] = []
+    for idx, seg in enumerate(segments):
+        text = title_line
+        if idx == 0 and header:
+            text += "\n" + header
+        text += "\n\n" + seg
+        cid = "ticket_" + hashlib.sha1(
+            f"{ticket_id}:{raw_title}:{idx}".encode()).hexdigest()[:16]
+        chunks.append(Chunk(
+            id=cid,
+            text=text,
+            metadata={
+                "kind": "ticket",
+                "product": product,
+                "category": data.get("category", "") or "ticket",
+                "title": f"Ticket #{ticket_id}",
+                "ticket_id": ticket_id,
+                "url": ticket_url,
+                "resolution_url": resolution_url,
+                "organization": data.get("organization", "") or "",
+                "csqa_owner": data.get("csqa_owner", "") or "",
+                "assignee": data.get("assignee", "") or "",
+                "handled_by": ", ".join(handled),
+                "has_images": has_images,
+                "chunk_index": idx,
+            },
+        ))
+    return chunks

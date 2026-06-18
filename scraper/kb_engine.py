@@ -151,6 +151,18 @@ class KBEngine:
                     stats["failed"] += 1
                     stats["failed_urls"].append(url)
                     self.cb.on_log("error", f"[FAIL] {title}: {exc}")
+                    # If the browser died (crash / frozen tab), restart it so
+                    # remaining articles in this space can still be scraped.
+                    # The failed article is NOT marked scraped, so it will be
+                    # retried automatically on the next run.
+                    if not browser.is_alive():
+                        self.cb.on_log("warning", f"{space_key}: browser died — restarting...")
+                        try:
+                            browser.restart()
+                            self.cb.on_log("info", f"{space_key}: browser restarted, resuming.")
+                        except Exception as restart_exc:
+                            self.cb.on_log("error", f"{space_key}: browser restart failed: {restart_exc}")
+                            break
                 self.cb.on_status(space_key, stats)
 
         self.cb.on_log(

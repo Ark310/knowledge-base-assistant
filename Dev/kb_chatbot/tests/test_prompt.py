@@ -8,10 +8,13 @@ from Dev.kb_chatbot.chunker import Chunk
 
 def test_system_prompt_locked_text_v23():
     p = build_system_prompt()
-    assert p == SYSTEM_PROMPT
-    assert "Contoso KB articles" in p
-    assert "I don't have enough information in the knowledge base" in p
+    # invariants that must never regress
+    assert "only use facts from the CONTEXT block" in p
+    assert 'I don\'t have enough information in the knowledge base' in p
     assert "[Article Title](url)" in p
+    # new v2.9.1 expert ticket structure
+    assert "Root cause" in p
+    assert "Sources:" in p
 
 
 def test_format_context_uses_url_cite_handle():

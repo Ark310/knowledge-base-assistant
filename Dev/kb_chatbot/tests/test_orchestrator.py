@@ -5,12 +5,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 import pytest
 
+from Dev.kb_chatbot import config
 from Dev.kb_chatbot.ingest import ingest
 from Dev.kb_chatbot.retriever import Retriever, Filters, RetrievalResult
 from Dev.kb_chatbot.llm.fake_provider import FakeProvider
 from Dev.kb_chatbot.chat.session import Session
 from Dev.kb_chatbot.chat.orchestrator import (
-    handle_turn, Deps, ABSTAIN_MESSAGE, SHORT_QUERY_CLARIFICATION,
+    handle_turn, Deps, ABSTAIN_MESSAGE, OUT_OF_SCOPE_MESSAGE, SHORT_QUERY_CLARIFICATION,
     LOW_CONFIDENCE_CEILING, LOW_CONFIDENCE_FOOTER,
 )
 from Dev.kb_chatbot.chunker import Chunk
@@ -53,14 +54,14 @@ def test_clear_question_yields_answer_turn(deps_factory):
 
 def test_abstain_when_retrieval_below_floor(deps_factory):
     # Query is long enough (>= 4 words) and has no product, suggest() stubbed to []
-    # so content must equal plain ABSTAIN_MESSAGE.
+    # so content must equal OUT_OF_SCOPE_MESSAGE (score defaults to 0.0 < OUT_OF_SCOPE_FLOOR).
     # quick_chunks=[] prevents multi-product clarifier from intercepting the abstain path.
     d, fake = deps_factory(0.99, "should not be seen", suggest_chunks=[], quick_chunks=[])
     session = Session.new()
     turn = handle_turn("quantum field theory equations", session, Filters(),
                         "claude-haiku-4-5-20251001", deps=d)
     assert turn.kind == "abstain"
-    assert turn.content == ABSTAIN_MESSAGE
+    assert turn.content == OUT_OF_SCOPE_MESSAGE
     assert len(fake.calls) == 0
 
 
@@ -96,15 +97,22 @@ def test_clarification_when_no_product_and_diffuse_retrieval(deps_factory):
 
 def test_abstain_with_suggestions_when_suggest_returns_chunks(deps_factory):
     """Long query that abstains + suggest() returns chunks → kind=abstain, content has links.
-    quick_chunks=[] prevents multi-product clarifier from intercepting the abstain path."""
+    quick_chunks=[] prevents multi-product clarifier from intercepting the abstain path.
+    Score is stubbed into the clarify/suggest band (between OUT_OF_SCOPE_FLOOR and
+    CONFIDENCE_FLOOR) so the out-of-scope tier does not intercept."""
     suggestion_chunks = [
         _make_chunk("Booking a Spot Deal", "https://help.contoso.example/spot"),
         _make_chunk("Forward Deal Guide", "https://help.contoso.example/forward"),
     ]
     d, fake = deps_factory(0.99, "should not be seen", suggest_chunks=suggestion_chunks,
                            quick_chunks=[])
+    # Stub retrieve() to return a score in the clarify/suggest band, not below OUT_OF_SCOPE_FLOOR
+    d.retriever.retrieve = lambda q, f: RetrievalResult(
+        chunks=[], abstain_reason="no_relevant_kb_match",
+        rerank_top_score=(config.OUT_OF_SCOPE_FLOOR + config.CONFIDENCE_FLOOR) / 2,
+    )
     session = Session.new()
-    turn = handle_turn("quantum field theory equations", session, Filters(),
+    turn = handle_turn("how do I configure dealing spreads in tradedesk", session, Filters(),
                         "claude-haiku-4-5-20251001", deps=d)
     assert turn.kind == "abstain"
     assert "https://help.contoso.example/spot" in turn.content

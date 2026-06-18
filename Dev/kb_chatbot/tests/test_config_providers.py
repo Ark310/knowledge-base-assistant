@@ -22,10 +22,10 @@ def test_every_model_has_cost_and_display():
 
 
 def test_openai_models_present():
-    # Only gpt-5.4 works over Codex 0.139 with a ChatGPT account; gpt-5.5 and
-    # gpt-5.4-mini 400 on the built-in `_search` tool schema. See config.PROVIDERS.
+    # v2.9.1: with reasoning_effort pinned to "low", both gpt-5.4 and gpt-5.4-mini
+    # work over Codex. gpt-5.5 still rejects due to the injected tool schema.
     ids = set(config.PROVIDERS["openai"]["models"].values())
-    assert ids == {"gpt-5.4"}
+    assert ids == {"gpt-5.4", "gpt-5.4-mini"}
 
 
 def test_openai_costs():
@@ -71,3 +71,11 @@ def test_token_usage_dialog_uses_shared_display_map():
     src = inspect.getsource(gui.TokenUsageDialog)
     assert "config.MODEL_DISPLAY" in src
     assert "_MODEL_DISPLAY" not in src  # the hardcoded dict is gone
+
+
+def test_openai_offers_gpt54_mini():
+    from Dev.kb_chatbot import config
+    models = config.PROVIDERS["openai"]["models"]
+    assert "gpt-5.4-mini" in models.values()
+    # gpt-5.4 stays the default
+    assert config.PROVIDERS["openai"]["default_model"] == "gpt-5.4"

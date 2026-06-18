@@ -15,7 +15,8 @@ from Dev.kb_chatbot.citations import validate as validate_citations
 from Dev.kb_chatbot.llm.base import LLMProvider
 from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeNotFoundError
 from Dev.kb_chatbot.prompt import build_system_prompt, build_messages, format_suggestions
-from Dev.kb_chatbot.retriever import Retriever, Filters
+from Dev.kb_chatbot.chat.ticket_redactor import scrub_answer
+from Dev.kb_chatbot.retriever import Retriever, Filters, assemble_ticket
 
 log = logging.getLogger("kb_chatbot.orchestrator")
 
@@ -23,6 +24,12 @@ ABSTAIN_MESSAGE = (
     "I haven't been trained on this — it's not in the knowledge base I have access to. "
     "Want to refine the question? Try naming a product (API, TradeDesk, SalesHub, Web2, Web4, Other), "
     "a related keyword, or a how-to topic."
+)
+
+OUT_OF_SCOPE_MESSAGE = (
+    "That's outside the scope of the Contoso knowledge base — it covers the API, "
+    "TradeDesk, SalesHub, Web2, Web4 and related product documentation and support tickets. "
+    "If your question is about one of those, try naming the product and what you're trying to do."
 )
 
 ABSTAIN_WITH_SUGGESTIONS_TEMPLATE = """\
@@ -40,6 +47,11 @@ LOW_CONFIDENCE_FOOTER = """\
 ---
 *Not fully certain this covers your question. You might also check:*
 {suggestions}"""
+
+IMAGE_NOTE_TEMPLATE = (
+    "\n\n📎 This ticket includes a screenshot that may hold additional detail not in the text — "
+    "open the ticket to view it: [Ticket #{tid}]({url})"
+)
 
 SHORT_QUERY_CLARIFICATION = (
     "Could you give me a bit more context? For example, which product are you asking about "
@@ -153,6 +165,40 @@ def _is_reference_followup(text: str) -> bool:
             or bool(_FOLLOWUP_HINT.search(text)))
 
 
+def _expand_ticket_chunks(chunks: list[Chunk], retriever) -> list[Chunk]:
+    """Replace each ticket fragment with the full assembled ticket (parent-document
+    retrieval). One assembled chunk per ticket_id, kept at the position of first
+    occurrence; non-ticket chunks are left untouched; order is otherwise preserved."""
+    out: list[Chunk] = []
+    seen_tickets: set[str] = set()
+    for c in chunks:
+        tid = c.metadata.get("ticket_id") if c.metadata.get("kind") == "ticket" else None
+        if not tid:
+            out.append(c)
+            continue
+        if tid in seen_tickets:
+            continue
+        seen_tickets.add(tid)
+        siblings = retriever.get_by_ticket_ids([tid]) or [c]
+        out.append(assemble_ticket(siblings))
+    return out
+
+
+def _ensure_kb_alongside(query: str, chunks: list[Chunk], retriever) -> list[Chunk]:
+    """If the context has a ticket but no KB article, attach the best-matching KB
+    chunk (best-effort, 'if there is one'). Reuses the wide-net retrieve_quick."""
+    has_ticket = any(c.metadata.get("kind") == "ticket" for c in chunks)
+    has_kb = any(c.metadata.get("kind") != "ticket" for c in chunks)
+    if not has_ticket or has_kb:
+        return chunks
+    seen = {c.id for c in chunks}
+    for cand in retriever.retrieve_quick(query, limit=10):
+        if cand.metadata.get("kind") != "ticket" and cand.metadata.get("url") \
+                and cand.id not in seen:
+            return [*chunks, cand]
+    return chunks
+
+
 def _merge_chunks(primary: list[Chunk], secondary: list[Chunk], *, limit: int) -> list[Chunk]:
     out: list[Chunk] = []
     seen: set[str] = set()
@@ -192,7 +238,8 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
 
     # Escalation: one stateless LLM rewrite when post-fusion retrieval abstains
     # and there is conversation context to rewrite from.
-    if result.abstain_reason and deps.rewriter is not None and history:
+    if (result.abstain_reason and deps.rewriter is not None and history
+            and result.rerank_top_score >= config.OUT_OF_SCOPE_FLOOR):
         deps.on_progress("rephrase")
         rw = deps.rewriter(user_msg, history)
         if rw is not None:
@@ -245,6 +292,8 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
                 deps.usage_logger(turn)
                 return turn
 
+        result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)
+        result.chunks = _ensure_kb_alongside(retrieval_query, result.chunks, deps.retriever)
         try:
             messages = build_messages(
                 context_chunks=result.chunks,
@@ -256,7 +305,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
                 messages=messages,
                 model=default_model,
                 system_prompt=build_system_prompt(),
-                max_tokens=1024,
+                max_tokens=config.ANSWER_MAX_TOKENS,
             )
         except ClaudeCodeNotFoundError as exc:
             turn = Turn(role="assistant", kind="abstain", content=str(exc))
@@ -271,13 +320,20 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             deps.usage_logger(turn)
             return turn
 
-        vr = validate_citations(resp.text, result.chunks)
+        vr = validate_citations(scrub_answer(resp.text), result.chunks)
         answer_text = vr.stripped_text
         # Footer fires for scores in [CONFIDENCE_FLOOR, LOW_CONFIDENCE_CEILING)
         if result.rerank_top_score < LOW_CONFIDENCE_CEILING:
             suggestion_block = format_suggestions(deps.retriever.suggest(retrieval_query, top_k=3))
             if suggestion_block:
                 answer_text += LOW_CONFIDENCE_FOOTER.format(suggestions=suggestion_block)
+        # Append screenshot note for the first used ticket chunk with images
+        for c in result.chunks:
+            if c.metadata.get("kind") == "ticket" and c.metadata.get("has_images") \
+                    and c.metadata.get("url"):
+                answer_text += IMAGE_NOTE_TEMPLATE.format(
+                    tid=c.metadata.get("ticket_id", ""), url=c.metadata["url"])
+                break
         turn = Turn(
             role="assistant",
             content=answer_text,
@@ -292,6 +348,12 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             attachments=[a.filename for a in (deps.attachments or [])],
         )
         session.last_context_ids = [c.id for c in result.chunks]  # focus for follow-ups
+        session.add(turn)
+        deps.usage_logger(turn)
+        return turn
+
+    if result.rerank_top_score < config.OUT_OF_SCOPE_FLOOR:
+        turn = Turn(role="assistant", kind="abstain", content=OUT_OF_SCOPE_MESSAGE)
         session.add(turn)
         deps.usage_logger(turn)
         return turn

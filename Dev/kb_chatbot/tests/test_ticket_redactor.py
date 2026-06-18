@@ -1,4 +1,4 @@
-from Dev.kb_chatbot.chat.ticket_redactor import redact
+from Dev.kb_chatbot.chat.ticket_redactor import redact, scrub_answer
 
 
 def test_emails_removed():
@@ -149,3 +149,110 @@ def test_bare_domain_residue_redacted():
     out = redact("forwarded to sam@woodgrove.example for review", known_terms=[])
     assert "woodgrove.example" not in out
     assert "@woodgrove" not in out
+
+
+def test_high_entropy_token_redacted():
+    out = redact("ClientID: G5qjl8ujMGHJlfrNAnrPG0BM1sYohXIZAcobZ6vWm9LZAIT2", known_terms=[])
+    assert "G5qjl8ujMGHJlfrNAnrPG0BM1sYohXIZAcobZ6vWm9LZAIT2" not in out
+    assert "[redacted]" in out
+
+
+def test_base64_blob_redacted():
+    out = redact("file_bytes: VGVzdCBmaWxlIGZvciBwYXltZW50IHByb2Nlc3NpbmcgZGVtbw==", known_terms=[])
+    assert "VGVzdCBmaWxlIGZvciBwYXltZW50IHByb2Nlc3NpbmcgZGVtbw" not in out
+
+
+def test_jwt_redacted():
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36"
+    out = redact(f"token is {jwt}", known_terms=[])
+    assert "eyJhbGciOiJIUzI1NiJ9" not in out
+
+
+def test_hex_address_redacted():
+    out = redact("wallet 0x52908400098527886E0F7030069857D2E4169EE7 confirmed", known_terms=[])
+    assert "52908400098527886E0F7030069857D2E4169EE7" not in out
+
+
+def test_version_string_not_over_redacted():
+    out = redact("Upgrade to version 2.5.4.6 to fix this", known_terms=[])
+    assert "2.5.4.6" in out
+
+
+def test_ordinary_long_word_not_redacted():
+    out = redact("This is an internationalization problem in the module", known_terms=[])
+    assert "internationalization" in out
+
+
+def test_short_id_not_redacted():
+    out = redact("See order 75100 and ref AB12 for details", known_terms=[])
+    assert "75100" in out and "AB12" in out
+
+
+def test_clientid_label_redacted():
+    out = redact("ClientID: G5qjl8ujMGHJ", known_terms=[])
+    assert "G5qjl8ujMGHJ" not in out
+
+
+def test_gateway_customer_id_redacted():
+    out = redact("Gateway Customer ID: Comerica22964e769bbf2527", known_terms=[])
+    assert "Comerica22964e769bbf2527" not in out
+
+
+def test_multi_word_credential_value_redacted():
+    out = redact("Password: my secret pass phrase", known_terms=[])
+    assert "secret pass phrase" not in out
+    assert "Password" in out  # the label survives
+
+
+def test_credential_prose_without_separator_survives():
+    out = redact("Please reset the password to continue", known_terms=[])
+    assert "reset the password to continue" in out
+
+
+def test_action_verb_multiword_name_fully_redacted():
+    out = redact("I called Morgan Blake about the deal", known_terms=[])
+    assert "Morgan" not in out and "Blake" not in out
+
+
+def test_signature_line_after_signoff_dropped():
+    out = redact("Resolved the issue.\nRegards,\nPriya Patel", known_terms=[])
+    assert "Priya Patel" not in out
+
+
+def test_non_signoff_short_capitalized_line_survives():
+    out = redact("Open the panel.\nClick Save Now", known_terms=[])
+    assert "Click Save Now" in out
+
+
+def test_scrub_answer_removes_email_and_secret():
+    out = scrub_answer("Contact bob@acme.com with key sk_live_AbCd1234EfGh5678WxYz")
+    assert "bob@acme.com" not in out
+    assert "sk_live_AbCd1234EfGh5678WxYz" not in out
+
+def test_scrub_answer_keeps_normal_prose_and_links():
+    text = "Open the dealing screen. See [Ticket #5](https://support.contoso.example/x)."
+    out = scrub_answer(text)
+    assert "Open the dealing screen." in out
+    assert "[Ticket #5](https://support.contoso.example/x)" in out
+
+def test_scrub_answer_does_not_redact_capitalized_names_in_prose():
+    # name patterns must NOT run here (would mangle legitimate staff usernames/prose)
+    out = scrub_answer("The CSQA owner p.shah handled this; ask Sarah on the team.")
+    assert "p.shah" in out
+    assert "Sarah" in out
+
+
+def test_scrub_answer_preserves_citation_with_numeric_and_slug_urls():
+    text = ("Resolved. See [Booking a Spot Deal v2]"
+            "(https://help.contoso.example/display/TD/Booking+a+Spot+Deal+v2) "
+            "and [Ticket #75919](https://support.contoso.example/viewpage.action?pageId=12345678).")
+    out = scrub_answer(text)
+    assert "https://help.contoso.example/display/TD/Booking+a+Spot+Deal+v2" in out
+    assert "https://support.contoso.example/viewpage.action?pageId=12345678" in out
+    assert "Booking a Spot Deal v2" in out
+
+
+def test_scrub_answer_still_strips_prose_email_outside_links():
+    out = scrub_answer("Email bob@acme.com then see [KB](https://help.contoso.example/x).")
+    assert "bob@acme.com" not in out
+    assert "https://help.contoso.example/x" in out

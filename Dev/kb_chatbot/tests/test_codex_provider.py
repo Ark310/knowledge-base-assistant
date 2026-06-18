@@ -291,3 +291,32 @@ def test_run_codex_exec_surfaces_stdout_error_when_stderr_empty(monkeypatch):
         s = str(e)
         assert "Invalid schema for function '_search'" in s
         assert "no output produced" not in s
+
+
+def test_run_codex_exec_pins_reasoning_effort_low(monkeypatch):
+    """Every codex exec call must pin model_reasoning_effort=low so it does not
+    inherit the user's ~/.codex/config.toml (which may be 'high')."""
+    captured = {}
+
+    class _Proc:
+        stdout = json.dumps({"type": "turn.completed",
+                             "usage": {"input_tokens": 10, "output_tokens": 5}})
+        stderr = ""
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        out_path = cmd[cmd.index("-o") + 1]
+        with open(out_path, "w", encoding="utf-8") as fh:
+            fh.write("ok")
+        return _Proc()
+
+    monkeypatch.setattr(cp.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(cp.subprocess, "run", fake_run)
+    cp._run_codex_exec("prompt", "gpt-5.4")
+    cmd = captured["cmd"]
+    # the -c override is present, with the value the constant defines
+    assert "-c" in cmd
+    joined = " ".join(cmd)
+    assert f'model_reasoning_effort="{cp.CODEX_REASONING_EFFORT}"' in joined
+    assert cp.CODEX_REASONING_EFFORT == "low"

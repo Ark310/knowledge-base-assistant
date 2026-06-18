@@ -2,7 +2,9 @@
 V2.2 has no API key — Claude Code subprocess uses its own OAuth."""
 from __future__ import annotations
 import hashlib
+import hmac
 import json
+import os
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
@@ -24,11 +26,32 @@ class Settings:
     default_provider: str = "claude"
 
 
+_PBKDF2_ITERS = 200_000
+
+
+def hash_password(password: str) -> str:
+    """Salted PBKDF2-HMAC-SHA256. Returns 'pbkdf2_sha256$<iters>$<salt_hex>$<hash_hex>'."""
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERS)
+    return f"pbkdf2_sha256${_PBKDF2_ITERS}${salt.hex()}${dk.hex()}"
+
+
 def check_learn_password(candidate: str, stored_hash: str) -> bool:
-    """Compare SHA-256 hash of candidate against stored_hash."""
-    if not candidate:
+    """Verify a Learn-Mode password against the stored hash. Supports the new
+    salted PBKDF2 format and the legacy bare-SHA-256 hash (backward compat).
+    Constant-time comparison via hmac.compare_digest."""
+    if not candidate or not stored_hash:
         return False
-    return hashlib.sha256(candidate.encode()).hexdigest() == stored_hash
+    if stored_hash.startswith("pbkdf2_sha256$"):
+        try:
+            _, iters_s, salt_hex, hash_hex = stored_hash.split("$")
+            dk = hashlib.pbkdf2_hmac("sha256", candidate.encode(),
+                                     bytes.fromhex(salt_hex), int(iters_s))
+            return hmac.compare_digest(dk.hex(), hash_hex)
+        except (ValueError, TypeError):
+            return False
+    # Legacy bare SHA-256 (so existing installs aren't locked out)
+    return hmac.compare_digest(hashlib.sha256(candidate.encode()).hexdigest(), stored_hash)
 
 
 def load_settings(path: Path = config.SETTINGS_FILE) -> Settings:

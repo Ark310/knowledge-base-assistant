@@ -6,7 +6,7 @@ import sys
 
 # Single source of truth for the app version. Surfaced in the window title and
 # the exe filename (read by ContosoKBChatbot.spec). Bump here only.
-APP_VERSION = "2.8"
+APP_VERSION = "2.9.1"
 
 # ── Freeze-aware base paths ───────────────────────────────────────────────────
 if getattr(sys, "frozen", False):
@@ -41,15 +41,14 @@ PROVIDERS = {
     },
     "openai": {
         "display": "ChatGPT",
-        # Codex CLI 0.139 injects a built-in `_search` tool whose parameter schema
-        # has a top-level anyOf. gpt-5.5 and gpt-5.4-mini enforce strict
-        # function-schema validation and reject it with HTTP 400 ("Invalid schema
-        # for function '_search'"), so the turn fails before any output. gpt-5.4
-        # accepts the same tool set, so it is the only ChatGPT model that works over
-        # Codex today. Re-add the others once Codex ships a valid tool schema.
+        # v2.9.1: with model_reasoning_effort pinned to "low" (codex_provider), the
+        # Codex CLI no longer rejects gpt-5.4-mini (the earlier 400 was the high/
+        # default-effort + injected-tool combo). gpt-5.4 stays default for accuracy;
+        # mini is offered as a faster/cheaper option.
         "default_model": "gpt-5.4",
         "models": {
             "GPT-5.4": "gpt-5.4",
+            "GPT-5.4-mini (fast / cheap)": "gpt-5.4-mini",
         },
     },
 }
@@ -92,9 +91,11 @@ PRODUCT_DISPLAY = {
 TOP_K_RETRIEVE      = 30
 TOP_K_RERANK        = 8
 CONFIDENCE_FLOOR    = 0.06   # sigmoid(rerank logit); was 0.30 on raw logits (over-abstained)
+OUT_OF_SCOPE_FLOOR  = 0.02   # below this rerank score the query is treated as outside the KB scope
 CLARIFY_SCORE_FLOOR = 0.0    # rerank score is now 0-1; 0.0 keeps the abstain-path clarify check live
 MAX_HISTORY_TURNS   = 6
 CHUNK_TARGET_WORDS  = 500
+ANSWER_MAX_TOKENS   = 2048   # full ticket resolutions can exceed 1024; completeness wins (v2.9.1)
 
 # ── Cost estimation (USD per million tokens) ──────────────────────────────────
 # Used by llm.base.estimate_cost. Claude Code subprocess doesn't bill per-call,
