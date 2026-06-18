@@ -16,14 +16,14 @@ Real alpha testing by a team member (chat logs in `state/chats/`, 2026-06-16) su
 Root cause of CONV A: after a clarification is answered, the LLM treats the short reply as the question, sees several related tickets in CONTEXT, and asks **another** clarifying question (system-prompt rule 4) instead of answering the original detailed ask. The orchestrator fuses the prior question for *retrieval* but the LLM's user message stays the raw reply.
 
 Plus three user-reported items:
-1. **Ticket-pool + KB referencing is "hit or miss"** for errors. The engine aggregates well *when it answers* (CONV A T3 cited #54000 Litware + #45615 Monex USA; CONV B cited #75919), but errors can live on tickets **or** the KB, and the same error is sometimes recorded across **multiple tickets with slightly different wording** — these must be reliably surfaced together.
+1. **Ticket-pool + KB referencing is "hit or miss" — the #1 complaint: it "feels like a search engine on steroids, not a chatbot for all the data."** The engine aggregates well *when it answers* (CONV A T3 cited #54000 Litware + #45615 Monex USA; CONV B cited #75919), but: (i) errors can live on tickets **or** the KB; (ii) the same error is recorded across **multiple tickets with slightly different wording**; and (iii) it tends to cite **old** tickets and **doesn't actively bridge to newer ones** — root cause confirmed: tickets carry `created_at` but it's **entirely unused** (not in the chunk, no recency signal in retrieval). The bot must feel like it *knows the whole pool + KB* and synthesizes across it, not just returns top matches.
 2. **Product taxonomy:** **FormFlow** is a standalone product, **separate from SalesHub**; **FormFlow ≡ FormFlow** (FormFlow = the older version embedded in TradeDesk/other apps; FormFlow = the standalone product). Today the app's `config.PRODUCTS` **omits the forms product entirely** (KB tags it `formflow`, tickets tag it "FormFlow", but it's a "ghost" — no dropdown/display/prompt entry), and ticket raw Project values ("SalesHub", "FormFlow") don't match KB slugs.
 3. **UI:** the chat **scrolls to the top on every prompt** (forcing a manual scroll to the bottom), the chat screen "seems basic," and the v2.9.1 deferred nits remain.
 
 ## 2. Goals
 
 - **Answer-first, clarify-once, never-lose-context**: eliminate the redundant re-clarification + context-loss (fix CONV A) while still asking a clarifying question when genuinely warranted — without sacrificing accuracy (citations/abstain guarantees intact).
-- **Be a guru over the ticket pool AND the KB**: reliably surface relevant tickets *and* KB for an error, including similar errors across multiple tickets.
+- **Be a guru over the ticket pool AND the KB — feel like a chatbot that knows all the data, not search.** Reliably surface relevant tickets *and* KB for an error; **bridge old↔new tickets** (recency-aware, prefer the latest fix, surface dates); **synthesize across the pool** (the error's history: occurrences, clients, dates, most-recent fix, who handled) with light proactive touches — every claim cited, abstain when unsure (breadth never costs accuracy).
 - **Correct product taxonomy**: FormFlow as a first-class product, FormFlow recognized as its synonym, SalesHub separate; consistent product handling across tickets and KB.
 - **UI**: fix the scroll-to-top bug, apply the deferred nits, light chat-screen polish.
 
@@ -41,6 +41,9 @@ Plus three user-reported items:
 |---|---|
 | Clarification policy | **Answer-first, clarify-once, never lose context.** Clarify only when genuinely multiple distinct answers; after a clarification is answered, FUSE the original question + reply and ANSWER — never re-clarify the same thread. |
 | Referencing scope | **Both** — fix the friction AND strengthen retrieval (balanced KB+ticket; cross-ticket similar-error surfacing). |
+| Old vs new tickets | **Aggregate all occurrences + prefer the latest fix** (surface dates; lead with the most recent ticket's resolution, note older). Add `created_at` to the ticket chunk (currently unused). |
+| "Smart enough" feel | **Mainly cross-pool synthesis** (root cause + resolution + the error's pattern across the pool: occurrences/clients/dates/most-recent/handlers) **with light proactive touches** (related issues, likely next step, "want more?"). |
+| Breadth vs accuracy | **Broaden + synthesize, every claim cited, abstain when unsure.** Breadth must not cost accuracy. |
 | FormFlow | First-class forms product. **FormFlow / FormFlow / FormFlow = one bucket** for retrieval/filtering; **SalesHub separate.** Label **FormFlow** for the standalone product, **FormFlow** for the TradeDesk/other-app embedded version (LLM decides by context). |
 | UI scope | Scroll-to-top fix + deferred v2.9.1 nits + **light** chat-screen polish (no restructure). |
 | Continuity/pin | **Out of scope** — already fixed in v2.9.1 (verified by replay). |
@@ -72,13 +75,19 @@ The "original question" is the last user turn *before* the clarification (`sessi
 
 **(d) Accuracy preserved.** Fusing only re-states the user's own prior words; the CONTEXT-only and citation rules (1, 3, 11) are unchanged, and the bot still abstains when the answer isn't in context.
 
-### 6.2 Ticket-pool + KB retrieval strengthening — `chat/orchestrator.py`, `retriever.py`
+### 6.2 Ticket-pool + KB referencing — broaden, bridge old↔new, synthesize — `chat/orchestrator.py`, `retriever.py`, `prompt.py` *(the core "feels like search, not a chatbot" fix — biggest complaint)*
 
-**(a) Balanced KB + ticket context for error questions.** v2.9.1 added `_ensure_kb_alongside` (attach a KB chunk when context is ticket-dominated). Generalize to **ensure both sources** are represented: add `_ensure_tickets_alongside` (when context is KB-dominated and the query reads like an error/issue, pull the top relevant ticket(s)). A small helper `_looks_like_error(query)` (keywords: error, issue, fail, not working, null, exception, "doesn't", incorrect, discrepancy, …) gates the ticket-pull so pure how-to questions stay KB-focused.
+The #1 complaint: the bot "feels like a search engine on steroids, not a chatbot for all the data" — it cites whatever ranks top (often an **old** ticket) and doesn't actively bridge to **newer** tickets or synthesize across the pool. Fixes:
 
-**(b) Cross-ticket similar-error surfacing.** When a ticket chunk is in the answer context, run a bounded secondary retrieval seeded by that ticket's title/error signature, filtered to `kind == "ticket"`, and merge the top 1–2 *additional distinct* tickets (dedup by `ticket_id`) so "the same error on other tickets, slightly different wording" is aggregated (like #54000 + #45615). Bounded count; reuses the existing embed+rerank; no new model.
+**(a) Recency awareness (new).** Tickets carry `created_at` (e.g. `2024-08-22 6:37 AM`) but it is completely unused — not in the chunk, not in retrieval. Add the ticket date to the chunk (metadata `created_at`, parsed to an ISO date, + a `Date: <YYYY-MM-DD>` line in the chunk text) so aggregation and the LLM can reason about old vs. new. (Implemented in `ticket_ingest`, §6.3; reindex.)
 
-**(c) Tuning, not guessing.** The thresholds (error-keyword gate, how many extra tickets, the relevance floor for the secondary pull) are tuned on the golden set so recall improves without dragging in irrelevant tickets. Parent-document expansion (v2.9.1) still assembles each surfaced ticket fully.
+**(b) Broaden + balance retrieval for error/issue questions.** Add `_looks_like_error(query)` (keywords: error, issue, fail, "not working", null, exception, "doesn't", incorrect, discrepancy, crash, wrong, …). For that path, **widen the candidate pool** (a higher top-K than the how-to default) and **ensure BOTH sources** are represented: keep v2.9.1's `_ensure_kb_alongside` (attach KB when ticket-dominated) and add the symmetric `_ensure_tickets_alongside` (attach tickets when KB-dominated). Pure how-to questions stay tight/KB-focused.
+
+**(c) Cross-ticket, cross-time aggregation — bridge old↔new.** When a ticket is in the answer context, run a bounded secondary retrieval seeded by the error signature (`kind == "ticket"`, dedup by `ticket_id`) and merge the additional distinct tickets covering the same error — **explicitly including the most recent occurrence** so old AND new tickets are bridged (not just the top semantic match). Parent-document expansion (v2.9.1) assembles each surfaced ticket fully.
+
+**(d) Synthesis + recency in the answer (prompt).** The system prompt directs an **expert, pool-aware** answer for errors: root cause + resolution, **leading with / preferring the most recent ticket's fix as authoritative** (older occurrences noted), plus a brief **cross-pool synthesis** — "seen on N tickets across [clients], from [oldest date] to most recent **[Ticket #X](url)** ([date]); handled by [owners]". Add **light proactive touches** — offer the closest related issue(s) and a likely next step, and invite "want the full list / more detail?" — without padding. Every factual claim keeps its `[Ticket #N](url)` / `[KB title](url)` citation, and it still **abstains when the answer isn't in context** — breadth never costs accuracy.
+
+**(e) Tuning, not guessing.** The error-gate, widened top-K, extra-ticket count, recency preference, and the secondary-pull relevance floor are tuned on the golden set so recency-bridging + synthesis raise the "knows-everything" feel without dragging in irrelevant tickets.
 
 ### 6.3 FormFlow taxonomy — `config.py`, `prompt.py`, `ticket_ingest.py`, `chat/orchestrator.py`
 
@@ -87,6 +96,8 @@ The "original question" is the last user turn *before* the clarification (`sessi
 **(b) Synonyms + product detection.** A synonym map so "formflow", "formflow", "formflow", "formflow" all resolve to the `formflow` slug in: the product dropdown (offer "FormFlow"), `_mentions_product`/`_extract_single_product` (orchestrator), and the clarifier display. **SalesHub ("SalesHub"/"saleshub") stays a separate product.**
 
 **(c) Ticket Project → slug normalization.** In `ticket_ingest`, normalize the raw ticket "product" (Project) value to the canonical slug for the cases the taxonomy cares about: `"FormFlow" → formflow`, `"SalesHub" → saleshub`, the `TD …` family → `tradedesk`, `TD Web Portal V2.0 → web2`, `… V4.0 → web4`, `Rest API`/`TD Web API` → `api`; anything unmapped → `other` (and keep the raw Project string in a separate metadata field, e.g. `project`, for display/clarification). This makes product filtering/clarification consistent across tickets and KB. **Requires a reindex** (metadata change) → bump `CHUNK_SCHEMA_VERSION`.
+
+**(c-2) Recency date in the ticket chunk (for §6.2).** Parse `created_at` (e.g. `"2024-08-22 6:37 AM"`) to an ISO date; store it in chunk metadata (`created_at`) and prepend a `Date: <YYYY-MM-DD>` line to the chunk header text, so the answer layer can prefer the latest fix and cite dates. Robust parse with a graceful fallback (empty/unparseable → no date line, no crash). Same reindex.
 
 **(d) Prompt + scope copy.** Update `SYSTEM_PROMPT`'s product list and `OUT_OF_SCOPE_MESSAGE` to include **FormFlow**, and add a rule: "FormFlow is the standalone forms product; FormFlow is the older forms version embedded in TradeDesk and other apps — they are the same product. Refer to it as **FormFlow** when the user asks about the standalone product, and **FormFlow** when discussing the TradeDesk/embedded version. SalesHub is a separate product."
 
@@ -111,7 +122,8 @@ Bump `APP_VERSION` 2.9.1 → **2.9.2** (title/About/exe name + `test_version`); 
 
 - **Clarification/bridging (deterministic, FakeProvider):** when the previous assistant turn is a clarification, (i) the LLM message includes the fused original question + the anti-re-clarify bridging note; (ii) the orchestrator clarify gate is suppressed; (iii) a follow-up answering a clarification yields `kind="answer"`, not `clarification`.
 - **Anti-re-clarify replay regression:** replay CONV A through a FakeProvider that echoes its prompt; assert Turn-2 produces an answer-shaped turn carrying the original "margin duplication" specifics (no second clarification). Replay CONV B asserts continuity-carry + pin still work (no regression).
-- **Retrieval strengthening:** error-type query with only KB in top-K → a ticket is attached; ticket-dominated → a KB chunk attached (existing); a ticket in context → ≥1 additional distinct same-error ticket merged when one exists; pure how-to → no spurious ticket pull.
+- **Retrieval strengthening + recency:** error-type query with only KB in top-K → a ticket attached; ticket-dominated → a KB chunk attached (existing); `_looks_like_error` true → widened top-K; a ticket in context → ≥1 additional distinct same-error ticket merged when one exists; pure how-to → no spurious ticket pull. **Recency:** ticket chunk metadata has `created_at` (ISO) and a `Date:` line in text; `created_at` parses from the raw `"YYYY-MM-DD h:mm AM"` format (and unparseable → no date line, no crash); given two same-error tickets with different dates in context, the aggregation/answer-shaping prefers/leads with the newer one.
+- **Synthesis (deterministic where possible):** with a FakeProvider echoing context, the built prompt for an error question contains the recency + cross-pool synthesis directive and ≥2 tickets' dates; the answer carries citations on every claim. (Qualitative synthesis quality is checked in the live golden gate.)
 - **Taxonomy:** `formflow` in `PRODUCTS`/`PRODUCT_DISPLAY` ("FormFlow"); "formflow"/"formflow"/"formflow" → `formflow` slug; "saleshub" → `saleshub` (separate); `ticket_ingest` maps Project "FormFlow"→formflow, "SalesHub"→saleshub, "TD Client Server"→tradedesk, and keeps the raw `project`.
 - **UI:** a render/scroll helper test (cursor-to-end / scrollbar-max invoked on append); AboutDialog has no dead accept wire.
 - **Version:** `test_version` asserts `2.9.2`. **Full suite green.**
@@ -127,7 +139,10 @@ Bump `APP_VERSION` 2.9.1 → **2.9.2** (title/About/exe name + `test_version`); 
 ## 9. Risks
 
 - **Over-suppressing clarification** → answering an ambiguous question wrongly. Mitigated: only suppress *re*-clarification after one was already asked+answered; first-time genuine ambiguity still clarifies; accuracy/citation guarantees unchanged; golden-tuned.
-- **Cross-ticket pull adds noise** → irrelevant tickets in context. Mitigated by a relevance floor + small bounded count + dedup; pure how-to gated out.
+- **Cross-ticket pull / broadened top-K adds noise or latency** → irrelevant tickets in context. Mitigated by a relevance floor + small bounded count + dedup; pure how-to gated out; every claim cited so noise is visible/checkable; golden-tuned.
+- **Recency preference surfaces a recent-but-less-relevant ticket** → leading with the newest could demote the truly-relevant older one. Mitigated: prefer-latest applies **among tickets already judged same-error/relevant**, not globally; older occurrences are still cited; tuned on the golden set.
+- **`created_at` parse fragility** (format `"2024-08-22 6:37 AM"`, possibly missing) → bad/empty dates. Mitigated by a tolerant parser with graceful fallback (no date line, never crash); tested.
+- **"Smart-feel" synthesis is qualitative** → can't fully unit-test. Mitigated: deterministic tests assert the *prompt directive + dates + citations*; the live golden gate (both providers) judges actual synthesis quality before ship.
 - **Ticket Project normalization mis-maps** a Project value → wrong product filter. Mitigated by an explicit mapping table + `other` fallback + keeping the raw `project` for display; tested.
 - **Reindex cost** (~36 min full corpus) — run once at ship, same as v2.9.1.
 - **Fusion bloats the prompt** slightly (restates the original question) — negligible vs. the scaffold; improves correctness.
