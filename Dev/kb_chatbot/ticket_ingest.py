@@ -9,11 +9,30 @@ patterns) to the redactor."""
 from __future__ import annotations
 import hashlib
 import re
+from datetime import datetime
 
 from Dev.kb_chatbot.chunker import Chunk
 from Dev.kb_chatbot.chat.ticket_redactor import redact
+from Dev.kb_chatbot import config
 
 TICKET_CHUNK_WORDS = 350  # retrieval window kept below embed (~256) / rerank (~512) truncation
+
+
+def _parse_created_at(raw: str) -> str:
+    """Parse a ticket created_at like '2024-08-22 6:37 AM' to an ISO date 'YYYY-MM-DD'.
+    Returns '' on empty/unparseable input (never raises)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d %I:%M %p", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    # last resort: leading YYYY-MM-DD token
+    import re as _re
+    m = _re.match(r"\d{4}-\d{2}-\d{2}", raw)
+    return m.group(0) if m else ""
 
 
 def _split_words(text: str, size: int) -> list[str]:
@@ -226,7 +245,9 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
 
     problem = _problem_text(data, known)
     raw_title = data.get("title", "") or f"Ticket {data.get('ticket_id', '')}"
-    product = data.get("product", "") or "tickets"
+    raw_project = (data.get("product", "") or "").strip()
+    product = config.normalize_ticket_product(raw_project)
+    created_at = _parse_created_at(data.get("created_at", ""))
     ticket_id = str(data.get("ticket_id", ""))
     ticket_url = data.get("url", "") or data.get("resolution_url", "")
     resolution_url = data.get("resolution_url", "") or data.get("url", "")
@@ -242,8 +263,11 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
     chunks: list[Chunk] = []
     for idx, seg in enumerate(segments):
         text = title_line
-        if idx == 0 and header:
-            text += "\n" + header
+        if idx == 0:
+            if created_at:
+                text += f"\nDate: {created_at}"
+            if header:
+                text += "\n" + header
         text += "\n\n" + seg
         cid = "ticket_" + hashlib.sha1(
             f"{ticket_id}:{raw_title}:{idx}".encode()).hexdigest()[:16]
@@ -253,6 +277,8 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
             metadata={
                 "kind": "ticket",
                 "product": product,
+                "project": raw_project,
+                "created_at": created_at,
                 "category": data.get("category", "") or "ticket",
                 "title": f"Ticket #{ticket_id}",
                 "ticket_id": ticket_id,

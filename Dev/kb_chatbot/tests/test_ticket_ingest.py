@@ -190,3 +190,26 @@ def test_has_images_flag_set(tmp_path):
     ], attachment_images=[{"mime": "image/png", "saved_path": "attachments/75100/c1.png"}])
     chunks = build_ticket_chunks(data, p)
     assert all(c.metadata["has_images"] is True for c in chunks)
+
+
+from Dev.kb_chatbot.ticket_ingest import _parse_created_at
+
+
+def test_parse_created_at_formats():
+    assert _parse_created_at("2024-08-22 6:37 AM") == "2024-08-22"
+    assert _parse_created_at("2024-08-22") == "2024-08-22"
+    assert _parse_created_at("") == ""
+    assert _parse_created_at("garbage") == ""
+
+
+def test_chunk_has_recency_and_normalized_product(tmp_path):
+    data, p = _ticket(tmp_path, [
+        {"type": "email", "header": "", "body": "It broke."},
+        {"type": "comment", "author": "a.user", "header": "", "body": "Fixed it."},
+    ], product="FormFlow", created_at="2024-08-22 6:37 AM")
+    chunks = build_ticket_chunks(data, p)
+    m = chunks[0].metadata
+    assert m["product"] == "formflow"       # normalized
+    assert m["project"] == "FormFlow"      # raw kept
+    assert m["created_at"] == "2024-08-22"
+    assert "Date: 2024-08-22" in chunks[0].text
