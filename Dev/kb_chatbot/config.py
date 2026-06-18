@@ -41,15 +41,14 @@ PROVIDERS = {
     },
     "openai": {
         "display": "ChatGPT",
-        # Codex CLI 0.139 injects a built-in `_search` tool whose parameter schema
-        # has a top-level anyOf. gpt-5.5 and gpt-5.4-mini enforce strict
-        # function-schema validation and reject it with HTTP 400 ("Invalid schema
-        # for function '_search'"), so the turn fails before any output. gpt-5.4
-        # accepts the same tool set, so it is the only ChatGPT model that works over
-        # Codex today. Re-add the others once Codex ships a valid tool schema.
+        # v2.9.1: with model_reasoning_effort pinned to "low" (codex_provider), the
+        # Codex CLI no longer rejects gpt-5.4-mini (the earlier 400 was the high/
+        # default-effort + injected-tool combo). gpt-5.4 stays default for accuracy;
+        # mini is offered as a faster/cheaper option.
         "default_model": "gpt-5.4",
         "models": {
             "GPT-5.4": "gpt-5.4",
+            "GPT-5.4-mini (fast / cheap)": "gpt-5.4-mini",
         },
     },
 }

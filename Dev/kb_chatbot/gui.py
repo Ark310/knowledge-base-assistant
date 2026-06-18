@@ -377,7 +377,9 @@ class TokenUsageDialog(QDialog):
 
         footer = QLabel(
             "Rates: API-equivalent, Anthropic & OpenAI published pricing (June 2026). "
-            "ChatGPT counts include Codex's agent overhead, so they read higher than Claude. "
+            "ChatGPT (Codex) runs at low reasoning effort to minimize output tokens, but "
+            "its requests carry a fixed Codex agent scaffold (~17k input tokens/turn) that "
+            "the account-based CLI always sends, so ChatGPT input reads higher than Claude. "
             "Edit config.COST_TABLE if rates change."
         )
         footer.setStyleSheet("color:#777; font-size:9pt;")
