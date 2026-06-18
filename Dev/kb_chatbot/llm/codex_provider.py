@@ -24,6 +24,14 @@ log = logging.getLogger("kb_chatbot.llm.codex")
 
 CODEX_TIMEOUT_S = 180
 
+# Pin reasoning effort low for every call. The app is a RAG reformat task, not an
+# agentic coding task: 'low' cuts reasoning-output tokens ~89% vs the user's global
+# 'high' default with equal/better accuracy (spike: 262 -> ~28 reasoning tok). NOTE:
+# 'minimal' is rejected by codex 0.139 ("tools cannot be used with reasoning effort
+# minimal"), so 'low' is the floor. Setting it here makes behavior independent of the
+# user's ~/.codex/config.toml.
+CODEX_REASONING_EFFORT = "low"
+
 _IMG_EXT = {"image/png": ".png", "image/jpeg": ".jpg",
             "image/gif": ".gif", "image/webp": ".webp"}
 
@@ -202,6 +210,7 @@ def _run_codex_exec(prompt: str, model: str,
     args = ["exec", "-m", model, "--json",
             "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
             "-C", tempfile.gettempdir(),
+            "-c", f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
             "-o", out_path]
     for p in (image_paths or []):
         args += ["-i", p]
