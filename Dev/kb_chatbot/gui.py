@@ -528,6 +528,26 @@ class IndexingDialog(QDialog):
         event.accept()
 
 
+def _build_message_html(role: str, text: str, colour: str, tag: str, ts: str) -> str:
+    """Build an HTML message block with escaped text and optional linkified URLs.
+
+    Escapes HTML in text first, then converts [Title](https?://...) markdown links
+    to HTML hyperlinks (only http(s) links — javascript: is blocked by _LINK_RE).
+    """
+    safe_text = html_module.escape(text)
+    if role == "ai":
+        # Convert [Title](url) markdown links to HTML hyperlinks
+        safe_text = _LINK_RE.sub(r'<a href="\2">\1</a>', safe_text)
+    safe_text = safe_text.replace("\n", "<br>")
+    return (
+        f'<p style="margin:4px 0; font-family:Consolas,monospace; font-size:10pt;">'
+        f'<span style="color:#555;">{ts}</span> '
+        f'<b style="color:{colour};">{html_module.escape(tag)}</b> '
+        f'<span style="color:{colour};">{safe_text}</span>'
+        f'</p>'
+    )
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -869,18 +889,7 @@ class MainWindow(QMainWindow):
 
     def _append(self, role: str, text: str, colour: str, tag: str):
         ts = datetime.now().strftime("%H:%M:%S")
-        safe_text = html_module.escape(text)
-        if role == "ai":
-            # Convert [Title](url) markdown links to HTML hyperlinks
-            safe_text = _LINK_RE.sub(r'<a href="\2">\1</a>', safe_text)
-        safe_text = safe_text.replace("\n", "<br>")
-        block = (
-            f'<p style="margin:4px 0; font-family:Consolas,monospace; font-size:10pt;">'
-            f'<span style="color:#555;">{ts}</span> '
-            f'<b style="color:{colour};">{html_module.escape(tag)}</b> '
-            f'<span style="color:{colour};">{safe_text}</span>'
-            f'</p>'
-        )
+        block = _build_message_html(role, text, colour, tag, ts)
         self.chat_view.append(block)
         self.chat_view.ensureCursorVisible()
 
