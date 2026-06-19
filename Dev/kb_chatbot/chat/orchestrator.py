@@ -74,6 +74,12 @@ _DRIFT_CURRENT_CEILING = 0.20  # 0-1 sigmoid: current turn very low
 
 DRIFT_NOTE = "\n\n[TOPIC SHIFT: The user has changed topics. Treat this as a fresh question. Do not reference prior context.]"
 
+CLARIFY_BRIDGE_NOTE = (
+    "\n\n[CLARIFICATION ANSWERED — the user's original question was: \"{orig}\". "
+    "They have now specified: \"{reply}\". Answer that original question directly "
+    "using CONTEXT. Do NOT ask another clarifying question.]"
+)
+
 
 def _is_topic_drift(previous: float, current: float) -> bool:
     return previous >= _DRIFT_PREVIOUS_FLOOR and current < _DRIFT_CURRENT_CEILING
@@ -232,6 +238,8 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
         filters = Filters(product=extracted_product,
                           version_min=filters.version_min,
                           version_max=filters.version_max)
+    answering_clarification = session.last_assistant_kind() == "clarification"
+    original_q = session.last_user_question() if answering_clarification else ""
     session.add_user(user_msg)
 
     result = deps.retriever.retrieve(retrieval_query, filters)
@@ -282,7 +290,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
     session.last_rerank_score = result.rerank_top_score
 
     if not result.abstain_reason:
-        if not skip_clarify and not (filters.product or _mentions_product(user_msg) or _recent_product_in_history(session)):
+        if not skip_clarify and not answering_clarification and not (filters.product or _mentions_product(user_msg) or _recent_product_in_history(session)):
             quick = deps.retriever.retrieve_quick(retrieval_query, limit=10)
             if _needs_clarification_from_quick(quick):
                 clar_fn = deps.clarifier or _default_clarifier
@@ -295,10 +303,13 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
         result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)
         result.chunks = _ensure_kb_alongside(retrieval_query, result.chunks, deps.retriever)
         try:
+            llm_user_msg = user_msg + drift_note
+            if answering_clarification and original_q:
+                llm_user_msg += CLARIFY_BRIDGE_NOTE.format(orig=original_q, reply=user_msg)
             messages = build_messages(
                 context_chunks=result.chunks,
                 history=history,
-                user_msg=user_msg + drift_note,
+                user_msg=llm_user_msg,
                 attachments=deps.attachments or [],
             )
             resp = deps.llm.chat(
@@ -358,7 +369,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
         deps.usage_logger(turn)
         return turn
 
-    if result.rerank_top_score > config.CLARIFY_SCORE_FLOOR and not (
+    if result.rerank_top_score > config.CLARIFY_SCORE_FLOOR and not answering_clarification and not (
         filters.product or _mentions_product(user_msg) or _recent_product_in_history(session)
     ):
         quick = deps.retriever.retrieve_quick(retrieval_query, limit=10)
