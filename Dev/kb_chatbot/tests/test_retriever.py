@@ -51,3 +51,10 @@ def test_confidence_gate_triggers_for_unrelated_query():
             assert r.chunks == []
         finally:
             strict.close()
+
+
+def test_looks_like_error():
+    from Dev.kb_chatbot.chat.orchestrator import _looks_like_error
+    assert _looks_like_error("GetWebDeal returns a null buy amount error")
+    assert _looks_like_error("the drawdown margin is duplicated incorrectly")
+    assert not _looks_like_error("how do I book a spot deal")

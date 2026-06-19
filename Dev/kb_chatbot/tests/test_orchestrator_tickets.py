@@ -32,7 +32,7 @@ class FragmentRetriever:
     """retrieve() surfaces ONLY chunk 1 (a fragment); get_by_ticket_ids returns all."""
     def __init__(self):
         self.captured = None
-    def retrieve(self, query, filters):
+    def retrieve(self, query, filters, top_k_rerank=None):
         return RetrievalResult(chunks=[_ALL[1]], rerank_top_score=0.9)
     def get_by_ids(self, ids):
         return []
@@ -80,7 +80,7 @@ def test_orchestrator_scrubs_answer_before_render():
 
 
 class ImageTicketRetriever(FragmentRetriever):
-    def retrieve(self, query, filters):
+    def retrieve(self, query, filters, top_k_rerank=None):
         return RetrievalResult(chunks=[_frag(0, "Problem: see screenshot", has_images=True)],
                                rerank_top_score=0.9)
     def get_by_ticket_ids(self, tids):
@@ -148,3 +148,18 @@ def test_same_ticket_question_is_consistent_across_rephrasings():
         sent = llm.calls[-1]["messages"][-1]["content"]
         assert "buy amount came back null" in sent
         assert "re-added the field and redeployed" in sent
+
+
+def test_error_query_uses_wider_topk(monkeypatch):
+    from Dev.kb_chatbot import config
+    from Dev.kb_chatbot.chat import orchestrator as o
+    captured = {}
+    class R2(FragmentRetriever):
+        def retrieve(self, query, filters, top_k_rerank=None):
+            captured["k"] = top_k_rerank
+            return RetrievalResult(chunks=[_frag(0, "Problem: x")], rerank_top_score=0.9)
+    llm = FakeProvider(canned_text=f"ok [Ticket #75919]({URL})")
+    handle_turn("there is an error: buy amount is null and failing",
+                Session.new(), Filters(), "claude-haiku-4-5-20251001",
+                deps=Deps(retriever=R2(), llm=llm))
+    assert captured["k"] == config.TOP_K_RERANK_ERROR

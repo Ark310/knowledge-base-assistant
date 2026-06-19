@@ -118,8 +118,9 @@ def normalize_ticket_product(raw: str) -> str:
     return _TICKET_PROJECT_MAP.get((raw or "").strip().lower(), "other")
 
 # ── Retrieval defaults ────────────────────────────────────────────────────────
-TOP_K_RETRIEVE      = 30
-TOP_K_RERANK        = 8
+TOP_K_RETRIEVE        = 30
+TOP_K_RERANK          = 8
+TOP_K_RERANK_ERROR    = 14   # wider rerank window for error/issue questions
 CONFIDENCE_FLOOR    = 0.06   # sigmoid(rerank logit); was 0.30 on raw logits (over-abstained)
 OUT_OF_SCOPE_FLOOR  = 0.02   # below this rerank score the query is treated as outside the KB scope
 CLARIFY_SCORE_FLOOR = 0.0    # rerank score is now 0-1; 0.0 keeps the abstain-path clarify check live

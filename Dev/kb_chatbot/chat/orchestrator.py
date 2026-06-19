@@ -155,6 +155,15 @@ def _default_clarifier(user_msg: str, quick: list[Chunk]) -> str:
 
 from Dev.kb_chatbot.chat.query_rewriter import REWRITE_MODEL as _REWRITE_MODEL_NAME
 
+_ERROR_RE = re.compile(
+    r"\b(error|errors|issue|issues|fail(?:s|ed|ing|ure)?|null|exception|crash(?:e[ds])?|"
+    r"bug|broken|wrong|incorrect|discrepan\w*|duplicat\w*|missing|not working|doesn'?t|"
+    r"cannot|can'?t|unable)\b", re.IGNORECASE)
+
+
+def _looks_like_error(query: str) -> bool:
+    return bool(_ERROR_RE.search(query or ""))
+
 
 # Explicit ticket references only ("ticket 75919", "bug #75919", "#75919") — pinned
 # into context by ticket_id. A bare number is NOT treated as a ticket id: support
@@ -251,7 +260,9 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
     original_q = session.last_user_question() if answering_clarification else ""
     session.add_user(user_msg)
 
-    result = deps.retriever.retrieve(retrieval_query, filters)
+    err_q = _looks_like_error(retrieval_query)
+    result = deps.retriever.retrieve(retrieval_query, filters,
+                                     top_k_rerank=(config.TOP_K_RERANK_ERROR if err_q else None))
 
     # Escalation: one stateless LLM rewrite when post-fusion retrieval abstains
     # and there is conversation context to rewrite from.
@@ -267,7 +278,8 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
                 tokens_out=rw.tokens_out, latency_ms=rw.latency_ms,
             ))
             retrieval_query = rw.query
-            result = deps.retriever.retrieve(retrieval_query, filters)
+            result = deps.retriever.retrieve(retrieval_query, filters,
+                                             top_k_rerank=(config.TOP_K_RERANK_ERROR if err_q else None))
 
     # ── Context augmentation: explicit ticket-ID pins + carried conversation focus ──
     # The LLM may only use CONTEXT (rule 1), so a follow-up about the tickets just

@@ -128,7 +128,7 @@ class Retriever:
         where = {"ticket_id": wanted[0]} if len(wanted) == 1 else {"ticket_id": {"$in": wanted}}
         return self._chunks_from_get(self.collection.get(where=where))
 
-    def retrieve(self, query: str, filters: Filters) -> RetrievalResult:
+    def retrieve(self, query: str, filters: Filters, top_k_rerank: Optional[int] = None) -> RetrievalResult:
         query_vec = self._embed(query)
         candidates = self._query_chroma(query_vec, filters, self.top_k_retrieve)
         if not candidates:
@@ -137,7 +137,8 @@ class Retriever:
         pairs = [(query, c.text) for c in candidates]
         scores = self._get_reranker().predict(pairs)
         scored = sorted(zip(candidates, scores), key=lambda t: t[1], reverse=True)
-        top = scored[: self.top_k_rerank]
+        k = top_k_rerank or self.top_k_rerank
+        top = scored[:k]
         raw_top = float(top[0][1]) if top else -99.0
         top_score = _sigmoid(raw_top)   # 0-1 probability
 
