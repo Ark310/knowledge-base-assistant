@@ -22,13 +22,13 @@ log = logging.getLogger("kb_chatbot.orchestrator")
 
 ABSTAIN_MESSAGE = (
     "I haven't been trained on this — it's not in the knowledge base I have access to. "
-    "Want to refine the question? Try naming a product (API, TradeDesk, SalesHub, Web2, Web4, Other), "
+    "Want to refine the question? Try naming a product (API, TradeDesk, SalesHub, FormFlow, Web2, Web4, Other), "
     "a related keyword, or a how-to topic."
 )
 
 OUT_OF_SCOPE_MESSAGE = (
     "That's outside the scope of the Contoso knowledge base — it covers the API, "
-    "TradeDesk, SalesHub, Web2, Web4 and related product documentation and support tickets. "
+    "TradeDesk, SalesHub, FormFlow, Web2, Web4 and related product documentation and support tickets. "
     "If your question is about one of those, try naming the product and what you're trying to do."
 )
 
@@ -55,7 +55,7 @@ IMAGE_NOTE_TEMPLATE = (
 
 SHORT_QUERY_CLARIFICATION = (
     "Could you give me a bit more context? For example, which product are you asking about "
-    "(TradeDesk, API, Web2, Web4, or SalesHub) and what you're trying to do?"
+    "(TradeDesk, API, Web2, Web4, SalesHub, or FormFlow) and what you're trying to do?"
 )
 
 _SHORT_QUERY_WORD_LIMIT = 4
@@ -90,11 +90,18 @@ _FOLLOW_UP_WORD_LIMIT = 5
 
 def _extract_single_product(text: str) -> Optional[str]:
     """Product slug if the text names exactly one product as a whole word, else None.
-    Word boundaries matter: 'rapid' must not match 'api', 'another' must not match 'other'."""
+    Word boundaries matter: 'rapid' must not match 'api', 'another' must not match 'other'.
+    Synonym-aware: resolves multi-word names (formflow, formflow, saleshub) via config."""
     low = text.lower()
-    found = [p for p in config.PRODUCTS
-             if re.search(r"\b" + re.escape(p) + r"\b", low)]
-    return found[0] if len(found) == 1 else None
+    found = set()
+    # multi-word synonyms first (e.g. "formflow", "saleshub")
+    for name in ("formflow", "formflow", "formflow", "saleshub", "saleshub",
+                 "tradedesk", "web2", "web4", "api", "other"):
+        if re.search(r"\b" + re.escape(name) + r"\b", low):
+            slug = config.resolve_product(name)
+            if slug:
+                found.add(slug)
+    return next(iter(found)) if len(found) == 1 else None
 
 
 def _build_retrieval_query(session: Session, user_msg: str) -> tuple[str, Optional[str]]:
@@ -115,7 +122,9 @@ def _build_retrieval_query(session: Session, user_msg: str) -> tuple[str, Option
 
 def _mentions_product(text: str) -> bool:
     low = text.lower()
-    return any(p in low for p in config.PRODUCTS)
+    if any(re.search(r"\b" + re.escape(p) + r"\b", low) for p in config.PRODUCTS):
+        return True
+    return any(syn in low for syn in ("formflow", "formflow", "saleshub"))
 
 
 def _recent_product_in_history(session: Session) -> bool:
@@ -139,7 +148,7 @@ def _needs_clarification_from_quick(quick: list[Chunk]) -> bool:
 def _default_clarifier(user_msg: str, quick: list[Chunk]) -> str:
     products = sorted({c.metadata.get("product", "") for c in quick if c.metadata.get("product")})
     pretty = ", ".join(config.PRODUCT_DISPLAY.get(p, p) for p in products) or \
-             "API, TradeDesk, SalesHub, Web2, Web4, or Other"
+             "API, TradeDesk, SalesHub, FormFlow, Web2, Web4, or Other"
     return (f"Multiple products have records related to your question. "
             f"Which one are you asking about — {pretty}?")
 

@@ -65,3 +65,15 @@ def test_out_of_scope_skips_rewrite_escalation():
     handle_turn("totally unrelated astrophysics question here",
                 s, Filters(), "claude-haiku-4-5-20251001", deps=d)
     assert calls["n"] == 0  # no rephrase for clearly-out-of-scope
+
+
+def test_scope_and_abstain_mention_aml_forms():
+    from Dev.kb_chatbot.chat import orchestrator as o
+    assert "FormFlow" in o.OUT_OF_SCOPE_MESSAGE
+    assert "FormFlow" in o.ABSTAIN_MESSAGE
+
+
+def test_mentions_product_recognizes_aml_synonyms():
+    from Dev.kb_chatbot.chat.orchestrator import _mentions_product, _extract_single_product
+    assert _mentions_product("how do I open an FormFlow form")
+    assert _extract_single_product("question about formflow") == "formflow"
