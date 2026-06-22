@@ -181,3 +181,26 @@ def test_error_query_attaches_ticket_when_kb_only():
                 deps=Deps(retriever=R(), llm=llm))
     sent = llm.calls[-1]["messages"][-1]["content"]
     assert "Ticket #75919" in sent   # a ticket got attached alongside the KB
+
+
+def test_related_tickets_merged_and_recent_first():
+    primary = _frag(0, "Problem: margin duplicated")  # ticket_id 75919
+    older = Chunk(id="ti_old", text="Ticket #54000 — margin dup\nDate: 2021-01-01\n\nProblem: dup",
+                  metadata={"kind": "ticket", "ticket_id": "54000", "title": "Ticket #54000",
+                            "url": "u54000", "created_at": "2021-01-01", "chunk_index": 0})
+    newer = Chunk(id="ti_new", text="Ticket #61000 — margin dup\nDate: 2024-05-05\n\nProblem: dup",
+                  metadata={"kind": "ticket", "ticket_id": "61000", "title": "Ticket #61000",
+                            "url": "u61000", "created_at": "2024-05-05", "chunk_index": 0})
+    class R(FragmentRetriever):
+        def retrieve(self, query, filters, top_k_rerank=None):
+            return RetrievalResult(chunks=[primary], rerank_top_score=0.9)
+        def retrieve_quick(self, query, limit=10):
+            return [older, newer]
+    llm = FakeProvider(canned_text=f"ok [Ticket #75919]({URL})")
+    handle_turn("margin duplication error on drawdown",
+                Session.new(), Filters(), "claude-haiku-4-5-20251001",
+                deps=Deps(retriever=R(), llm=llm))
+    sent = llm.calls[-1]["messages"][-1]["content"]
+    assert "Ticket #54000" in sent and "Ticket #61000" in sent  # both related merged
+    # most-recent appears before older in the assembled context
+    assert sent.index("61000") < sent.index("54000")

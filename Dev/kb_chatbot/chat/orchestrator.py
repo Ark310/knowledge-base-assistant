@@ -222,6 +222,27 @@ def _ensure_tickets_alongside(query: str, chunks: list[Chunk], retriever) -> lis
     return chunks
 
 
+def _add_related_tickets(chunks: list[Chunk], retriever, *, limit: int = 2) -> list[Chunk]:
+    """Surface additional distinct tickets covering the same error as the first ticket
+    in context — bridging old<->new. Recent-first by created_at; deduped by ticket_id."""
+    tickets = [c for c in chunks if c.metadata.get("kind") == "ticket"]
+    if not tickets:
+        return chunks
+    seed = tickets[0]
+    have = {c.metadata.get("ticket_id") for c in tickets}
+    cands = [c for c in retriever.retrieve_quick(
+                 seed.metadata.get("title", "") + " " + seed.text[:200], limit=12)
+             if c.metadata.get("kind") == "ticket" and c.metadata.get("ticket_id") not in have]
+    # dedup by ticket_id, prefer most recent
+    by_id: dict = {}
+    for c in cands:
+        tid = c.metadata.get("ticket_id")
+        if tid and tid not in by_id:
+            by_id[tid] = c
+    extra = sorted(by_id.values(), key=lambda c: c.metadata.get("created_at", ""), reverse=True)[:limit]
+    return [*chunks, *extra]
+
+
 def _ensure_kb_alongside(query: str, chunks: list[Chunk], retriever) -> list[Chunk]:
     """If the context has a ticket but no KB article, attach the best-matching KB
     chunk (best-effort, 'if there is one'). Reuses the wide-net retrieve_quick."""
@@ -340,6 +361,8 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
         if _looks_like_error(retrieval_query):
             result.chunks = _ensure_tickets_alongside(retrieval_query, result.chunks, deps.retriever)
             result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)  # assemble any newly attached ticket
+            result.chunks = _add_related_tickets(result.chunks, deps.retriever)
+            result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)  # assemble related
         try:
             llm_user_msg = user_msg + drift_note
             if answering_clarification and original_q:
