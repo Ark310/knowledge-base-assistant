@@ -709,7 +709,7 @@ def _build_message_html(role: str, text: str, colour: str, tag: str, ts: str) ->
         f'align="{st["align"]}">'
         f'<tr><td style="background:{st["bg"]}; color:{st["fg"]}; '
         f'border:1px solid {st["border"]}; border-radius:10px; '
-        f'padding:8px 12px; font-family:{FONT_STACK}; font-size:10pt;">'
+        f'padding:10px 14px; line-height:1.45; font-family:{FONT_STACK}; font-size:10pt;">'
         f'<span style="color:{st["tag_fg"]}; font-weight:600; font-size:8.5pt; '
         f'letter-spacing:0.3px;">{safe_tag}</span>'
         f'<span style="color:{PALETTE["muted"]}; font-size:8pt;">&nbsp;{ts}</span>'
@@ -729,8 +729,10 @@ def _welcome_html() -> str:
     return (
         f'<div style="margin-top:120px; text-align:center; font-family:{FONT_STACK};">'
         f'{img}'
+        f'<div style="max-width:360px;margin:0 auto;">'
         f'<div style="color:{PALETTE["muted"]}; font-size:11pt; margin-top:6px;">'
         f'Ask me about the Contoso knowledge base…</div>'
+        f'</div>'
         f'</div>'
     )
 
@@ -776,7 +778,6 @@ class AboutDialog(QDialog):
 
         bb = QDialogButtonBox(QDialogButtonBox.Close)
         bb.rejected.connect(self.reject)
-        bb.accepted.connect(self.accept)
         layout.addWidget(bb)
 
 
@@ -1200,7 +1201,9 @@ class MainWindow(QMainWindow):
             self.chat_view.clear()
             self._welcome_showing = False
         self.chat_view.append(block)
-        self.chat_view.ensureCursorVisible()
+        self.chat_view.moveCursor(QTextCursor.End)
+        sb = self.chat_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _populate_model_box(self, provider_id: str, select_model: str = ""):
         """Fill the model dropdown for a provider. Silent — blocks signals and

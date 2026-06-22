@@ -51,3 +51,27 @@ def test_about_dialog_and_header_construct():
     from PySide6.QtWidgets import QLabel
     texts = " ".join(w.text() for w in dlg.findChildren(QLabel))
     assert f"v{config.APP_VERSION}" in texts
+
+
+def test_append_scrolls_to_bottom(monkeypatch):
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QTextCursor
+    QApplication.instance() or QApplication([])
+    from Dev.kb_chatbot import gui
+    calls = {"end": 0, "max": 0}
+    class FakeSB:
+        def maximum(self): return 999
+        def setValue(self, v): calls["max"] = v
+    class FakeView:
+        def clear(self): pass
+        def append(self, b): pass
+        def moveCursor(self, c):
+            if c == QTextCursor.End: calls["end"] += 1
+        def verticalScrollBar(self): return FakeSB()
+        def ensureCursorVisible(self): pass
+    mw = gui.MainWindow.__new__(gui.MainWindow)
+    mw.chat_view = FakeView(); mw._welcome_showing = False
+    gui.MainWindow._append(mw, "ai", "hi", "#000", "AI:")
+    assert calls["end"] == 1 and calls["max"] == 999   # cursor to End + scrolled to bottom
