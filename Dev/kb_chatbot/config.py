@@ -103,6 +103,11 @@ def resolve_product(name: str) -> Optional[str]:
     return _PRODUCT_SYNONYMS.get((name or "").strip().lower())
 
 
+# Every user-typable product name/synonym (incl. no-space "formflow" and "td").
+# Single source of truth so orchestrator product-detection can't drift from resolve_product.
+PRODUCT_SYNONYM_NAMES = tuple(_PRODUCT_SYNONYMS)
+
+
 # Raw ticket "Project" value -> canonical product slug (tickets store rich Project
 # names that don't match KB slugs). Unknown -> "other"; raw value kept separately.
 _TICKET_PROJECT_MAP = {

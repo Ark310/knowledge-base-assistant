@@ -20,7 +20,7 @@ class ScopeRetriever:
     """abstains with a configurable score; suggest returns one article."""
     def __init__(self, score):
         self.score = score
-    def retrieve(self, query, filters):
+    def retrieve(self, query, filters, top_k_rerank=None):
         return RetrievalResult(chunks=[], abstain_reason="no_relevant_kb_match",
                                rerank_top_score=self.score)
     def get_by_ids(self, ids): return []
@@ -77,3 +77,15 @@ def test_mentions_product_recognizes_aml_synonyms():
     from Dev.kb_chatbot.chat.orchestrator import _mentions_product, _extract_single_product
     assert _mentions_product("how do I open an FormFlow form")
     assert _extract_single_product("question about formflow") == "formflow"
+
+
+def test_product_detection_covers_nospace_synonyms():
+    """No-space 'formflow' and 'td' must resolve too — helpers derive from
+    config.PRODUCT_SYNONYM_NAMES so they can't drift from resolve_product."""
+    from Dev.kb_chatbot.chat.orchestrator import _mentions_product, _extract_single_product
+    assert _mentions_product("formflow throws an error")
+    assert _extract_single_product("issue with formflow") == "formflow"
+    assert _mentions_product("the td client crashed")
+    assert _extract_single_product("td problem") == "tradedesk"
+    # SalesHub stays a separate slug, never merged into formflow
+    assert _extract_single_product("saleshub dashboard") == "saleshub"

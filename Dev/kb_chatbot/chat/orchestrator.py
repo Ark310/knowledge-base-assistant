@@ -94,9 +94,8 @@ def _extract_single_product(text: str) -> Optional[str]:
     Synonym-aware: resolves multi-word names (formflow, formflow, saleshub) via config."""
     low = text.lower()
     found = set()
-    # multi-word synonyms first (e.g. "formflow", "saleshub")
-    for name in ("formflow", "formflow", "formflow", "saleshub", "saleshub",
-                 "tradedesk", "web2", "web4", "api", "other"):
+    # all user-typable names/synonyms (incl. "formflow", "td"); single source of truth
+    for name in config.PRODUCT_SYNONYM_NAMES:
         if re.search(r"\b" + re.escape(name) + r"\b", low):
             slug = config.resolve_product(name)
             if slug:
@@ -122,9 +121,8 @@ def _build_retrieval_query(session: Session, user_msg: str) -> tuple[str, Option
 
 def _mentions_product(text: str) -> bool:
     low = text.lower()
-    if any(re.search(r"\b" + re.escape(p) + r"\b", low) for p in config.PRODUCTS):
-        return True
-    return any(syn in low for syn in ("formflow", "formflow", "saleshub"))
+    return any(re.search(r"\b" + re.escape(name) + r"\b", low)
+               for name in config.PRODUCT_SYNONYM_NAMES)
 
 
 def _recent_product_in_history(session: Session) -> bool:
@@ -358,7 +356,7 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
 
         result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)
         result.chunks = _ensure_kb_alongside(retrieval_query, result.chunks, deps.retriever)
-        if _looks_like_error(retrieval_query):
+        if err_q:
             result.chunks = _ensure_tickets_alongside(retrieval_query, result.chunks, deps.retriever)
             result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)  # assemble any newly attached ticket
             result.chunks = _add_related_tickets(result.chunks, deps.retriever)
