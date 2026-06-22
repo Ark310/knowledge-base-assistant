@@ -83,7 +83,7 @@ def _mock_retriever(results):
          patch("Dev.kb_chatbot.retriever.CrossEncoder"):
         r = Retriever(Path("fake"))
     calls = []
-    def retrieve(query, filters):
+    def retrieve(query, filters, top_k_rerank=None):
         calls.append(query)
         return results.pop(0)
     r.retrieve = retrieve
