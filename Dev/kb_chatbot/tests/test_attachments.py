@@ -100,7 +100,7 @@ def test_attachment_filenames_recorded_on_answer_turn():
                  metadata={"title": "Booking a Spot Deal",
                             "url": "https://help.contoso.example/spot",
                             "product": "tradedesk", "category": "dealing"})]
-    r.retrieve = lambda q, f: RetrievalResult(chunks=ctx, rerank_top_score=0.9)
+    r.retrieve = lambda q, f, top_k_rerank=None: RetrievalResult(chunks=ctx, rerank_top_score=0.9)
 
     fake = FakeProvider(canned_text="You book via the dealing screen [Booking a Spot Deal](https://help.contoso.example/spot).")
     att = Attachment(filename="screenshot.png", media_type="image/png",

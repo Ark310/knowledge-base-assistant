@@ -107,7 +107,7 @@ def test_abstain_with_suggestions_when_suggest_returns_chunks(deps_factory):
     d, fake = deps_factory(0.99, "should not be seen", suggest_chunks=suggestion_chunks,
                            quick_chunks=[])
     # Stub retrieve() to return a score in the clarify/suggest band, not below OUT_OF_SCOPE_FLOOR
-    d.retriever.retrieve = lambda q, f: RetrievalResult(
+    d.retriever.retrieve = lambda q, f, top_k_rerank=None: RetrievalResult(
         chunks=[], abstain_reason="no_relevant_kb_match",
         rerank_top_score=(config.OUT_OF_SCOPE_FLOOR + config.CONFIDENCE_FLOOR) / 2,
     )
@@ -142,7 +142,7 @@ def test_low_confidence_answer_appends_footer_when_suggestions_exist(deps_factor
     d, _ = deps_factory(0.0, "The answer is here.", suggest_chunks=suggestion_chunks)
     # Stub retrieve() for a deterministic below-ceiling score (0-1 sigmoid scale, new ceiling = 0.35)
     ctx = [_make_chunk("Booking a Spot Deal", "https://help.contoso.example/spot")]
-    d.retriever.retrieve = lambda q, f: RetrievalResult(chunks=ctx, rerank_top_score=0.20)
+    d.retriever.retrieve = lambda q, f, top_k_rerank=None: RetrievalResult(chunks=ctx, rerank_top_score=0.20)
     session = Session.new()
     turn = handle_turn("tradedesk advanced topics overview details", session,
                         Filters(product="tradedesk"), "claude-haiku-4-5-20251001", deps=d)
@@ -172,7 +172,7 @@ def test_followup_carries_focus_and_id_lookup():
                   "url": "https://support.contoso.example/edit_bug.aspx?id=75919"})
 
     class FakeRetriever:
-        def retrieve(self, query, filters):
+        def retrieve(self, query, filters, top_k_rerank=None):
             q = query.lower()
             if "buy amount" in q or "getwebdeal" in q:
                 return RetrievalResult(chunks=[ticket], rerank_top_score=0.9)
@@ -222,7 +222,7 @@ def test_explicit_ticket_id_pin_in_fresh_session():
                   "url": "https://support.contoso.example/edit_bug.aspx?id=75919"})
 
     class PinOnlyRetriever:
-        def retrieve(self, query, filters):
+        def retrieve(self, query, filters, top_k_rerank=None):
             return RetrievalResult(chunks=[], abstain_reason="no_relevant_kb_match",
                                    rerank_top_score=0.05)
         def get_by_ids(self, ids):
@@ -259,7 +259,7 @@ def test_confident_new_question_does_not_carry_stale_focus():
                             "url": "https://help.contoso.example/sso"})
 
     class R:
-        def retrieve(self, query, filters):
+        def retrieve(self, query, filters, top_k_rerank=None):
             return RetrievalResult(chunks=[fresh], rerank_top_score=0.9)  # confident
         def get_by_ids(self, ids):
             return [old]
@@ -288,7 +288,7 @@ def test_high_confidence_answer_no_footer(deps_factory):
                          ])
     # Stub retrieve() for a deterministic above-ceiling score
     ctx = [_make_chunk("Booking a Spot Deal", "https://help.contoso.example/spot")]
-    d.retriever.retrieve = lambda q, f: RetrievalResult(chunks=ctx, rerank_top_score=0.80)
+    d.retriever.retrieve = lambda q, f, top_k_rerank=None: RetrievalResult(chunks=ctx, rerank_top_score=0.80)
     session = Session.new()
     turn = handle_turn("How do I book a spot deal in TradeDesk?", session,
                         Filters(product="tradedesk"), "claude-haiku-4-5-20251001", deps=d)

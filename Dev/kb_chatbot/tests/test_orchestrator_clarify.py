@@ -17,7 +17,7 @@ def _kbchunk(title, url):
 
 class _R:
     """Confident retrieval so we reach the answer branch."""
-    def retrieve(self, query, filters):
+    def retrieve(self, query, filters, top_k_rerank=None):
         return RetrievalResult(chunks=[_kbchunk("Drawdown", "https://help.contoso.example/dd")],
                                rerank_top_score=0.9)
     def get_by_ids(self, ids): return []
