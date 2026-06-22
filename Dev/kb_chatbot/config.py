@@ -6,7 +6,7 @@ import sys
 
 # Single source of truth for the app version. Surfaced in the window title and
 # the exe filename (read by ContosoKBChatbot.spec). Bump here only.
-APP_VERSION = "2.9.1"
+APP_VERSION = "2.9.2"
 
 # ── Freeze-aware base paths ───────────────────────────────────────────────────
 if getattr(sys, "frozen", False):
