@@ -11,6 +11,19 @@ _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE = re.compile(r"\+?\d[\d\s().\-]{6,}\d")
 _URL = re.compile(r"https?://\S+")
 
+# A calendar date (ISO YYYY-MM-DD or YYYY/MM/DD) — recency signal that must NOT be
+# treated as a phone number. A real phone (NNN-NNN-NNNN) never matches this shape,
+# so sparing these does not weaken phone/PII redaction.
+_ISO_DATE = re.compile(r"^(?:19|20)\d{2}[-/]\d{2}[-/]\d{2}$")
+
+
+def _redact_phones(line: str) -> str:
+    """Redact phone-shaped digit runs but leave calendar dates intact."""
+    return _PHONE.sub(
+        lambda m: m.group(0) if _ISO_DATE.match(m.group(0).strip()) else "[redacted]",
+        line,
+    )
+
 # Names following a greeting/closing word: "Hi Sam", "Dear Sarah", "Thanks Mike",
 # "Regards, Jane", "HI Dana", "Regards, Priya Patel".
 # Keyword is case-insensitive via inline flag; name class stays case-SENSITIVE so
@@ -135,7 +148,7 @@ def redact(text: str, *, known_terms: list[str]) -> str:
         line = _AT_MENTION.sub("@[redacted]", line)
         line = _BARE_DOMAIN.sub("[redacted]", line)
         line = _URL.sub("[link]", line)
-        line = _PHONE.sub("[redacted]", line)
+        line = _redact_phones(line)
         line = _GREETING_NAME.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
         line = _ACTION_NAME.sub(lambda m: f"{m.group(1)} [redacted]", line)
         line = _PAREN_NAME.sub("([redacted])", line)
@@ -186,7 +199,7 @@ def scrub_answer(text: str) -> str:
         line = _CRED_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
         line = _CRED_LABEL.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", line)
         line = _redact_secret_shapes(line)
-        line = _PHONE.sub("[redacted]", line)
+        line = _redact_phones(line)
         out_lines.append(line)
     scrubbed = "\n".join(out_lines)
 

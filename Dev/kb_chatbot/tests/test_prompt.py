@@ -16,6 +16,7 @@ def test_system_prompt_locked_text_v23():
     assert "FormFlow" in p
     assert "do not ask another clarifying question" in p.lower()
     assert "most recent" in p.lower()
+    assert "state the date of the fix" in p.lower()
 
 
 def test_format_context_uses_url_cite_handle():

@@ -256,3 +256,23 @@ def test_scrub_answer_still_strips_prose_email_outside_links():
     out = scrub_answer("Email bob@acme.com then see [KB](https://help.contoso.example/x).")
     assert "bob@acme.com" not in out
     assert "https://help.contoso.example/x" in out
+
+
+def test_scrub_answer_keeps_iso_dates():
+    # Recency dates (Date: line / 'most recent fix') must survive output scrubbing —
+    # they were being eaten by the phone pattern (YYYY-MM-DD looks like a phone run).
+    out = scrub_answer("Fixed on 2024-05-08; recurrences span 2022-08-18 to 2026-03-10.")
+    assert "2024-05-08" in out
+    assert "2022-08-18" in out and "2026-03-10" in out
+
+
+def test_scrub_answer_still_redacts_phone():
+    out = scrub_answer("Call the client back on 416-555-0199 or +44 20 7350 5473.")
+    assert "416-555-0199" not in out
+    assert "7350" not in out
+
+
+def test_redact_keeps_iso_date_but_drops_phone():
+    out = redact("Logged 2024-05-08. Reached the customer at 020 3992 9579.", known_terms=[])
+    assert "2024-05-08" in out
+    assert "3992" not in out
