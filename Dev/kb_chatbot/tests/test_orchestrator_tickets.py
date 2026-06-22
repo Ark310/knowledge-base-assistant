@@ -163,3 +163,21 @@ def test_error_query_uses_wider_topk(monkeypatch):
                 Session.new(), Filters(), "claude-haiku-4-5-20251001",
                 deps=Deps(retriever=R2(), llm=llm))
     assert captured["k"] == config.TOP_K_RERANK_ERROR
+
+
+def test_error_query_attaches_ticket_when_kb_only():
+    kb = Chunk(id="kb1", text="How-toForms", metadata={"product": "formflow",
+               "category": "how_to", "title": "FormFlow How-To",
+               "url": "https://help.contoso.example/aml"})
+    tk = _frag(0, "Problem: form submit fails")
+    class R(FragmentRetriever):
+        def retrieve(self, query, filters, top_k_rerank=None):
+            return RetrievalResult(chunks=[kb], rerank_top_score=0.9)  # KB only
+        def retrieve_quick(self, query, limit=10):
+            return [tk]   # a ticket is available
+    llm = FakeProvider(canned_text="ok")
+    handle_turn("form submit fails with an error",
+                Session.new(), Filters(), "claude-haiku-4-5-20251001",
+                deps=Deps(retriever=R(), llm=llm))
+    sent = llm.calls[-1]["messages"][-1]["content"]
+    assert "Ticket #75919" in sent   # a ticket got attached alongside the KB

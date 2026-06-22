@@ -208,6 +208,20 @@ def _expand_ticket_chunks(chunks: list[Chunk], retriever) -> list[Chunk]:
     return out
 
 
+def _ensure_tickets_alongside(query: str, chunks: list[Chunk], retriever) -> list[Chunk]:
+    """If the context is KB-only for an error question, attach the best ticket
+    (errors live on tickets too). Best-effort; reuses retrieve_quick."""
+    has_kb = any(c.metadata.get("kind") != "ticket" for c in chunks)
+    has_ticket = any(c.metadata.get("kind") == "ticket" for c in chunks)
+    if not has_kb or has_ticket:
+        return chunks
+    seen = {c.id for c in chunks}
+    for cand in retriever.retrieve_quick(query, limit=10):
+        if cand.metadata.get("kind") == "ticket" and cand.id not in seen:
+            return [*chunks, cand]
+    return chunks
+
+
 def _ensure_kb_alongside(query: str, chunks: list[Chunk], retriever) -> list[Chunk]:
     """If the context has a ticket but no KB article, attach the best-matching KB
     chunk (best-effort, 'if there is one'). Reuses the wide-net retrieve_quick."""
@@ -323,6 +337,9 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
 
         result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)
         result.chunks = _ensure_kb_alongside(retrieval_query, result.chunks, deps.retriever)
+        if _looks_like_error(retrieval_query):
+            result.chunks = _ensure_tickets_alongside(retrieval_query, result.chunks, deps.retriever)
+            result.chunks = _expand_ticket_chunks(result.chunks, deps.retriever)  # assemble any newly attached ticket
         try:
             llm_user_msg = user_msg + drift_note
             if answering_clarification and original_q:
