@@ -18,12 +18,14 @@
 - Tests live in repo-root `tests/`; fixtures in `tests/fixtures/`; each test file starts with `sys.path.insert(0, str(Path(__file__).parent.parent))` then imports from `scraper...` (existing convention — see `tests/test_universal_parser.py`).
 - On-disk ticket output contract is unchanged (`library/tickets/ticket_{id}.json` + `.md`); this phase only changes parsing, not writing.
 
-**Confirmed selectors (from raw HTML of ticket 76511, Tailwind SPA):**
-- Fields: `button.floating-dropdown-btn` with stable `id` (`header_bg_org`, `header_bg_project`, `header_bg_priority`, … `header_bg_*`); child `span.floating-dropdown-label` (label + a `span.text-red-500` "*") and `span.floating-dropdown-value` (value).
-- Comments: container `div.space-y-2` → one `div.p-2` card per comment; full `comment {id} posted by {Author}` in a hidden span within `span.text-xs`; body in `<p>` tags; attachment = `button` with text `Download` (class `inline-flex`) inside the card's `div.mt-3` area.
-- Sub-view nav: `button.sidebar-menu-btn` with text `Ticket` / `Resolve N` / `Files N` / etc.
-- Header: `Ticket # {id}` in `span.text-md`; `Created MM/DD/YYYY by {user}` in a nearby span.
-- Ticket route: `{portal}/tickets/{id}/edit`; ready when `document.title` matches `^Ticket ID {id} - `.
+**Confirmed selectors — POST-DISCOVERY (Task 1 done; fixtures authored). These supersede any selector detail in Tasks 2-7 below; where a task's example code differs, follow THIS block + `tests/fixtures/tradedesk/DOM_MAP.md`:**
+- **Fixtures are SYNTHETIC** (structure-faithful, fake content, PII-free) — already committed under `tests/fixtures/tradedesk/` (`ticket_detail.html`, `resolution.html`, `files.html`, `not_found.html`, `login.html`) with `DOM_MAP.md`. Task 1 is COMPLETE; implementers start at Task 2 and assert against these fixtures.
+- **Fields — extract by LABEL with dedupe (first wins), NOT by id.** Fields render twice (`header_bg_*` and `bg_*` id sets) and CSQA Owner's id is non-standard. For each `button.floating-dropdown-btn`: label = `span.floating-dropdown-label` text with trailing `*` stripped; value = `span.floating-dropdown-value` text. Label→key map: `organization→organization, project→product, priority→priority, category→category, severity→severity, status→status, assigned to→assignee, csqa owner→csqa_owner`. Skip a key already set (dedupe).
+- **Comments**: container `div.space-y-2` → `div.p-2` cards. Read the header from the **`span.hidden`** (`comment {id} posted by {Name}`) — the visible `span.truncate` is cut off. Body = `<p>` tags. `Internal` badge text → `internal=True`. Date via regex `([A-Z][a-z]{2,8} \d{1,2}, \d{4} at \d{1,2}:\d{2} ?[AP]M)`. Attachment = `button.inline-flex` text "Download" inside the card; filename in a nearby `.filename`/`div.min-w-0`. **`ticket_detail.html` has 3 comments; comment #3 (id 1460500) has one attachment "error-log.txt".**
+- **Resolution**: scope to `div.resolution-container`; text = `div.ql-editor` `<p>`s; resolution file = `button.inline-flex` "Download" within the container (`resolution.html` → "resolution-script.sql").
+- **Files**: cards under `.files-list`; name in `div.min-w-0`/`.filename` + `button.inline-flex` "Download". **`files.html` has 2 files.**
+- **Not-found**: missing ticket REDIRECTS to `/bugs` (title "Tickets - Support Portal"). Detect: no `button.floating-dropdown-btn` AND no `Ticket #` text. (`not_found.html` is the `/bugs` page.)
+- Header: `Ticket # {id}` in `span.text-md`; `Created MM/DD/YYYY by {user}` nearby. Route `{portal}/tickets/{id}/edit`; ready when `document.title` matches `^Ticket ID {id} - `.
 
 ---
 
