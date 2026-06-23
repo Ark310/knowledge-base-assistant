@@ -124,6 +124,28 @@ def _filename_text(scope: Tag | None) -> str:
     return _clean(mn.get_text()) if mn else ""
 
 
+def _data_images(scope: Tag | None) -> list[dict]:
+    """Extract inline base64 images (`<img src="data:...;base64,...">`) from a comment body.
+
+    Confirmed live 2026-06-23: comment screenshots embed as data-URI <img> inside
+    div.comment-html-content (~230KB each). Returns [{mime, data}] — raw base64; the
+    writer decodes it to a file so the base64 never lands in the JSON.
+    """
+    out = []
+    if scope is None:
+        return out
+    for im in scope.find_all("img"):
+        src = im.get("src", "")
+        if src.startswith("data:") and ";base64," in src:
+            try:
+                meta, b64 = src.split(",", 1)
+                mime = meta.split(":", 1)[1].split(";", 1)[0]
+                out.append({"mime": mime, "data": b64})
+            except (ValueError, IndexError):
+                pass
+    return out
+
+
 def _attachments_in(scope: Tag) -> list[dict]:
     """Find Download affordances inside *scope* and return their filenames."""
     out = []
@@ -204,6 +226,7 @@ def parse_comments(html: str) -> list[dict]:
             "internal": internal,
             "body": body,
             "attachments": _attachments_in(card),
+            "images": _data_images(body_el),
         })
     return comments
 

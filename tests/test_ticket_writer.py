@@ -47,3 +47,23 @@ def test_md_handles_missing_resolution(tmp_path):
     save_ticket(d, tmp_path)
     md = (tmp_path / "ticket_76511.md").read_text(encoding="utf-8")
     assert "## Resolution" not in md
+
+def test_comment_images_decoded_to_files(tmp_path):
+    # Inline base64 comment image must be decoded to a file; raw base64 must NOT remain in JSON.
+    png_b64 = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk"
+               "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+    d = {
+        "ticket_id": "50001",
+        "comments": [{
+            "id": "2001", "author": "Jordan Lee", "date": "Jun 22, 2026 at 12:00 PM",
+            "internal": False, "body": "See screenshot:", "attachments": [],
+            "images": [{"mime": "image/png", "data": png_b64}],
+        }],
+    }
+    save_ticket(d, tmp_path)
+    loaded = json.loads((tmp_path / "ticket_50001.json").read_text(encoding="utf-8"))
+    img = loaded["comments"][0]["images"][0]
+    assert "data" not in img, "raw base64 must be stripped from the JSON"
+    assert img["saved_path"] and Path(img["saved_path"]).exists()
+    md = (tmp_path / "ticket_50001.md").read_text(encoding="utf-8")
+    assert "![image]" in md

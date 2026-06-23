@@ -193,6 +193,33 @@ def test_internal_badge_exact_text_not_body_prose():
     assert comments[1]["internal"] is False, "body-prose 'internal' must NOT set internal=True"
 
 
+def test_comment_extracts_inline_data_image():
+    # Comments embed screenshots as base64 data-URI <img> in div.comment-html-content.
+    png = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf"
+           "FcSJAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+    synthetic = f"""
+    <html><body><div class="space-y-2 sm:space-y-4">
+      <div class="p-2 sm:p-4 rounded-lg border bg-white">
+        <div class="flex-1 min-w-0">
+          <span class="text-xs"><span class="truncate"><span class="hidden sm:inline">comment 2001 posted by </span><a class="text-blue-600" href="#">Jordan Lee</a></span></span>
+          <span>Jun 22, 2026 at 12:00 PM</span>
+          <div class="comment-html-content"><p>See screenshot:</p><p><img src="{png}"></p></div>
+        </div>
+      </div>
+    </div></body></html>
+    """
+    cs = parse_comments(synthetic)
+    assert len(cs) == 1
+    assert len(cs[0]["images"]) == 1
+    assert cs[0]["images"][0]["mime"] == "image/png"
+    assert cs[0]["images"][0]["data"].startswith("iVBOR")
+
+
+def test_comment_without_image_has_empty_images():
+    cs = parse_comments(DETAIL_HTML)
+    assert all(c.get("images") == [] for c in cs)
+
+
 # ── parse_resolution ──────────────────────────────────────────────────────────
 
 def test_resolution_text_non_empty():
