@@ -93,18 +93,21 @@ def parse_ticket_fields(html: str) -> dict:
     return out
 
 
-def _is_download_control(el: Tag) -> bool:
+def _is_download_control(el: Tag, icon_only: bool = False) -> bool:
     """True for a Download affordance — a button/anchor whose text OR title is 'Download'.
 
-    Confirmed live 2026-06-23: the files panel uses an ICON button with
-    title="Download" (empty text); comment attachments use a text "Download" button.
-    The portal renders the title value wrapped in literal quotes, so strip them.
+    Confirmed live 2026-06-23: the files panel + resolution file use an ICON button with
+    title="Download" (empty text, value wrapped in literal quotes); comment attachments
+    use a text "Download" button. `icon_only=True` matches ONLY the title/icon variant —
+    used by parse_resolution so a comment text-"Download" rendered alongside the resolution
+    can never be mis-attributed as a resolution file.
     """
     if not isinstance(el, Tag) or el.name not in ("button", "a"):
         return False
-    if _clean(el.get_text()).lower() == "download":
-        return True
-    return (el.get("title") or "").strip().strip('"').strip().lower() == "download"
+    title_match = (el.get("title") or "").strip().strip('"').strip().lower() == "download"
+    if icon_only:
+        return title_match
+    return title_match or _clean(el.get_text()).lower() == "download"
 
 
 def _file_card(el: Tag) -> Tag | None:
@@ -146,11 +149,11 @@ def _data_images(scope: Tag | None) -> list[dict]:
     return out
 
 
-def _attachments_in(scope: Tag) -> list[dict]:
+def _attachments_in(scope: Tag, icon_only: bool = False) -> list[dict]:
     """Find Download affordances inside *scope* and return their filenames."""
     out = []
     for b in scope.find_all(["button", "a"]):
-        if not _is_download_control(b):
+        if not _is_download_control(b, icon_only):
             continue
         holder = _file_card(b) or b.find_parent("div", class_="mt-3") or scope
         out.append({"label": _filename_text(holder)})
@@ -244,7 +247,9 @@ def parse_resolution(html: str) -> dict:
         return {"text": "", "attachments": []}
     content = region.select_one("div.post-content")
     text = _clean(content.get_text(" ")) if content else ""
-    return {"text": text, "attachments": _attachments_in(region)}
+    # icon_only: the resolution file is an icon button[title="Download"]; never count a
+    # comment's text-"Download" that may be rendered alongside the resolution panel.
+    return {"text": text, "attachments": _attachments_in(region, icon_only=True)}
 
 
 def parse_files(html: str) -> list[dict]:

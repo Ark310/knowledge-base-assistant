@@ -237,42 +237,30 @@ def test_resolution_attachment_label_contains_sql():
     assert "resolution-script.sql" in r["attachments"][0]["label"]
 
 
-def test_resolution_does_not_count_comment_downloads():
-    # Build synthetic HTML with 2 Download buttons: one inside div.resolution-container
-    # (resolution-script.sql) and one outside it (comment-attachment.txt).
-    # parse_resolution must scope to div.resolution-container and return exactly 1.
-    from bs4 import BeautifulSoup as _BS
+def test_resolution_counts_only_icon_download_not_comment_text():
+    # The real resolution file is an ICON button[title="Download"]. A comment's text
+    # "Download" button rendered INSIDE the resolution panel must NOT be counted as a
+    # resolution attachment (icon_only scoping).
     synthetic = """
     <html><body>
       <div class="resolution-container">
-        <div class="ql-editor"><p>Fix applied.</p></div>
-        <div class="mt-3">
-          <div class="flex">
-            <div class="min-w-0"><span class="filename">resolution-script.sql</span></div>
-            <div class="flex"><button class="inline-flex">Download</button></div>
+        <div class="post-content"><p>Fix applied.</p>
+          <div class="bg-gray-50 rounded-lg">
+            <div class="min-w-0"><p class="text-sm break-words">resolution-script.sql</p></div>
+            <button class="p-1.5" title='"Download"'></button>
           </div>
         </div>
-      </div>
-      <div class="space-y-2">
-        <div class="p-2">
-          <div class="mt-3">
-            <div class="flex">
-              <div class="min-w-0"><span class="filename">comment-attachment.txt</span></div>
-              <div class="flex"><button class="inline-flex">Download</button></div>
-            </div>
-          </div>
+        <div class="p-2 rounded-lg border bg-white">
+          <div class="comment-html-content"><p>see attached</p></div>
+          <div class="min-w-0"><span class="filename">comment-file.txt</span></div>
+          <button class="inline-flex">Download</button>
         </div>
       </div>
     </body></html>
     """
-    total_downloads = len([
-        b for b in _BS(synthetic, "lxml").find_all("button")
-        if b.get_text(strip=True).lower() == "download"
-    ])
-    assert total_downloads == 2, "synthetic fixture must have exactly 2 Download buttons"
     r = parse_resolution(synthetic)
-    assert len(r["attachments"]) == 1
-    assert r["attachments"][0]["label"] == "resolution-script.sql"
+    assert len(r["attachments"]) == 1, "only the icon download is a resolution file"
+    assert "resolution-script.sql" in r["attachments"][0]["label"]
 
 
 # ── parse_files ───────────────────────────────────────────────────────────────

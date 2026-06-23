@@ -42,6 +42,10 @@ class TradeDeskPortal:
         return f"{self.base}/tickets/{ticket_id}/edit"
 
     def is_login_page(self, html: str) -> bool:
+        # Broad "sign in"/"/login" heuristic, gated on the absence of the ticket field
+        # dropdowns. Safe because open_ticket() waits for floating-dropdown-btn before
+        # returning, so a fully-rendered ticket short-circuits to False; worst case on a
+        # half-rendered page is a spurious (self-correcting) re-login, never data loss.
         h = (html or "").lower()
         looks_login = ("sign in" in h) or ("/login" in h)
         return looks_login and "floating-dropdown-btn" not in h
