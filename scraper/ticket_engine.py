@@ -97,23 +97,6 @@ def _clamp_workers(n: int) -> int:
     return max(1, min(10, int(n or 1)))
 
 
-# Pre-populated for the two labels used by every ticket fetch; additional labels
-# compile on first use (lazy, safe — the cache is only written before any workers start).
-_SUBVIEW_RE_CACHE: dict[str, re.Pattern] = {
-    "Resolve": re.compile(r"Resolve\s+(\d+)", re.I),
-    "Files":   re.compile(r"Files\s+(\d+)",   re.I),
-}
-
-def _subview_count(html: str, label: str) -> int:
-    """Return the count shown on a sidebar sub-view button (e.g. 'Resolve 1' → 1)."""
-    pat = _SUBVIEW_RE_CACHE.get(label)
-    if pat is None:
-        pat = re.compile(rf"{label}\s+(\d+)", re.I)
-        _SUBVIEW_RE_CACHE[label] = pat
-    m = pat.search(html or "")
-    return int(m.group(1)) if m else 0
-
-
 def _default_portal_factory(portal_url: str):
     from scraper.core import Browser
     from scraper.portal.tradedesk_portal import TradeDeskPortal
@@ -153,8 +136,10 @@ def _fetch_ticket(portal, tid: str, output_dir: Path, cb) -> dict | str | None |
         cb.on_log("warning", f"#{tid}: parser returned empty — skipping.")
         return None
 
-    resolve_n = _subview_count(html, "Resolve")
-    files_n = _subview_count(html, "Files")
+    # Read sub-view counts from the RENDERED sidebar (not a regex over HTML source —
+    # the portal wraps the count digit in a child element, so source regex reads 0).
+    resolve_n = portal.subview_count("Resolve")
+    files_n = portal.subview_count("Files")
     cb.on_log("info", f"#{tid}: sub-views detected — Resolve={resolve_n}, Files={files_n}")
 
     # Resolution sub-view — fetched when the sidebar shows "Resolve N>0"

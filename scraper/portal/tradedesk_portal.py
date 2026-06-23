@@ -68,6 +68,22 @@ class TradeDeskPortal:
         page.wait_for_timeout(500)   # small settle so the sidebar counts paint
         return self.b.get_content()
 
+    def subview_count(self, label: str) -> int:
+        """Count on a sidebar sub-view button (e.g. 'Resolve 1' -> 1), read from the
+        RENDERED text. The HTML source wraps the digit in a child element, so a regex
+        over page.content() misses it — read inner_text instead.
+        """
+        loc = self.b._page.locator(
+            "button.sidebar-menu-btn",
+            has_text=re.compile(rf"^\s*{re.escape(label)}\b", re.I),
+        ).first
+        try:
+            txt = loc.inner_text(timeout=3_000)
+        except Exception:
+            return 0
+        m = re.search(r"(\d+)", txt)
+        return int(m.group(1)) if m else 0
+
     def _click_subview(self, label: str) -> bool:
         """Click the sidebar sub-view button whose text starts with `label`. False if absent."""
         btn = self.b._page.locator(
