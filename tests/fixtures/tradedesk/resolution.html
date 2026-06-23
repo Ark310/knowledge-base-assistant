@@ -1,48 +1,40 @@
 <!doctype html>
-<!-- SYNTHETIC fixture — Resolve sub-view. resolution-container + Quill ql-editor
-     hold the resolution text; resolution file is a button.inline-flex "Download".
-     Comments remain on the page (as on the real site). No PII. -->
+<!-- SYNTHETIC fixture — Resolve sub-view (real structure confirmed live 2026-06-23).
+     Resolution text is div.post-content (NOT div.ql-editor — that's the empty edit form).
+     Resolution file = icon button title='"Download"' (literal quotes) in a bg-gray-50 card.
+     No PII. -->
 <html lang="en">
 <head><title>Ticket ID 76511 - Northwind Trading - Org configuration and scripts</title></head>
 <body>
 <div class="app-root">
-  <div class="flex sidebar">
-    <button class="sidebar-menu-btn">Ticket</button>
-    <button class="sidebar-menu-btn">Resolve 1</button>
-    <button class="sidebar-menu-btn">Files 2</button>
-  </div>
+  <nav><button class="sidebar-menu-btn">Ticket</button><button class="sidebar-menu-btn">Resolve 1</button></nav>
 
   <div class="resolution-container">
-    <h3>Resolution</h3>
-    <div class="simple-rich-text-editor-container">
-      <div class="ql-editor">
-        <p>Root cause: the form opening query fetched incorrect Trader and Funding template ids when both columns were null.</p>
-        <p>Fix: scoped the lookup to the per-org defaults table; verified in Internal CSQA UAT.</p>
-      </div>
+    <!-- edit form card: empty ql-editor (must NOT be read as the resolution text) -->
+    <div class="bg-white rounded-lg border border-gray-200 shadow-sm mb-6">
+      <div class="p-6"><form class="ng-untouched ng-pristine ng-valid">
+        <div class="simple-rich-text-editor-container"><div class="ql-editor"></div></div>
+        <div class="flex justify-end gap-3"><button class="inline-flex">Clear</button><button class="inline-flex">Update Resolution</button></div>
+      </form></div>
     </div>
-    <input type="file" class="block" id="attachmentFile">
-    <div class="mt-3">
-      <div class="flex-1">
-        <div class="flex">
-          <div class="min-w-0"><span class="filename">resolution-script.sql</span></div>
-          <div class="flex">
-            <button class="inline-flex">Download</button>
+    <!-- display card: the rendered resolution -->
+    <div class="bg-white rounded-lg border border-gray-200 shadow-sm mb-6">
+      <div class="p-6 border-b border-gray-200"><div class="flex items-center gap-3"><svg class="w-5 h-5 text-blue-600"></svg><h2 class="text-lg font-semibold text-gray-900">Resolution</h2></div></div>
+      <div class="p-6"><div class="space-y-4"><div class="border border-gray-200 rounded-lg p-4">
+        <div class="post-content"><div class="space-y-3">
+          <p>Root cause: the form opening query fetched incorrect Trader and Funding template ids when both columns were null.</p>
+          <div class="bg-gray-50 rounded-lg p-3">
+            <div class="flex items-center gap-3">
+              <svg class="lucide lucide-paperclip flex-shrink-0"></svg>
+              <div class="min-w-0 flex-1"><p class="text-sm text-gray-600 break-words">resolution-script.sql</p></div>
+              <div class="flex items-center gap-1 flex-shrink-0">
+                <button class="p-1.5 rounded-md text-blue-600" title='"Download"'><svg class="w-4 h-4"></svg></button>
+                <button class="p-1.5 rounded-md text-red-600" title='"Delete"'><svg class="w-4 h-4"></svg></button>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- comments still rendered below the resolution panel -->
-  <div class="space-y-2">
-    <div class="p-2">
-      <div class="flex">
-        <span class="relative"><span>JL</span></span>
-        <div class="flex-1">
-          <div class="flex"><div class="flex-1"><span class="text-xs"><span class="hidden">comment 1466126 posted by Jordan Lee</span></span></div></div>
-          <div class="body"><p>Revenue and expense bindings have been completed.</p></div>
-        </div>
-      </div>
+        </div></div>
+      </div></div></div>
     </div>
   </div>
 </div>

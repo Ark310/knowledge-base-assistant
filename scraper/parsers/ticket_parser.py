@@ -38,7 +38,9 @@ _LABEL_MAP: dict[str, str] = {
 
 _TICKET_NO_RE = re.compile(r"Ticket\s*#\s*(\d+)", re.I)
 _CREATED_RE = re.compile(r"Created\s+(\d{2}/\d{2}/\d{4})\s+by\s+(\S+)", re.I)
-_COMMENT_HDR_RE = re.compile(r"comment\s+(\d+)\s+posted by\s+(.+?)\s*$", re.I)
+# The header text is "comment {id} posted by " — the author name is a SEPARATE
+# <a> link that follows (confirmed live 2026-06-23), so we capture only the id here.
+_COMMENT_HDR_RE = re.compile(r"comment\s+(\d+)\s+posted by", re.I)
 _DATE_RE = re.compile(r"([A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*[AP]M)")
 
 
@@ -91,31 +93,78 @@ def parse_ticket_fields(html: str) -> dict:
     return out
 
 
-def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
-    """Return every div.p-2 card inside the comments container."""
-    for s in soup.select("span.hidden"):
-        if _COMMENT_HDR_RE.search(s.get_text()):
-            container = s.find_parent("div", class_="space-y-2")
-            if container:
-                return container.find_all("div", class_="p-2", recursive=False)
-    return []
+def _is_download_control(el: Tag) -> bool:
+    """True for a Download affordance — a button/anchor whose text OR title is 'Download'.
+
+    Confirmed live 2026-06-23: the files panel uses an ICON button with
+    title="Download" (empty text); comment attachments use a text "Download" button.
+    The portal renders the title value wrapped in literal quotes, so strip them.
+    """
+    if not isinstance(el, Tag) or el.name not in ("button", "a"):
+        return False
+    if _clean(el.get_text()).lower() == "download":
+        return True
+    return (el.get("title") or "").strip().strip('"').strip().lower() == "download"
+
+
+def _file_card(el: Tag) -> Tag | None:
+    """Nearest ancestor div that looks like a file/attachment card (rounded-lg)."""
+    return el.find_parent("div", class_=lambda c: bool(c) and "rounded-lg" in c)
+
+
+def _filename_text(scope: Tag | None) -> str:
+    """Best-effort filename text inside a file card (the break-words/text-sm line)."""
+    if scope is None:
+        return ""
+    for sel in ("p.break-words", "p.text-sm", "h4", ".filename"):
+        e = scope.select_one(sel)
+        if e and _clean(e.get_text()):
+            return _clean(e.get_text())
+    mn = scope.select_one("div.min-w-0")
+    return _clean(mn.get_text()) if mn else ""
 
 
 def _attachments_in(scope: Tag) -> list[dict]:
-    """Find all Download buttons inside *scope* and return their filenames."""
+    """Find Download affordances inside *scope* and return their filenames."""
     out = []
-    for b in scope.find_all("button"):
-        if _clean(b.get_text()).lower() != "download":
+    for b in scope.find_all(["button", "a"]):
+        if not _is_download_control(b):
             continue
-        # Look for the filename in the nearest mt-3 ancestor, then flex, then scope
-        holder = (
-            b.find_parent("div", class_="mt-3")
-            or b.find_parent("div", class_="flex")
-            or scope
-        )
-        fn = holder.select_one(".filename") or holder.select_one(".min-w-0")
-        out.append({"label": _clean(fn.get_text()) if fn else ""})
+        holder = _file_card(b) or b.find_parent("div", class_="mt-3") or scope
+        out.append({"label": _filename_text(holder)})
     return out
+
+
+# A comment card is the nearest rounded-lg/border/bg-white ancestor of its header.
+_COMMENT_CARD_CLASSES = {"rounded-lg", "border", "bg-white"}
+
+
+def _climb_to_card(node) -> Tag | None:
+    """Climb to the nearest ancestor div carrying all of _COMMENT_CARD_CLASSES.
+
+    Done by walking `.parent` and reading `get('class')` (the LIST) — NOT via a
+    `class_=` lambda, because BeautifulSoup hands a class filter function the
+    space-joined STRING, which silently breaks a multi-class subset test.
+    """
+    p = node if isinstance(node, Tag) else node.parent
+    while isinstance(p, Tag):
+        if _COMMENT_CARD_CLASSES <= set(p.get("class") or []):
+            return p
+        p = p.parent
+    return None
+
+
+def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
+    """Each comment is a `div.(p-2 sm:p-4) rounded-lg border bg-white` holding a
+    "comment N posted by " header. Anchor on the header text, climb to that card."""
+    cards: list[Tag] = []
+    seen: set[int] = set()
+    for s in soup.find_all(string=_COMMENT_HDR_RE):
+        card = _climb_to_card(s.parent)
+        if card is not None and id(card) not in seen:
+            seen.add(id(card))
+            cards.append(card)
+    return cards
 
 
 def parse_comments(html: str) -> list[dict]:
@@ -123,31 +172,34 @@ def parse_comments(html: str) -> list[dict]:
     soup = _soup(html)
     comments = []
     for card in _comment_cards(soup):
-        hdr = None
-        for s in card.select("span.hidden"):
-            m = _COMMENT_HDR_RE.search(_clean(s.get_text()))
-            if m:
-                hdr = m
-                break
-        if not hdr:
+        hsn = card.find(string=_COMMENT_HDR_RE)
+        if hsn is None:
             continue
+        cid = _COMMENT_HDR_RE.search(hsn).group(1)
+
+        # Author is the <a> link that follows "posted by " (the real DOM splits the
+        # name out of the header span). Constrain it to this card.
+        a = hsn.find_next("a")
+        author = _clean(a.get_text()) if (a is not None and card in a.parents) else ""
+
+        # Body is the rendered comment HTML block (NOT the header/meta rows).
+        body_el = card.select_one("div.comment-html-content") or card.select_one("div.max-w-none")
+        if body_el is not None:
+            body = "\n".join(ln.strip() for ln in body_el.get_text("\n").splitlines() if ln.strip())
+        else:
+            body = ""
 
         text = card.get_text(" ", strip=True)
         dm = _DATE_RE.search(text)
-        body = "\n".join(
-            _clean(p.get_text())
-            for p in card.find_all("p")
-            if _clean(p.get_text())
-        )
-        # internal=True only when an exact-text "Internal" badge exists in the card
-        # header — NOT when body prose happens to contain the word "internal".
+        # internal=True only when an exact-text "Internal" badge exists in the card —
+        # NOT when body prose happens to contain the word "internal".
         internal = any(
             _clean(el.get_text()) == "Internal"
             for el in card.find_all(["span", "div"])
         )
         comments.append({
-            "id": hdr.group(1),
-            "author": _clean(hdr.group(2)),
+            "id": cid,
+            "author": author,
             "date": dm.group(1) if dm else "",
             "internal": internal,
             "body": body,
@@ -157,49 +209,35 @@ def parse_comments(html: str) -> list[dict]:
 
 
 def parse_resolution(html: str) -> dict:
-    """Extract resolution text and attachments from the Resolve sub-view.
+    """Extract resolution text + attachments from the Resolve sub-view.
 
-    Returns {"text": str, "attachments": [{"label": str}]}.
-    Scoped strictly to div.resolution-container to avoid picking up comment
-    download buttons rendered below the resolution panel.
+    Confirmed live 2026-06-23: scoped to div.resolution-container; the rendered
+    resolution text is div.post-content (NOT div.ql-editor — that is the empty edit
+    form). Attachments are Download affordances within the panel.
     """
     soup = _soup(html)
-    region = soup.select_one("div.resolution-container") or soup
-    editor = region.select_one("div.ql-editor")
-    text = "\n".join(
-        _clean(p.get_text())
-        for p in (editor.find_all("p") if editor else [])
-        if _clean(p.get_text())
-    )
+    region = soup.select_one("div.resolution-container")
+    if region is None:
+        return {"text": "", "attachments": []}
+    content = region.select_one("div.post-content")
+    text = _clean(content.get_text(" ")) if content else ""
     return {"text": text, "attachments": _attachments_in(region)}
 
 
 def parse_files(html: str) -> list[dict]:
-    """Extract all file entries from the Files sub-view.
+    """Extract the files panel's entries from the Files sub-view.
 
-    Returns [{"label": str}] — one entry per Download button, label is the
-    filename text from the adjacent div.min-w-0 / .filename element.
-
-    Wrapper fallback: tries known card classes first (border-2, flex), then any
-    ancestor div, then a preceding sibling — so files with unexpected wrappers
-    are never silently dropped.
+    Confirmed live 2026-06-23: each file is a card with the filename in a
+    p.break-words/p.text-sm and an ICON Download button (title='Download'). We target
+    the icon downloads specifically so we capture the panel's authoritative aggregated
+    list — not the comment text-Download buttons rendered alongside.
     """
     soup = _soup(html)
     files = []
     for b in soup.find_all("button"):
-        if _clean(b.get_text()).lower() != "download":
+        if (b.get("title") or "").strip().strip('"').strip().lower() != "download":
             continue
-        card = (
-            b.find_parent("div", class_="border-2")
-            or b.find_parent("div", class_="flex")
-            or b.find_parent("div")
-        )
-        fn = (card.select_one(".filename") or card.select_one("div.min-w-0")) if card else None
-        if fn is None:
-            # Last-resort: nearest preceding element that carries a filename
-            fn = b.find_previous(class_="filename") or b.find_previous("div", class_="min-w-0")
-        label = _clean(fn.get_text()) if fn else ""
-        label = re.sub(r"\bDownload\b", "", label).strip()
+        label = _filename_text(_file_card(b))
         if label:
             files.append({"label": label})
     return files

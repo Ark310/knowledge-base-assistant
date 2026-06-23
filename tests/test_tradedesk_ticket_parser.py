@@ -152,49 +152,43 @@ def test_comment_bodies_non_empty():
         assert c["body"], f"comment {c['id']} has empty body"
 
 
-def test_exactly_one_comment_has_attachments():
+def test_comments_have_no_inline_attachments():
+    # On this portal the comment cards do NOT carry file labels — files are aggregated in
+    # the Files sub-view (parse_files) and the resolution (parse_resolution). So the
+    # detail-page comments parse with empty attachment lists.
     comments = parse_comments(DETAIL_HTML)
-    with_attachments = [c for c in comments if c.get("attachments")]
-    assert len(with_attachments) == 1
-
-
-def test_comment_attachment_label_contains_error_log():
-    comments = parse_comments(DETAIL_HTML)
-    with_attachments = [c for c in comments if c.get("attachments")]
-    label = with_attachments[0]["attachments"][0]["label"]
-    assert "error-log.txt" in label
+    assert all(c.get("attachments") == [] for c in comments)
 
 
 def test_internal_badge_exact_text_not_body_prose():
-    # Card 1: has a <span class="badge">Internal</span> → internal must be True.
-    # Card 2: body <p> contains the word "internal" but NO badge → internal must be False.
+    # Real comment structure: card div.(...)rounded-lg.border.bg-white; header text
+    # "comment N posted by " in span.hidden + a SEPARATE <a> author; body in
+    # div.comment-html-content. Card 1 has a <span>Internal</span> badge → internal True;
+    # card 2's BODY merely contains the word "internal" with no badge → internal False.
     synthetic = """
     <html><body>
-      <div class="space-y-2">
-        <div class="p-2">
-          <div class="flex-1">
-            <span class="text-xs">
-              <span class="hidden">comment 1001 posted by Jordan Lee</span>
-            </span>
+      <div class="space-y-2 sm:space-y-4">
+        <div class="p-2 sm:p-4 rounded-lg border bg-white">
+          <div class="flex-1 min-w-0">
+            <span class="text-xs"><span class="truncate"><span class="hidden sm:inline">comment 1001 posted by </span><a class="text-blue-600" href="#">Jordan Lee</a></span></span>
             <span class="badge">Internal</span>
             <span>Jun 22, 2026 at 12:00 PM</span>
+            <div class="comment-html-content"><p>Completed the work.</p></div>
           </div>
-          <div class="body"><p>Completed the work.</p></div>
         </div>
-        <div class="p-2">
-          <div class="flex-1">
-            <span class="text-xs">
-              <span class="hidden">comment 1002 posted by Alex Kim</span>
-            </span>
+        <div class="p-2 sm:p-4 rounded-lg border bg-white">
+          <div class="flex-1 min-w-0">
+            <span class="text-xs"><span class="truncate"><span class="hidden sm:inline">comment 1002 posted by </span><a class="text-blue-600" href="#">Alex Kim</a></span></span>
             <span>Jun 21, 2026 at 3:00 PM</span>
+            <div class="comment-html-content"><p>Checked the internal lookup table and it looks fine.</p></div>
           </div>
-          <div class="body"><p>Checked the internal lookup table and it looks fine.</p></div>
         </div>
       </div>
     </body></html>
     """
     comments = parse_comments(synthetic)
     assert len(comments) == 2
+    assert comments[0]["id"] == "1001" and comments[0]["author"] == "Jordan Lee"
     assert comments[0]["internal"] is True,  "badge card must be internal=True"
     assert comments[1]["internal"] is False, "body-prose 'internal' must NOT set internal=True"
 
@@ -267,22 +261,30 @@ def test_files_labels_non_empty():
         assert f["label"], "a file entry has an empty label"
 
 
-def test_files_unexpected_wrapper_not_dropped():
-    # File card uses <div class="card"> — neither border-2 nor flex.
-    # parse_files must still find the filename and not silently drop the entry.
+def test_files_targets_icon_downloads_not_comment_buttons():
+    # The Files sub-view ALSO renders the comment list (with text "Download" buttons).
+    # parse_files must capture ONLY the panel's icon downloads (button title="Download",
+    # whose value the portal wraps in literal quotes) — never the comment text-Download
+    # buttons, or comment files get double-counted.
     synthetic = """
     <html><body>
-      <div class="files-list">
-        <div class="card">
-          <div class="min-w-0"><span class="filename">export.csv</span></div>
+      <div class="files-panel">
+        <div class="p-3 border rounded-lg">
+          <div class="min-w-0"><p class="text-sm break-words">export.csv</p></div>
+          <button class="p-1.5" title='\"Download\"'></button>
+        </div>
+      </div>
+      <div class="space-y-2 sm:space-y-4">
+        <div class="p-2 rounded-lg border bg-white">
+          <div class="comment-html-content"><p>see file</p></div>
           <button class="inline-flex">Download</button>
         </div>
       </div>
     </body></html>
     """
     files = parse_files(synthetic)
-    assert len(files) >= 1
-    assert files[0]["label"], "file with unexpected wrapper must have a non-empty label"
+    assert len(files) == 1
+    assert files[0]["label"] == "export.csv"
 
 
 # ── parse_ticket_detail ───────────────────────────────────────────────────────

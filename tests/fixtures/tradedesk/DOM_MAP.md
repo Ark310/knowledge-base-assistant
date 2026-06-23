@@ -4,6 +4,21 @@ The portal is a Tailwind JS SPA. API (`portal.contoso.example`) is end-to-end AE
 encrypted — scrape the **rendered DOM only**. Fixtures in this folder are SYNTHETIC
 (structure-faithful, fake content) — no customer PII is ever committed.
 
+> **CORRECTED 2026-06-23 (validated against CLEAN real DOM).** The Comments/Resolution/Files
+> notes further down were first derived from a *corrupted* capture and are superseded by these:
+> - **Comments**: card = nearest `div` whose classes ⊇ {rounded-lg, border, bg-white}
+>   (e.g. `div.p-2.sm:p-4.rounded-lg.border.bg-white`), inside `div.space-y-2.sm:space-y-4`.
+>   The `span.hidden` header holds only `comment {id} posted by ` — the **author is a separate
+>   following `<a class="text-blue-600">`**. Body = `div.comment-html-content`. Internal =
+>   a standalone element whose exact text is "Internal".
+> - **Resolution**: text = `div.resolution-container div.post-content` (NOT `div.ql-editor`,
+>   which is the empty edit form). Resolution file = icon `button[title*="Download"]`.
+> - **Files panel**: filename in `p.text-sm.break-words`; download = icon
+>   `button[title*="Download"]` (the `title` value carries literal quotes — use substring).
+>   Do NOT count the comment list's text-"Download" buttons.
+> - **Capture cleanly via base64** — `browser_evaluate` `filename` JSON-escapes raw HTML and
+>   breaks CSS class selectors. See `.wolf/cerebrum.md` for the full note.
+
 ## Login (`/login`) — `login.html`
 - `input` Username (placeholder/aria "Username"), `input[type=password]` Password.
 - Submit `button` text "Sign In", **disabled until both fields filled** (JS-gated).

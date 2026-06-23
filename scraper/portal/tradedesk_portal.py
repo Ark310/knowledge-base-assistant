@@ -67,12 +67,19 @@ class TradeDeskPortal:
         return self.b.get_content()
 
     def download_all(self, dest_dir: Path) -> list[Path]:
-        """Click every Download button; save files to dest_dir; return saved paths."""
+        """Download every file in the Files panel; return the saved paths.
+
+        Call this on the Files sub-view. The panel renders each file with an ICON
+        button whose title contains "Download" (the portal wraps the value in literal
+        quotes). We target those specifically — NOT the comment list's text "Download"
+        buttons rendered on the same view — so comment files are not double-downloaded.
+        A per-file failure is skipped so one bad file can't abort the rest.
+        """
         dest_dir = Path(dest_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
         saved: list[Path] = []
         page = self.b._page
-        for btn in page.get_by_role("button", name=re.compile(r"^\s*download\s*$", re.I)).all():
+        for btn in page.locator('button[title*="Download"]').all():
             try:
                 with page.expect_download(timeout=30_000) as dl:
                     btn.click()
