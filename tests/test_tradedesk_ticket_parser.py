@@ -165,6 +165,40 @@ def test_comment_attachment_label_contains_error_log():
     assert "error-log.txt" in label
 
 
+def test_internal_badge_exact_text_not_body_prose():
+    # Card 1: has a <span class="badge">Internal</span> → internal must be True.
+    # Card 2: body <p> contains the word "internal" but NO badge → internal must be False.
+    synthetic = """
+    <html><body>
+      <div class="space-y-2">
+        <div class="p-2">
+          <div class="flex-1">
+            <span class="text-xs">
+              <span class="hidden">comment 1001 posted by Jordan Lee</span>
+            </span>
+            <span class="badge">Internal</span>
+            <span>Jun 22, 2026 at 12:00 PM</span>
+          </div>
+          <div class="body"><p>Completed the work.</p></div>
+        </div>
+        <div class="p-2">
+          <div class="flex-1">
+            <span class="text-xs">
+              <span class="hidden">comment 1002 posted by Alex Kim</span>
+            </span>
+            <span>Jun 21, 2026 at 3:00 PM</span>
+          </div>
+          <div class="body"><p>Checked the internal lookup table and it looks fine.</p></div>
+        </div>
+      </div>
+    </body></html>
+    """
+    comments = parse_comments(synthetic)
+    assert len(comments) == 2
+    assert comments[0]["internal"] is True,  "badge card must be internal=True"
+    assert comments[1]["internal"] is False, "body-prose 'internal' must NOT set internal=True"
+
+
 # ── parse_resolution ──────────────────────────────────────────────────────────
 
 def test_resolution_text_non_empty():
@@ -231,6 +265,24 @@ def test_files_labels_non_empty():
     files = parse_files(FILES_HTML)
     for f in files:
         assert f["label"], "a file entry has an empty label"
+
+
+def test_files_unexpected_wrapper_not_dropped():
+    # File card uses <div class="card"> — neither border-2 nor flex.
+    # parse_files must still find the filename and not silently drop the entry.
+    synthetic = """
+    <html><body>
+      <div class="files-list">
+        <div class="card">
+          <div class="min-w-0"><span class="filename">export.csv</span></div>
+          <button class="inline-flex">Download</button>
+        </div>
+      </div>
+    </body></html>
+    """
+    files = parse_files(synthetic)
+    assert len(files) >= 1
+    assert files[0]["label"], "file with unexpected wrapper must have a non-empty label"
 
 
 # ── parse_ticket_detail ───────────────────────────────────────────────────────

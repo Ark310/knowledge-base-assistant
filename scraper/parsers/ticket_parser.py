@@ -139,11 +139,17 @@ def parse_comments(html: str) -> list[dict]:
             for p in card.find_all("p")
             if _clean(p.get_text())
         )
+        # internal=True only when an exact-text "Internal" badge exists in the card
+        # header — NOT when body prose happens to contain the word "internal".
+        internal = any(
+            _clean(el.get_text()) == "Internal"
+            for el in card.find_all(["span", "div"])
+        )
         comments.append({
             "id": hdr.group(1),
             "author": _clean(hdr.group(2)),
             "date": dm.group(1) if dm else "",
-            "internal": "internal" in text.lower(),
+            "internal": internal,
             "body": body,
             "attachments": _attachments_in(card),
         })
@@ -173,6 +179,10 @@ def parse_files(html: str) -> list[dict]:
 
     Returns [{"label": str}] — one entry per Download button, label is the
     filename text from the adjacent div.min-w-0 / .filename element.
+
+    Wrapper fallback: tries known card classes first (border-2, flex), then any
+    ancestor div, then a preceding sibling — so files with unexpected wrappers
+    are never silently dropped.
     """
     soup = _soup(html)
     files = []
@@ -182,8 +192,12 @@ def parse_files(html: str) -> list[dict]:
         card = (
             b.find_parent("div", class_="border-2")
             or b.find_parent("div", class_="flex")
+            or b.find_parent("div")
         )
         fn = (card.select_one(".filename") or card.select_one("div.min-w-0")) if card else None
+        if fn is None:
+            # Last-resort: nearest preceding element that carries a filename
+            fn = b.find_previous(class_="filename") or b.find_previous("div", class_="min-w-0")
         label = _clean(fn.get_text()) if fn else ""
         label = re.sub(r"\bDownload\b", "", label).strip()
         if label:
