@@ -76,7 +76,7 @@ def parse_ticket_fields(html: str) -> dict:
         out["ticket_id"] = m.group(1)
 
     if soup.title and soup.title.string:
-        mt = re.match(r"Ticket ID \d+ -\s*.+? -\s*(.+)$", _clean(soup.title.string))
+        mt = re.match(r"Ticket ID \d+ -\s*(.+)$", _clean(soup.title.string))
         if mt:
             out["title"] = mt.group(1).strip()
 

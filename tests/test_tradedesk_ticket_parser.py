@@ -79,7 +79,7 @@ def test_fields_csqa_owner_non_empty():
 
 def test_fields_title_non_empty():
     f = parse_ticket_fields(DETAIL_HTML)
-    assert f.get("title", "")
+    assert f["title"] == "Northwind Trading - Org configuration and scripts"
 
 
 def test_fields_created_at_matches_date_pattern():
@@ -88,12 +88,22 @@ def test_fields_created_at_matches_date_pattern():
 
 
 def test_fields_dedupe_first_wins():
-    # Organization appears twice; only first occurrence should be captured
-    f = parse_ticket_fields(DETAIL_HTML)
-    assert f["organization"] == "Northwind Trading"
-    # Verify no duplicate keys by counting: dict can't have dupes anyway,
-    # but ensure status comes from first set too
-    assert f["status"] == "18 - Internal CSQA UAT"
+    # Synthetic HTML with TWO Organization buttons carrying DIFFERENT values —
+    # confirms that the deduplication logic (first-occurrence wins) is actually exercised.
+    synthetic = """
+    <html><body>
+      <button class="floating-dropdown-btn">
+        <span class="floating-dropdown-label">Organization<span class="text-red-500">*</span></span>
+        <span class="floating-dropdown-value">Alpha Org</span>
+      </button>
+      <button class="floating-dropdown-btn">
+        <span class="floating-dropdown-label">Organization<span class="text-red-500">*</span></span>
+        <span class="floating-dropdown-value">Beta Org</span>
+      </button>
+    </body></html>
+    """
+    f = parse_ticket_fields(synthetic)
+    assert f["organization"] == "Alpha Org"
 
 
 def test_fields_awaiting_production_deployment_false():
@@ -173,10 +183,41 @@ def test_resolution_attachment_label_contains_sql():
 
 
 def test_resolution_does_not_count_comment_downloads():
-    # resolution.html has a comment section below the resolution-container;
-    # its download button must not be counted in parse_resolution
-    r = parse_resolution(RESOLUTION_HTML)
+    # Build synthetic HTML with 2 Download buttons: one inside div.resolution-container
+    # (resolution-script.sql) and one outside it (comment-attachment.txt).
+    # parse_resolution must scope to div.resolution-container and return exactly 1.
+    from bs4 import BeautifulSoup as _BS
+    synthetic = """
+    <html><body>
+      <div class="resolution-container">
+        <div class="ql-editor"><p>Fix applied.</p></div>
+        <div class="mt-3">
+          <div class="flex">
+            <div class="min-w-0"><span class="filename">resolution-script.sql</span></div>
+            <div class="flex"><button class="inline-flex">Download</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="space-y-2">
+        <div class="p-2">
+          <div class="mt-3">
+            <div class="flex">
+              <div class="min-w-0"><span class="filename">comment-attachment.txt</span></div>
+              <div class="flex"><button class="inline-flex">Download</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </body></html>
+    """
+    total_downloads = len([
+        b for b in _BS(synthetic, "lxml").find_all("button")
+        if b.get_text(strip=True).lower() == "download"
+    ])
+    assert total_downloads == 2, "synthetic fixture must have exactly 2 Download buttons"
+    r = parse_resolution(synthetic)
     assert len(r["attachments"]) == 1
+    assert r["attachments"][0]["label"] == "resolution-script.sql"
 
 
 # ── parse_files ───────────────────────────────────────────────────────────────
