@@ -12,6 +12,23 @@ from pathlib import Path
 from scraper.parsers.ticket_parser import is_not_found  # noqa: F401 (kept for callers)
 
 
+def _unique_path(dest_dir: Path, name: str) -> Path:
+    """A non-colliding path in dest_dir for `name`. The portal sometimes serves two
+    different files with the same name (e.g. 'text.html'); without this the second
+    download silently overwrites the first. Collisions get '_1', '_2', … before the ext.
+    """
+    name = name or "file"
+    target = dest_dir / name
+    if not target.exists():
+        return target
+    stem, dot, ext = name.rpartition(".")
+    base, suffix = (stem, f".{ext}") if dot else (name, "")
+    i = 1
+    while (cand := dest_dir / f"{base}_{i}{suffix}").exists():
+        i += 1
+    return cand
+
+
 class TradeDeskPortal:
     def __init__(self, browser, portal_url: str):
         self.b = browser
@@ -135,7 +152,7 @@ class TradeDeskPortal:
                 with page.expect_download(timeout=30_000) as dl:
                     btn.click()
                 d = dl.value
-                target = dest_dir / d.suggested_filename
+                target = _unique_path(dest_dir, d.suggested_filename)
                 d.save_as(str(target))
                 saved.append(target)
             except Exception:
