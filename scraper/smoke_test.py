@@ -16,8 +16,13 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import sys
 import tempfile
 from pathlib import Path
+
+# Allow running directly (`python scraper/smoke_test.py`): put the project root on the
+# path so `import scraper.*` resolves (Python otherwise only adds scraper/ itself).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import scraper.ticket_settings as ts
 from scraper.ticket_engine import run_ticket_scrape, TicketEngineCallbacks
