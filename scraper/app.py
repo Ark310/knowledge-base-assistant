@@ -6,6 +6,7 @@ before any heavy engine import."""
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -65,11 +66,15 @@ def main() -> None:
     if ico:
         app.setWindowIcon(QIcon(str(ico)))
 
-    # Splash — paint before any heavy imports
+    # Splash — paint before any heavy imports, with a brief fade-in (the startup animation)
     splash = _make_splash()
     if splash is not None:
+        splash.setWindowOpacity(0.0)
         splash.show()
-        app.processEvents()
+        for _step in range(1, 11):          # ~220ms fade-in
+            splash.setWindowOpacity(_step / 10.0)
+            app.processEvents()
+            time.sleep(0.022)
 
     # Heavy import happens only after splash is visible
     from scraper.gui import MainWindow  # noqa: PLC0415

@@ -1,10 +1,20 @@
 from pathlib import Path
 import sys
 
-APP_VERSION = "3.1"
+APP_VERSION = "4.0"
 """
 Changelog
 ─────────
+v4.0  2026-06-23  Major overhaul (in progress on feat/kb-scraper-v4):
+                   A) Support portal moved support.contoso.example → portal.contoso.example
+                      (encrypted JS SPA): rebuilt ticket scraping on a TradeDeskPortal
+                      adapter (rendered-DOM extraction), capturing fields, comments,
+                      resolution text+file, comment files, and inline comment images.
+                   B) RunControl Pause/Resume + Stop; parallel workers 1–10.
+                   C) Brand theme (chatbot palette), animated splash, ice-scraper icon,
+                      branded top bar, Settings dialog (per-type output folders + hidden
+                      portal credentials).
+                   (Tickets/KB tab restyle = Phases 4–5; one-folder packaging = Phase 6.)
 v3.1  2026-06-10  Ticket Portal enhancements:
                    A) Parallel workers (1-4 configurable in GUI) — each worker opens
                       its own headed Chrome, logs in independently; state file writes
