@@ -73,3 +73,36 @@ def test_cancel_before_run_scrapes_nothing(tmp_path):
 
 def test_cancellationtoken_alias_is_runcontrol():
     assert te.CancellationToken is RunControl
+
+def test_cancel_during_run_stops_early(tmp_path):
+    ctrl = RunControl()
+
+    class CancelOnFirstPortal(FakePortal):
+        """Cancels the shared RunControl on the first open_ticket call."""
+        def __init__(self, url):
+            super().__init__(url)
+            self._first = True
+        def open_ticket(self, tid):
+            if self._first:
+                self._first = False
+                ctrl.cancel()
+            return fx("ticket_detail.html")
+
+    rec = {}
+    te.run_ticket_scrape("https://portal.contoso.example", "u", "p", ["76511", "76512"],
+                         force=True, cb=_cb(rec), workers=1, output_dir=tmp_path,
+                         control=ctrl, portal_factory=lambda url: CancelOnFirstPortal(url))
+    # Ticket 1 completes (cancel fires during its fetch, not before).
+    # Ticket 2's top-of-loop cancelled check breaks before any fetch.
+    assert rec["report"]["saved"] == 1
+    assert (tmp_path / "ticket_76511.json").exists()
+    assert not (tmp_path / "ticket_76512.json").exists()
+
+def test_legacy_cancel_kwarg_path(tmp_path):
+    ctrl = RunControl(); ctrl.cancel()
+    rec = {}
+    te.run_ticket_scrape("https://portal.contoso.example", "u", "p", ["76511"],
+                         force=True, cb=_cb(rec), workers=1, output_dir=tmp_path,
+                         cancel=ctrl,  # legacy kwarg, NOT control=
+                         portal_factory=lambda url: FakePortal(url))
+    assert rec["report"]["saved"] == 0

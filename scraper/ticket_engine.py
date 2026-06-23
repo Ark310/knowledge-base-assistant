@@ -97,7 +97,12 @@ def _clamp_workers(n: int) -> int:
     return max(1, min(10, int(n or 1)))
 
 
-_SUBVIEW_RE_CACHE: dict[str, re.Pattern] = {}
+# Pre-populated for the two labels used by every ticket fetch; additional labels
+# compile on first use (lazy, safe — the cache is only written before any workers start).
+_SUBVIEW_RE_CACHE: dict[str, re.Pattern] = {
+    "Resolve": re.compile(r"Resolve\s+(\d+)", re.I),
+    "Files":   re.compile(r"Files\s+(\d+)",   re.I),
+}
 
 def _subview_count(html: str, label: str) -> int:
     """Return the count shown on a sidebar sub-view button (e.g. 'Resolve 1' → 1)."""
@@ -258,6 +263,7 @@ def run_ticket_scrape(
                     save_ticket(result, output_dir)
                     with state_lock:
                         _mark_scraped(tid)
+                        already_scraped.add(tid)  # keep in-process set current
                     with stats_lock:
                         stats["saved"] += 1
                     cb.on_ticket(tid, "ok")
@@ -270,7 +276,7 @@ def run_ticket_scrape(
                     cb.on_log("info", f"{prefix}[OK] #{tid}: {title}")
 
         finally:
-            portal.b.close()
+            portal.b.close()  # portal.b is the Browser instance (TradeDeskPortal contract)
 
     cb.on_log("info",
         f"--- Starting ticket scrape: {total} tickets"
