@@ -21,7 +21,7 @@ class FakePortal:
     def ticket_url(self, tid): return f"{self.base}/tickets/{tid}/edit"
     def open_ticket(self, tid):
         return fx("ticket_detail.html") if self.found else fx("not_found.html")
-    def open_subview(self, label):
+    def open_subview(self, label, ready_selector=None):
         return fx("resolution.html") if label.lower().startswith("resolve") else fx("files.html")
     def download_all(self, dest_dir):
         dest_dir = Path(dest_dir); dest_dir.mkdir(parents=True, exist_ok=True)

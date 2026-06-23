@@ -153,15 +153,24 @@ def _fetch_ticket(portal, tid: str, output_dir: Path, cb) -> dict | str | None |
         cb.on_log("warning", f"#{tid}: parser returned empty — skipping.")
         return None
 
-    # Resolution sub-view — only fetched when the sidebar shows "Resolve N>0"
-    if _subview_count(html, "Resolve") > 0:
-        data["resolution"] = parse_resolution(portal.open_subview("Resolve"))
+    resolve_n = _subview_count(html, "Resolve")
+    files_n = _subview_count(html, "Files")
+    cb.on_log("info", f"#{tid}: sub-views detected — Resolve={resolve_n}, Files={files_n}")
+
+    # Resolution sub-view — fetched when the sidebar shows "Resolve N>0"
+    if resolve_n > 0:
+        res = parse_resolution(portal.open_subview("Resolve", ready_selector="div.resolution-container"))
+        data["resolution"] = res
+        cb.on_log("info",
+            f"#{tid}: resolution {len(res.get('text', ''))} chars, "
+            f"{len(res.get('attachments') or [])} file ref(s)")
 
     # Files sub-view — download all attachments when "Files N>0"
     saved: list[Path] = []
-    if _subview_count(html, "Files") > 0:
-        portal.open_subview("Files")
+    if files_n > 0:
+        portal.open_subview("Files", ready_selector='button[title*="Download"]')
         saved = portal.download_all(Path(output_dir) / "attachments" / tid)
+        cb.on_log("info", f"#{tid}: downloaded {len(saved)} file(s)")
 
     data["attachments"] = [{"filename": p.name, "saved_path": str(p)} for p in saved]
 

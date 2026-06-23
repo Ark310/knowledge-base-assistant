@@ -48,22 +48,53 @@ class TradeDeskPortal:
         return not self.is_login_page(self.b.get_content())
 
     def open_ticket(self, ticket_id: str) -> str:
-        """Navigate to the ticket edit page; poll until the title matches or a redirect occurs."""
+        """Navigate to the ticket and return its rendered HTML once it is FULLY loaded.
+
+        The SPA sets the title (and the sidebar sub-view counts the engine reads) only
+        after it fetches+renders the ticket data. We wait for the field dropdowns AND the
+        sidebar nav to exist — a fixed sleep / title-only wait races the async render and
+        silently yields a half-rendered page whose "Resolve N"/"Files N" counts are absent,
+        so the caller skips resolution and files.
+        """
         self.b.navigate(self.ticket_url(ticket_id))
         page = self.b._page
-        for _ in range(24):
-            if re.search(rf"^Ticket ID {re.escape(ticket_id)}\b", page.title()):
-                break
-            if f"/tickets/{ticket_id}/edit" not in page.url:  # redirected -> not found
-                break
-            time.sleep(0.5)
+        if f"/tickets/{ticket_id}/edit" not in page.url:   # redirected away -> not found
+            return self.b.get_content()
+        for sel in ("button.floating-dropdown-btn", "button.sidebar-menu-btn"):
+            try:
+                page.wait_for_selector(sel, timeout=20_000)
+            except Exception:
+                pass
+        page.wait_for_timeout(500)   # small settle so the sidebar counts paint
         return self.b.get_content()
 
-    def open_subview(self, label: str) -> str:
-        """Click the sidebar-menu-btn whose text starts with `label`; return the new HTML."""
-        self.b._page.get_by_role("button").filter(
-            has_text=re.compile(rf"^\s*{re.escape(label)}\b")).first.click()
-        time.sleep(1.5)
+    def _click_subview(self, label: str) -> bool:
+        """Click the sidebar sub-view button whose text starts with `label`. False if absent."""
+        btn = self.b._page.locator(
+            "button.sidebar-menu-btn",
+            has_text=re.compile(rf"^\s*{re.escape(label)}\b", re.I),
+        ).first
+        try:
+            btn.click(timeout=5_000)
+            return True
+        except Exception:
+            return False
+
+    def open_subview(self, label: str, ready_selector: str | None = None) -> str:
+        """Switch to a sub-view and return its rendered HTML.
+
+        Clicks the PRECISE sidebar button (not a broad role match) and waits for the
+        sub-view's own content to render (condition-based) rather than a fixed sleep.
+        """
+        if not self._click_subview(label):
+            return self.b.get_content()
+        page = self.b._page
+        if ready_selector:
+            try:
+                page.wait_for_selector(ready_selector, timeout=15_000)
+            except Exception:
+                pass
+        page.wait_for_timeout(500)
         return self.b.get_content()
 
     def download_all(self, dest_dir: Path) -> list[Path]:
@@ -71,14 +102,18 @@ class TradeDeskPortal:
 
         Call this on the Files sub-view. The panel renders each file with an ICON
         button whose title contains "Download" (the portal wraps the value in literal
-        quotes). We target those specifically — NOT the comment list's text "Download"
-        buttons rendered on the same view — so comment files are not double-downloaded.
-        A per-file failure is skipped so one bad file can't abort the rest.
+        quotes). We wait for those rows to render, then target them specifically — NOT
+        the comment list's text "Download" buttons — so comment files are not
+        double-downloaded. A per-file failure is skipped so one bad file can't abort the rest.
         """
         dest_dir = Path(dest_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
         saved: list[Path] = []
         page = self.b._page
+        try:
+            page.wait_for_selector('button[title*="Download"]', timeout=10_000)
+        except Exception:
+            return saved
         for btn in page.locator('button[title*="Download"]').all():
             try:
                 with page.expect_download(timeout=30_000) as dl:
