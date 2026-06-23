@@ -47,7 +47,7 @@ def load() -> dict:
             return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         pass
-    return {"portal_url": "https://support.contoso.example", "username": ""}
+    return {"portal_url": "https://portal.contoso.example", "username": ""}
 
 
 def save(portal_url: str, username: str) -> None:
