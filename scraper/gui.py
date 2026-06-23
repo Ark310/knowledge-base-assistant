@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
-from PySide6.QtGui import QTextCursor, QFont, QColor, QTextCharFormat
+from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
+from PySide6.QtGui import QIcon, QPixmap, QTextCursor, QFont, QColor, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QCheckBox, QPlainTextEdit, QProgressBar, QFrame,
@@ -20,6 +20,7 @@ from scraper.config import APP_VERSION, PRODUCTS, LOG_FILE
 from scraper.engine import Engine, EngineCallbacks, CancellationToken
 from scraper.kb_tab import KBTab
 from scraper.ticket_tab import TicketTab
+from scraper import theme
 
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
@@ -105,6 +106,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Contoso KB Scraper v{APP_VERSION}")
         self.resize(1100, 740)
 
+        # Window/taskbar icon
+        ico = theme.asset_path("scraper_icon.ico")
+        if ico:
+            self.setWindowIcon(QIcon(str(ico)))
+
         self.bridge = SignalBridge()
         self.cancel_token = CancellationToken()
         self.engine = Engine(callbacks=BridgeCallbacks(self.bridge), cancel_token=self.cancel_token)
@@ -121,6 +127,10 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
 
+        # Brand header — installed as the QMainWindow menu-widget so it renders
+        # above the toolbar dock area (the very top of the window chrome).
+        self.setMenuWidget(self._build_header())
+
         self.tabs = QTabWidget()
         outer.addWidget(self.tabs)
 
@@ -132,6 +142,50 @@ class MainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage(f"Log file: {LOG_FILE}")
+
+    def _build_header(self) -> QWidget:
+        """Top brand bar: logo + 'Contoso KB Scraper' title + version pill + ⚙ Settings."""
+        P = theme.PALETTE
+        header = QFrame()
+        header.setObjectName("HeaderBar")
+        header.setStyleSheet(
+            f"#HeaderBar {{ background:{P['surface']}; "
+            f"border-bottom:2px solid {P['brand']}; }}")
+        row = QHBoxLayout(header)
+        row.setContentsMargins(12, 6, 12, 6)
+        row.setSpacing(10)
+
+        # Logo (optional — degrade gracefully if missing)
+        logo_lbl = QLabel()
+        lp = theme.asset_path("contoso_logo.png")
+        if lp:
+            pm = QPixmap(str(lp))
+            if not pm.isNull():
+                logo_lbl.setPixmap(pm.scaledToHeight(26, Qt.SmoothTransformation))
+        row.addWidget(logo_lbl)
+
+        title = QLabel("Contoso KB Scraper")
+        title.setStyleSheet(
+            f"font-size:12pt; font-weight:600; color:{P['text']};")
+        row.addWidget(title)
+        row.addStretch()
+
+        ver = QLabel(f"v{APP_VERSION}")
+        ver.setStyleSheet(
+            f"color:{P['surface']}; background:{P['brand']}; "
+            f"border-radius:8px; padding:2px 8px; font-size:8.5pt;")
+        row.addWidget(ver)
+
+        self.btn_settings = QPushButton("⚙  Settings")
+        self.btn_settings.setToolTip("Configure output folders and portal credentials")
+        self.btn_settings.clicked.connect(self._open_settings)
+        row.addWidget(self.btn_settings)
+
+        return header
+
+    def _open_settings(self):
+        from scraper.settings_dialog import SettingsDialog
+        SettingsDialog(self).exec()
 
     def _build_v1_widget(self) -> QWidget:
         w = QWidget()
