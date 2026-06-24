@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -257,7 +258,6 @@ class TicketTab(QWidget):
         hdr = self.table.horizontalHeader()
         hdr.setStretchLastSection(False)
         # Title column (2) stretches; others are sized to content
-        from PySide6.QtWidgets import QHeaderView
         hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(2, QHeaderView.Stretch)
@@ -385,6 +385,18 @@ class TicketTab(QWidget):
         if self._worker and self._worker.isRunning():
             self._control.cancel()
             self._emit_log("warning", "Stop requested — finishing current ticket then stopping.")
+
+    def shutdown(self) -> None:
+        """Cancel a running scrape and wait for the worker thread to exit.
+
+        Called by MainWindow.closeEvent — a child widget's own closeEvent does NOT fire
+        when the parent window closes. cancel() also releases a PAUSED worker blocked in
+        RunControl.wait_if_paused(), so the QThread can return instead of being destroyed
+        while still running.
+        """
+        if self._worker and self._worker.isRunning():
+            self._control.cancel()
+            self._worker.wait(15_000)
 
     # ── Slot handlers ─────────────────────────────────────────────────────────
 

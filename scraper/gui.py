@@ -308,14 +308,24 @@ class MainWindow(QMainWindow):
         self.progress.setValue(pct)
 
     def closeEvent(self, event):
-        if self.worker and self.worker.isRunning():
+        # Drain ALL running workers (a child widget's own closeEvent does not fire when
+        # the parent window closes). The ticket worker may be PAUSED — TicketTab.shutdown()
+        # cancels (which releases the pause) and joins it, avoiding a QThread destroyed
+        # while still running.
+        v1_running = bool(self.worker and self.worker.isRunning())
+        ticket_running = bool(getattr(self.ticket_tab, "_worker", None)
+                              and self.ticket_tab._worker.isRunning())
+        if v1_running or ticket_running:
             reply = QMessageBox.question(self, "Quit?",
                 "A scrape is running. Stop it and quit?",
                 QMessageBox.Yes | QMessageBox.No)
             if reply != QMessageBox.Yes:
                 event.ignore(); return
-            self.cancel_token.cancel()
-            self.worker.wait(15_000)
+            if v1_running:
+                self.cancel_token.cancel()
+                self.worker.wait(15_000)
+            if ticket_running:
+                self.ticket_tab.shutdown()
         event.accept()
 
 

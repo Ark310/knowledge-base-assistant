@@ -41,3 +41,23 @@ def test_on_ticket_meta_populates_title_and_files():
     t._on_ticket_meta("76511", "APA ONE - Org config", 2)
     assert t.table.item(0, 2).text() == "APA ONE - Org config"
     assert t.table.item(0, 3).text() == "2"
+
+def test_shutdown_no_worker_is_noop():
+    t = TicketTab()
+    t.shutdown()  # no worker running -> must not raise
+
+def test_shutdown_cancels_and_waits_running_worker():
+    # shutdown() must cancel the control (releases a paused worker) and join the thread,
+    # so closing the window during a paused scrape can't destroy a live QThread.
+    t = TicketTab()
+    class _FakeCtl:
+        cancelled = False
+        def cancel(self): self.cancelled = True
+    class _FakeWorker:
+        waited = False
+        def isRunning(self): return True
+        def wait(self, ms): self.waited = True; return True
+    t._control = _FakeCtl()
+    t._worker = _FakeWorker()
+    t.shutdown()
+    assert t._control.cancelled and t._worker.waited
