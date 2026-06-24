@@ -11,17 +11,11 @@ from scraper.parsers.universal import parse_page
 from scraper.writers import json_writer, md_writer, index_generator
 from scraper.config_writer import update_release_notes_urls
 from scraper import config as config_module
+from scraper.control import RunControl
 
 log = logging.getLogger("scraper")
 
-
-class CancellationToken:
-    def __init__(self) -> None:
-        self._cancelled = False
-    def cancel(self) -> None:
-        self._cancelled = True
-    def is_cancelled(self) -> bool:
-        return self._cancelled
+CancellationToken = RunControl   # unified cancel + pause token
 
 
 class EngineCallbacks:
@@ -111,6 +105,7 @@ class Engine:
         self.cb.on_started("scrape_all")
         report: dict = {}
         for key in PRODUCTS:
+            self.cancel.wait_if_paused()
             if self.cancel.is_cancelled():
                 self.cb.on_log("warning", "Cancelled — stopping scrape_all loop")
                 break
@@ -149,6 +144,7 @@ class Engine:
         total = len(versions)
         with Browser() as browser:
             for idx, v in enumerate(versions, start=1):
+                self.cancel.wait_if_paused()
                 if self.cancel.is_cancelled():
                     self.cb.on_log("warning", f"{product_key}: cancelled before {v['version']}")
                     break

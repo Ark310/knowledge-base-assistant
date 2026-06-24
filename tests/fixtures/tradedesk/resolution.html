@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- SYNTHETIC fixture — Resolve sub-view (real structure confirmed live 2026-06-23).
+     Resolution text is div.post-content (NOT div.ql-editor — that's the empty edit form).
+     Resolution file = icon button title='"Download"' (literal quotes) in a bg-gray-50 card.
+     No PII. -->
+<html lang="en">
+<head><title>Ticket ID 76511 - Northwind Trading - Org configuration and scripts</title></head>
+<body>
+<div class="app-root">
+  <nav><button class="sidebar-menu-btn">Ticket</button><button class="sidebar-menu-btn">Resolve 1</button></nav>
+
+  <div class="resolution-container">
+    <!-- edit form card: empty ql-editor (must NOT be read as the resolution text) -->
+    <div class="bg-white rounded-lg border border-gray-200 shadow-sm mb-6">
+      <div class="p-6"><form class="ng-untouched ng-pristine ng-valid">
+        <div class="simple-rich-text-editor-container"><div class="ql-editor"></div></div>
+        <div class="flex justify-end gap-3"><button class="inline-flex">Clear</button><button class="inline-flex">Update Resolution</button></div>
+      </form></div>
+    </div>
+    <!-- display card: the rendered resolution -->
+    <div class="bg-white rounded-lg border border-gray-200 shadow-sm mb-6">
+      <div class="p-6 border-b border-gray-200"><div class="flex items-center gap-3"><svg class="w-5 h-5 text-blue-600"></svg><h2 class="text-lg font-semibold text-gray-900">Resolution</h2></div></div>
+      <div class="p-6"><div class="space-y-4"><div class="border border-gray-200 rounded-lg p-4">
+        <div class="post-content"><div class="space-y-3">
+          <p>Root cause: the form opening query fetched incorrect Trader and Funding template ids when both columns were null.</p>
+          <div class="bg-gray-50 rounded-lg p-3">
+            <div class="flex items-center gap-3">
+              <svg class="lucide lucide-paperclip flex-shrink-0"></svg>
+              <div class="min-w-0 flex-1"><p class="text-sm text-gray-600 break-words">resolution-script.sql</p></div>
+              <div class="flex items-center gap-1 flex-shrink-0">
+                <button class="p-1.5 rounded-md text-blue-600" title='"Download"'><svg class="w-4 h-4"></svg></button>
+                <button class="p-1.5 rounded-md text-red-600" title='"Delete"'><svg class="w-4 h-4"></svg></button>
+              </div>
+            </div>
+          </div>
+        </div></div>
+      </div></div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

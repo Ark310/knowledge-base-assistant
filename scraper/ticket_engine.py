@@ -1,32 +1,26 @@
-# scraper/ticket_engine.py
 """Ticket Portal scraper engine.
 
-Drives a headed Chrome session to log into support.contoso.example,
-navigate to each ticket, extract all fields, fetch the resolution page,
-and persist JSON+MD to library/tickets/.
+Drives a headed Chrome session through TradeDeskPortal to log into
+portal.contoso.example, navigate to each ticket, extract all fields, fetch the
+Resolve and Files sub-views, download every file through the browser, and
+persist JSON+MD to the output directory.
 
-Credentials: URL + username from ticket_settings.json; password from OS keyring.
-Password is NEVER written to disk or logged at any verbosity level.
-
-Login form selectors confirmed from live portal inspection 2026-06-09:
-  username: #user  (NOT #CTNM — that is the <form> element's id)
-  password: #pw
-  submit:   input[name='ctl01']
-  session check: presence of id="user" AND id="pw" in HTML = login page.
+Password is consumed by portal.login() and is NEVER stored, logged, or
+passed to any shell command.
 """
 from __future__ import annotations
 
 import json
+import queue
 import re
 import threading
-import time
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from scraper.core import Browser, _is_browser_dead
 from scraper.config import LIBRARY_BASE, STATE_DIR
+from scraper.control import RunControl
 from scraper.parsers.ticket_parser import is_not_found, parse_ticket_detail, parse_resolution
 from scraper.writers.ticket_writer import save_ticket
 
@@ -35,25 +29,24 @@ log = logging.getLogger("scraper")
 TICKETS_DIR = LIBRARY_BASE / "tickets"
 TICKET_STATE_FILE = STATE_DIR / "scraped_tickets.json"
 
+CancellationToken = RunControl  # back-compat for the (Phase-4) GUI import
+
 _SESSION_EXPIRED = object()   # sentinel
+
+# Resilience knobs for the shared-queue worker pool.
+MAX_TICKET_ATTEMPTS = 3   # one attempt + (N-1) redispatches before a ticket is failed
+MAX_WORKER_REBUILDS = 3   # browser rebuilds a single worker tolerates before it bows out
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
 
 @dataclass
 class TicketEngineCallbacks:
-    on_log:      Callable[[str, str], None]  = field(default=lambda lvl, msg: None)
-    on_progress: Callable[[int, int], None]  = field(default=lambda i, n: None)
-    on_ticket:   Callable[[str, str], None]  = field(default=lambda tid, st: None)
-    on_finished: Callable[[dict], None]      = field(default=lambda rep: None)
-
-
-@dataclass
-class CancellationToken:
-    _cancelled: bool = False
-    def cancel(self): self._cancelled = True
-    @property
-    def cancelled(self) -> bool: return self._cancelled
+    on_log:         Callable[[str, str], None]        = field(default=lambda lvl, msg: None)
+    on_progress:    Callable[[int, int], None]        = field(default=lambda i, n: None)
+    on_ticket:      Callable[[str, str], None]        = field(default=lambda tid, st: None)
+    on_finished:    Callable[[dict], None]            = field(default=lambda rep: None)
+    on_ticket_meta: Callable[[str, str, int], None]   = field(default=lambda tid, title, nf: None)
 
 
 # ── Ticket ID parsing ─────────────────────────────────────────────────────────
@@ -103,51 +96,82 @@ def _mark_scraped(tid: str) -> None:
     TICKET_STATE_FILE.write_text(json.dumps(sorted(scraped), indent=2), encoding="utf-8")
 
 
-# ── Session detection ─────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _is_logged_out(html: str) -> bool:
-    """True if the current page is the portal login screen.
+def _clamp_workers(n: int) -> int:
+    return max(1, min(10, int(n or 1)))
 
-    Confirmed via live Playwright inspection 2026-06-09:
-    - Login page has exactly two visible inputs: id="user" (text) and id="pw" (password)
-    - The form uses id="ctl00", NOT id="CTNM" (that was a different portal version)
-    - On any authenticated page neither id="user" nor id="pw" appears
+
+def _default_portal_factory(portal_url: str):
+    from scraper.core import Browser
+    from scraper.portal.tradedesk_portal import TradeDeskPortal
+    b = Browser(headless=False, timeout_ms=30_000)
+    b.open()
+    return TradeDeskPortal(b, portal_url)
+
+
+def _match_paths(items, by_name: dict) -> None:
+    """Annotate attachment dicts with saved_path where a downloaded file matches by label."""
+    for a in items or []:
+        p = by_name.get(a.get("label"))
+        if p:
+            a["saved_path"] = str(p)
+
+
+def _fetch_ticket(portal, tid: str, output_dir: Path, cb) -> dict | str | None | object:
+    """Fetch one ticket via the portal adapter.
+
+    Returns:
+      - dict on success
+      - "not_found" if the portal redirected away (ticket does not exist)
+      - _SESSION_EXPIRED if the page looks like the login screen
+      - None on non-recoverable parse failure
     """
-    h = html.lower()
-    return 'id="user"' in h and 'id="pw"' in h
+    html = portal.open_ticket(tid)
 
+    if portal.is_login_page(html):
+        return _SESSION_EXPIRED
 
-# ── Login ─────────────────────────────────────────────────────────────────────
+    if is_not_found(html, tid):
+        cb.on_log("info", f"[NOT FOUND] #{tid}")
+        return "not_found"
 
-def _login(browser: Browser, base: str, username: str, password: str, cb) -> bool:
-    """Navigate to portal root and log in. Returns True on success.
+    data = parse_ticket_detail(html, tid, portal.base)
+    if not data:
+        cb.on_log("warning", f"#{tid}: parser returned empty — skipping.")
+        return None
 
-    Selectors confirmed from live portal DOM inspection:
-      #user  — username text input
-      #pw    — password input
-      input[name='ctl01'] — submit button
-    """
-    try:
-        browser.navigate(base)
-        if not _is_logged_out(browser.get_content()):
-            cb.on_log("info", "Portal session still active.")
-            return True
+    # Read sub-view counts from the RENDERED sidebar (not a regex over HTML source —
+    # the portal wraps the count digit in a child element, so source regex reads 0).
+    resolve_n = portal.subview_count("Resolve")
+    files_n = portal.subview_count("Files")
+    cb.on_log("info", f"#{tid}: sub-views detected — Resolve={resolve_n}, Files={files_n}")
 
-        cb.on_log("info", "Logging into ticket portal...")
-        browser.fill("#user", username)
-        browser.fill("#pw", password)
-        browser.click("input[name='ctl01']")
-        browser.wait_for_load(timeout_ms=15_000)
+    # Resolution sub-view — fetched when the sidebar shows "Resolve N>0"
+    if resolve_n > 0:
+        res = parse_resolution(portal.open_subview("Resolve", ready_selector="div.resolution-container"))
+        data["resolution"] = res
+        cb.on_log("info",
+            f"#{tid}: resolution {len(res.get('text', ''))} chars, "
+            f"{len(res.get('attachments') or [])} file ref(s)")
 
-        if _is_logged_out(browser.get_content()):
-            cb.on_log("error", "Login failed — please check username and password.")
-            return False
+    # Files sub-view — download all attachments when "Files N>0"
+    saved: list[Path] = []
+    if files_n > 0:
+        portal.open_subview("Files", ready_selector='button[title*="Download"]')
+        saved = portal.download_all(Path(output_dir) / "attachments" / tid)
+        cb.on_log("info", f"#{tid}: downloaded {len(saved)} file(s)")
 
-        cb.on_log("info", "Login successful.")
-        return True
-    except Exception as exc:
-        cb.on_log("error", f"Login error: {exc}")
-        return False
+    data["attachments"] = [{"filename": p.name, "saved_path": str(p)} for p in saved]
+
+    # Annotate comment and resolution attachment dicts with saved_path
+    by_name = {p.name: p for p in saved}
+    for c in data.get("comments") or []:
+        _match_paths(c.get("attachments"), by_name)
+    if isinstance(data.get("resolution"), dict):
+        _match_paths(data["resolution"].get("attachments"), by_name)
+
+    return data
 
 
 # ── Main engine ───────────────────────────────────────────────────────────────
@@ -158,176 +182,212 @@ def run_ticket_scrape(
     password: str,
     ticket_ids: list[str],
     force: bool = False,
-    cancel: CancellationToken | None = None,
+    control: RunControl | None = None,
     cb: TicketEngineCallbacks | None = None,
     workers: int = 1,
+    output_dir=None,
+    portal_factory=None,
+    cancel: RunControl | None = None,  # legacy kwarg, back-compat
 ) -> dict:
-    """Scrape the given ticket IDs. Returns summary report dict.
+    """Scrape the given ticket IDs through TradeDeskPortal. Returns a summary dict.
 
-    workers: 1-4 parallel Chrome instances. Each opens its own browser and
-             logs in independently. Progress is aggregated across all workers.
-    The password is consumed here and never stored or logged.
+    workers: 1–10 parallel portal instances (clamped). Each opens its own
+             browser and logs in independently. Progress is aggregated.
+    The password is consumed here and is never stored or logged.
     """
+    control = control or cancel or RunControl()
     if cb is None:
         cb = TicketEngineCallbacks()
-    if cancel is None:
-        cancel = CancellationToken()
+    if portal_factory is None:
+        portal_factory = _default_portal_factory
 
-    workers = max(1, min(4, workers))
-    base = portal_url.rstrip("/")
+    workers = _clamp_workers(workers)
+    output_dir = Path(output_dir) if output_dir else TICKETS_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     already_scraped = _load_scraped()
     total = len(ticket_ids)
     stats = {"total": total, "saved": 0, "skipped": 0, "not_found": 0, "failed": 0}
 
-    TICKETS_DIR.mkdir(parents=True, exist_ok=True)
+    state_lock = threading.Lock()   # protects the scraped-tickets file
+    stats_lock = threading.Lock()   # protects stats, progress, attempts, finished
+    progress_ctr = [0]
 
-    # Locks: state_lock guards the scraped-tickets file (read-modify-write);
-    #        stats_lock guards the stats dict and shared progress counter.
-    state_lock    = threading.Lock()
-    stats_lock    = threading.Lock()
-    progress_ctr  = [0]   # mutable via list so the closure can increment it
+    # Shared work queue. Every worker pulls the next ticket from here, so a worker that
+    # crashes simply stops pulling and its remaining work is drained by the survivors —
+    # nothing is stranded in "queued". A crashed ticket is redispatched (bounded by
+    # MAX_TICKET_ATTEMPTS) and the worker rebuilds its browser in place so it keeps
+    # contributing. Whatever is still queued after every worker exits is failed (below).
+    pending: "queue.Queue[str]" = queue.Queue()
+    for _tid in ticket_ids:
+        pending.put(_tid)
+    attempts: dict[str, int] = {}     # tid -> times pulled (guarded by stats_lock)
+    finished: set[str] = set()        # tids that reached a terminal state (guarded)
 
-    def worker_fn(chunk: list[str], worker_idx: int) -> None:
+    def _terminal(tid: str, status: str, count_key: str, meta=None) -> None:
+        """Record a ticket's terminal outcome exactly once (status, stats, progress)."""
+        with stats_lock:
+            if tid in finished:
+                return
+            finished.add(tid)
+            stats[count_key] += 1
+            progress_ctr[0] += 1
+            prog = progress_ctr[0]
+        cb.on_progress(prog, total)
+        cb.on_ticket(tid, status)
+        if meta is not None:
+            cb.on_ticket_meta(*meta)
+
+    def worker_fn(worker_idx: int) -> None:
         prefix = f"[W{worker_idx + 1}] " if workers > 1 else ""
-        browser = Browser(headless=False, timeout_ms=30_000)
-        try:
-            browser.open()
-        except Exception as exc:
-            cb.on_log("error", f"{prefix}Failed to launch browser: {exc}")
+        if control.cancelled:
             return
+        portal = None
+        rebuilds = 0
         try:
-            if not _login(browser, base, username, password, cb):
+            portal = portal_factory(portal_url)
+            if not portal.login(username, password):
                 cb.on_log("error", f"{prefix}Login failed; worker exiting.")
                 return
             if workers > 1:
-                cb.on_log("info", f"{prefix}Logged in — processing {len(chunk)} tickets.")
+                cb.on_log("info", f"{prefix}Logged in.")
 
-            for tid in chunk:
-                if cancel.cancelled:
-                    cb.on_log("warning", f"{prefix}Cancelled by user.")
+            while True:
+                control.wait_if_paused()
+                if control.cancelled:
+                    cb.on_log("warning", f"{prefix}Cancelled.")
+                    break
+                try:
+                    tid = pending.get_nowait()
+                except queue.Empty:
                     break
 
+                # Defensive: never re-fetch a ticket that already reached a terminal
+                # state (e.g. a redispatch that crossed paths with its own completion).
                 with stats_lock:
-                    progress_ctr[0] += 1
-                    cb.on_progress(progress_ctr[0], total)
+                    if tid in finished:
+                        continue
 
                 if not force and tid in already_scraped:
                     cb.on_log("info", f"{prefix}[SKIP] #{tid} already scraped.")
-                    cb.on_ticket(tid, "skipped")
-                    with stats_lock:
-                        stats["skipped"] += 1
+                    _terminal(tid, "skipped", "skipped")
                     continue
 
-                result = _fetch_ticket(browser, base, tid, cb)
+                with stats_lock:
+                    attempts[tid] = attempts.get(tid, 0) + 1
+                    attempt_n = attempts[tid]
 
-                if result is _SESSION_EXPIRED:
-                    cb.on_log("warning", f"{prefix}#{tid}: session expired — re-logging in...")
-                    if not _login(browser, base, username, password, cb):
-                        cb.on_log("error", f"{prefix}Re-login failed; worker aborting.")
+                try:
+                    result = _fetch_ticket(portal, tid, output_dir, cb)
+
+                    # Re-login once on session expiry
+                    if result is _SESSION_EXPIRED:
+                        cb.on_log("warning", f"{prefix}#{tid}: session expired — re-logging in...")
+                        if not portal.login(username, password):
+                            raise RuntimeError("re-login failed")
+                        result = _fetch_ticket(portal, tid, output_dir, cb)
+
+                    if result is _SESSION_EXPIRED or result is None:
+                        _terminal(tid, "failed", "failed")
+                    elif result == "not_found":
+                        _terminal(tid, "not_found", "not_found")
+                    else:
+                        save_ticket(result, output_dir)
+                        with state_lock:
+                            _mark_scraped(tid)
+                            already_scraped.add(tid)  # keep in-process set current
+                        _terminal(tid, "ok", "saved",
+                                  meta=(tid, result.get("title", ""),
+                                        len(result.get("attachments") or [])))
+                        cb.on_log("info", f"{prefix}[OK] #{tid}: {result.get('title') or ''}")
+
+                except Exception as exc:
+                    # The browser/tab most likely crashed (common at high worker counts
+                    # under load). Redispatch this ticket so another (or this rebuilt)
+                    # worker retries it, then rebuild this worker's browser so it keeps
+                    # helping. Log the exception TYPE only — never its message, which
+                    # could carry ticket data (org policy: no PII/secrets in logs).
+                    if attempt_n < MAX_TICKET_ATTEMPTS:
+                        cb.on_log("warning",
+                            f"{prefix}#{tid}: worker error ({type(exc).__name__}) — "
+                            f"redispatching (attempt {attempt_n}/{MAX_TICKET_ATTEMPTS}).")
+                        pending.put(tid)
+                    else:
+                        cb.on_log("error",
+                            f"{prefix}#{tid}: failed after {attempt_n} attempts "
+                            f"({type(exc).__name__}).")
+                        _terminal(tid, "failed", "failed")
+
+                    rebuilds += 1
+                    try:
+                        if portal is not None:
+                            portal.b.close()
+                    except Exception:
+                        pass
+                    if rebuilds > MAX_WORKER_REBUILDS:
+                        cb.on_log("error",
+                            f"{prefix}too many crashes — worker exiting; "
+                            f"remaining tickets go to other workers.")
+                        portal = None
                         break
-                    result = _fetch_ticket(browser, base, tid, cb)
-
-                if result is _SESSION_EXPIRED or result is None:
-                    with stats_lock:
-                        stats["failed"] += 1
-                    cb.on_ticket(tid, "failed")
-                elif result == "not_found":
-                    with stats_lock:
-                        stats["not_found"] += 1
-                    cb.on_ticket(tid, "not_found")
-                else:
-                    save_ticket(result, TICKETS_DIR)
-                    with state_lock:
-                        _mark_scraped(tid)
-                    with stats_lock:
-                        stats["saved"] += 1
-                    cb.on_ticket(tid, "ok")
-                    title = result.get("title") or result.get("description", "")[:60]
-                    cb.on_log("info", f"{prefix}[OK] #{tid}: {title}")
-
+                    try:
+                        portal = portal_factory(portal_url)
+                        if not portal.login(username, password):
+                            cb.on_log("error",
+                                f"{prefix}re-login after rebuild failed — worker exiting.")
+                            portal = None
+                            break
+                    except Exception:
+                        cb.on_log("error",
+                            f"{prefix}browser rebuild failed — worker exiting.")
+                        portal = None
+                        break
         finally:
-            browser.close()
+            if portal is not None:
+                try:
+                    portal.b.close()  # portal.b is the Browser instance (TradeDeskPortal contract)
+                except Exception:
+                    pass
 
-    if workers == 1:
-        cb.on_log("info", f"--- Starting ticket scrape: {total} tickets ---")
-        worker_fn(ticket_ids, 0)
-    else:
-        cb.on_log("info",
-            f"--- Starting ticket scrape: {total} tickets ({workers} workers) ---")
-        # Interleave IDs so workers pick up consecutive tickets in round-robin order,
-        # giving balanced distribution even for short ranges.
-        chunks = [ticket_ids[i::workers] for i in range(workers)]
+    cb.on_log("info",
+        f"--- Starting ticket scrape: {total} tickets"
+        + (f" ({workers} workers)" if workers > 1 else "") + " ---")
+
+    if total:
+        # Spawn at most one worker per ticket (no point opening idle browsers).
+        nthreads = max(1, min(workers, total))
         threads = [
-            threading.Thread(target=worker_fn, args=(chunk, i), daemon=True)
-            for i, chunk in enumerate(chunks)
-            if chunk
+            threading.Thread(target=worker_fn, args=(i,), daemon=True)
+            for i in range(nthreads)
         ]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
 
+        # Safety net: if every worker exited (all browsers crashed), drain whatever is
+        # still queued to a terminal "failed" so no ticket is ever left at "queued".
+        # Skipped on cancel — the user stopped intentionally.
+        if not control.cancelled:
+            while True:
+                try:
+                    tid = pending.get_nowait()
+                except queue.Empty:
+                    break
+                cb.on_log("error",
+                    f"#{tid}: not processed (all workers stopped) — marked failed.")
+                _terminal(tid, "failed", "failed")
+
+    # Diagnostics: how many tickets needed at least one redispatch.
+    with stats_lock:
+        stats["retried"] = sum(1 for n in attempts.values() if n > 1)
+
+    # One consolidated signal when the whole run failed (e.g. bad credentials or the
+    # portal is down) instead of leaving the operator to infer it from per-ticket lines.
+    if total and stats["failed"] == total:
+        cb.on_log("error",
+            f"All {total} tickets failed — none scraped. "
+            f"Check credentials, network, and portal availability.")
+
     cb.on_finished(stats)
     return stats
-
-
-def _fetch_ticket(browser: Browser, base: str, tid: str, cb) -> dict | str | None | object:
-    """Fetch one ticket. Returns:
-    - dict on success
-    - "not_found" if the portal says the ticket doesn't exist
-    - _SESSION_EXPIRED sentinel if we need to re-login
-    - None on non-recoverable error
-    """
-    detail_url     = f"{base}/edit_bug.aspx?id={tid}"
-    resolution_url = f"{base}/Resolution.aspx?bugid={tid}"
-
-    for attempt in range(1, 4):
-        try:
-            browser.navigate(detail_url)
-            html = browser.get_content()
-
-            if _is_logged_out(html):
-                return _SESSION_EXPIRED
-
-            if is_not_found(html, tid):
-                cb.on_log("info", f"[NOT FOUND] #{tid}")
-                return "not_found"
-
-            data = parse_ticket_detail(html, tid, base)
-            if not data:
-                cb.on_log("warning", f"#{tid}: parser returned empty — skipping.")
-                return None
-
-            # Resolution page — only fetched when the action bar shows "Resolution(filled)".
-            # Confirmed 2026-06-09: <li id="resolution"> text is "Resolution(filled)"
-            # when present, plain "Resolution" when not. Skipping saves one page load
-            # per ticket that has no resolution.
-            if "resolution(filled)" in html.lower():
-                try:
-                    browser.navigate(resolution_url)
-                    res_html = browser.get_content()
-                    resolution = parse_resolution(res_html)
-                    if resolution:
-                        data["resolution"] = resolution
-                except Exception as res_exc:
-                    cb.on_log("warning", f"#{tid}: resolution fetch error: {res_exc}")
-
-            return data
-
-        except Exception as exc:
-            if _is_browser_dead(exc):
-                cb.on_log("warning",
-                    f"#{tid}: browser died — restarting (attempt {attempt}/3)...")
-                try:
-                    browser.restart()
-                    cb.on_log("info", f"#{tid}: browser restarted.")
-                except Exception as restart_exc:
-                    cb.on_log("error", f"#{tid}: restart failed: {restart_exc}")
-                    return None
-            else:
-                cb.on_log("warning", f"#{tid}: attempt {attempt}/3 failed: {exc}")
-                if attempt == 3:
-                    return None
-                time.sleep(2 ** attempt)
-
-    return None

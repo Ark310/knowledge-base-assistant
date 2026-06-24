@@ -1,345 +1,288 @@
-# scraper/parsers/ticket_parser.py
-"""Parse ticket detail and resolution pages from support.contoso.example.
+"""Parse ticket detail and resolution pages from portal.contoso.example.
 
-Ticket detail:  {portal}/edit_bug.aspx?id={ticket_id}
-Resolution:     {portal}/Resolution.aspx?bugid={ticket_id}
+The support portal is a JS SPA whose API is end-to-end encrypted.
+All parsing operates on the rendered DOM only — no network, no browser.
 
-Field labels confirmed from live portal JS inspection 2026-06-09.
-Comments/emails confirmed from live DOM inspection 2026-06-09:
-  - Each comment/email row has exactly 2 direct <table> children in cells[0]
-  - table[0] = metadata header, table[1] = body text
-  - Metadata-only rows (IMG + SPAN.pst) are skipped
-Tags watermark: server HTML renders id="tags" input with value="tags" as a
-  placeholder that JS clears on load — BeautifulSoup sees value="tags", so
-  we skip inputs whose value equals their own id (watermark detection).
-Created-by: "Created by X on DATE" text is in cells[0] (label), not cells[1].
+Ticket detail:  {portal}/tickets/{ticket_id}/edit
+Resolution:     Resolve sub-view (same URL, different rendered content)
+Files:          Files sub-view
+
+Selectors confirmed against synthetic fixtures 2026-06-22.
 """
 from __future__ import annotations
+
 import re
 from datetime import datetime
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Tag
 
 
-def _clean(text: str | None) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()
+def _soup(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html or "", "lxml")
 
 
-# ── Label → field-name map ────────────────────────────────────────────────────
-# Lowercase, colon-stripped label text → output key.
-# More-specific entries MUST come before shorter substrings they contain.
-# NOTE: "created by" is NOT here — it is extracted from the label text itself
-#       via _extract_created_by() because the value cell holds UI widgets.
-_LABEL_MAP: list[tuple[str, str]] = [
-    # Title / description
-    ("ticket id",                          "title"),
-    # Environment details
-    ("fx client server details",           "environment_details"),
-    ("fxclientserverdetails",              "environment_details"),
-    ("fx client server detail",            "environment_details"),
-    ("environment",                        "environment_details"),
-    # Status variants — more specific first
-    ("total status",                       "total_status"),
-    ("scope status",                       "scope_status"),
-    ("status",                             "status"),
-    # Assignee variants — more specific first
-    ("sqa assign to",                      "sqa_assignee"),
-    ("assigned to",                        "assignee"),
-    ("assignee",                           "assignee"),
-    ("csqa owner",                         "csqa_owner"),
-    # QA signoffs
-    ("site1 qa signoff",                     "site1_qa_signoff"),
-    ("site2 qa signoff",                     "site2_qa_signoff"),
-    # Hours — estimates before actuals (more specific)
-    ("dev estimate hrs",                   "dev_estimate_hrs"),
-    ("qa estimate hrs",                    "qa_estimate_hrs"),
-    ("dev actual hrs",                     "dev_actual_hrs"),
-    ("qa actual hrs",                      "qa_actual_hrs"),
-    ("csqa actual hrs",                    "csqa_actual_hrs"),
-    ("other actual hrs",                   "other_actual_hrs"),
-    # Dates
-    ("estimate start date",                "estimate_start_date"),
-    ("estimate dev end date",              "estimate_dev_end_date"),
-    ("estimate qa start date",             "estimate_qa_start_date"),
-    ("estimated qa completion date",       "estimated_qa_completion_date"),
-    ("estimated client delivery date",     "estimated_client_delivery_date"),
-    ("internal target date",               "internal_target_date"),
-    # Tracking
-    ("tfs id",                             "tfs_id"),
-    ("delay count",                        "delay_count"),
-    ("delay days",                         "delay_days"),
-    ("is this ticket parked",              "is_parked"),
-    ("release ver",                        "release_ver"),
-    ("awaiting_production_deployment",     "awaiting_production_deployment"),
-    # Core fields confirmed from live portal
-    ("project",                            "product"),
-    ("organization",                       "organization"),
-    ("organisation",                       "organization"),
-    ("category",                           "category"),
-    ("priority",                           "priority"),
-    ("severity",                           "severity"),
-    ("module",                             "module"),
-    ("sprint",                             "sprint"),
-    ("tags",                               "tags"),
-    # Misc
-    ("scope note",                         "scope_note"),
-    ("type",                               "ticket_type"),
-    ("deployment",                         "deployment"),
-    # Fallback alternate label forms
-    ("td client server",                  "product"),
-]
+def _clean(t) -> str:
+    return re.sub(r"\s+", " ", t or "").strip()
 
-# Values that mean "nothing selected" — skip them
-_EMPTY_VALUES = {
-    "", "-", "—", "n/a", "[not selected]", "-- select --",
-    "none", "select...", "select one",
+
+_LABEL_MAP: dict[str, str] = {
+    "organization": "organization",
+    "project": "product",
+    "priority": "priority",
+    "category": "category",
+    "severity": "severity",
+    "status": "status",
+    "assigned to": "assignee",
+    "csqa owner": "csqa_owner",
 }
 
-# Regex to parse the "Created by X on DATE" label text
-_CREATED_BY_RE = re.compile(
-    r"created\s+by\s+(\S+)\s+on\s+([\d-]+\s+[\d:]+\s+(?:AM|PM))",
-    re.IGNORECASE,
-)
-
-# Regex to parse comment/email metadata header
-_COMMENT_HDR_RE = re.compile(
-    r"^comment\s+(\d+)\s+posted\s+by\s+(\S+)\s+on\s+([\d-]+\s+[\d:]+\s+(?:AM|PM))",
-    re.IGNORECASE,
-)
-_EMAIL_HDR_RE = re.compile(
-    r"^email\s+(\d+)\s+sent\s+to\s+(\S+)\s+by\s+(\S+)\s+on\s+([\d-]+\s+[\d:]+\s+(?:AM|PM))",
-    re.IGNORECASE,
-)
+_TICKET_NO_RE = re.compile(r"Ticket\s*#\s*(\d+)", re.I)
+_CREATED_RE = re.compile(r"Created\s+(\d{2}/\d{2}/\d{4})\s+by\s+(\S+)", re.I)
+# The header text is "comment {id} posted by " — the author name is a SEPARATE
+# <a> link that follows (confirmed live 2026-06-23), so we capture only the id here.
+_COMMENT_HDR_RE = re.compile(r"comment\s+(\d+)\s+posted by", re.I)
+_DATE_RE = re.compile(r"([A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*[AP]M)")
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+def is_not_found(html: str, ticket_id: str = "") -> bool:
+    """True when the portal page is NOT a ticket detail (redirected to /bugs list)."""
+    soup = _soup(html)
+    if soup.select_one("button.floating-dropdown-btn"):
+        return False
+    return not _TICKET_NO_RE.search(soup.get_text(" ", strip=True))
 
-def is_not_found(html: str, ticket_id: str) -> bool:
-    """True when the portal says this ticket does not exist."""
-    lower = html.lower()
-    return (
-        f"ticket not found: {ticket_id}" in lower
-        or ("ticket not found" in lower and ticket_id in html)
-    )
+
+def parse_ticket_fields(html: str) -> dict:
+    """Extract metadata fields, ticket id, title, created-at/by, and checkbox state."""
+    soup = _soup(html)
+    out: dict = {}
+
+    for btn in soup.select("button.floating-dropdown-btn"):
+        lab = btn.select_one(".floating-dropdown-label")
+        val = btn.select_one(".floating-dropdown-value")
+        if not lab or not val:
+            continue
+        # Strip trailing asterisk (the required-field star is a child span)
+        label_text = _clean(lab.get_text()).rstrip("*").strip().lower()
+        key = _LABEL_MAP.get(label_text)
+        if not key or key in out:
+            continue
+        v = _clean(val.get_text())
+        if v:
+            out[key] = v
+
+    full = soup.get_text(" ", strip=True)
+
+    m = _TICKET_NO_RE.search(full)
+    if m:
+        out["ticket_id"] = m.group(1)
+
+    if soup.title and soup.title.string:
+        mt = re.match(r"Ticket ID \d+ -\s*(.+)$", _clean(soup.title.string))
+        if mt:
+            out["title"] = mt.group(1).strip()
+
+    mc = _CREATED_RE.search(full)
+    if mc:
+        out["created_at"] = mc.group(1)
+        out["created_by"] = mc.group(2)
+
+    chk = soup.find("input", attrs={"type": "checkbox"})
+    out["awaiting_production_deployment"] = bool(chk and chk.has_attr("checked"))
+
+    return out
+
+
+def _is_download_control(el: Tag, icon_only: bool = False) -> bool:
+    """True for a Download affordance — a button/anchor whose text OR title is 'Download'.
+
+    Confirmed live 2026-06-23: the files panel + resolution file use an ICON button with
+    title="Download" (empty text, value wrapped in literal quotes); comment attachments
+    use a text "Download" button. `icon_only=True` matches ONLY the title/icon variant —
+    used by parse_resolution so a comment text-"Download" rendered alongside the resolution
+    can never be mis-attributed as a resolution file.
+    """
+    if not isinstance(el, Tag) or el.name not in ("button", "a"):
+        return False
+    title_match = (el.get("title") or "").strip().strip('"').strip().lower() == "download"
+    if icon_only:
+        return title_match
+    return title_match or _clean(el.get_text()).lower() == "download"
+
+
+def _file_card(el: Tag) -> Tag | None:
+    """Nearest ancestor div that looks like a file/attachment card (rounded-lg)."""
+    return el.find_parent("div", class_=lambda c: bool(c) and "rounded-lg" in c)
+
+
+def _filename_text(scope: Tag | None) -> str:
+    """Best-effort filename text inside a file card (the break-words/text-sm line)."""
+    if scope is None:
+        return ""
+    for sel in ("p.break-words", "p.text-sm", "h4", ".filename"):
+        e = scope.select_one(sel)
+        if e and _clean(e.get_text()):
+            return _clean(e.get_text())
+    mn = scope.select_one("div.min-w-0")
+    return _clean(mn.get_text()) if mn else ""
+
+
+def _data_images(scope: Tag | None) -> list[dict]:
+    """Extract inline base64 images (`<img src="data:...;base64,...">`) from a comment body.
+
+    Confirmed live 2026-06-23: comment screenshots embed as data-URI <img> inside
+    div.comment-html-content (~230KB each). Returns [{mime, data}] — raw base64; the
+    writer decodes it to a file so the base64 never lands in the JSON.
+    """
+    out = []
+    if scope is None:
+        return out
+    for im in scope.find_all("img"):
+        src = im.get("src", "")
+        if src.startswith("data:") and ";base64," in src:
+            try:
+                meta, b64 = src.split(",", 1)
+                mime = meta.split(":", 1)[1].split(";", 1)[0]
+                out.append({"mime": mime, "data": b64})
+            except (ValueError, IndexError):
+                pass
+    return out
+
+
+def _attachments_in(scope: Tag, icon_only: bool = False) -> list[dict]:
+    """Find Download affordances inside *scope* and return their filenames."""
+    out = []
+    for b in scope.find_all(["button", "a"]):
+        if not _is_download_control(b, icon_only):
+            continue
+        holder = _file_card(b) or b.find_parent("div", class_="mt-3") or scope
+        out.append({"label": _filename_text(holder)})
+    return out
+
+
+# A comment card is the nearest rounded-lg/border/bg-white ancestor of its header.
+_COMMENT_CARD_CLASSES = {"rounded-lg", "border", "bg-white"}
+
+
+def _climb_to_card(node) -> Tag | None:
+    """Climb to the nearest ancestor div carrying all of _COMMENT_CARD_CLASSES.
+
+    Done by walking `.parent` and reading `get('class')` (the LIST) — NOT via a
+    `class_=` lambda, because BeautifulSoup hands a class filter function the
+    space-joined STRING, which silently breaks a multi-class subset test.
+    """
+    p = node if isinstance(node, Tag) else node.parent
+    while isinstance(p, Tag):
+        if _COMMENT_CARD_CLASSES <= set(p.get("class") or []):
+            return p
+        p = p.parent
+    return None
+
+
+def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
+    """Each comment is a `div.(p-2 sm:p-4) rounded-lg border bg-white` holding a
+    "comment N posted by " header. Anchor on the header text, climb to that card."""
+    cards: list[Tag] = []
+    seen: set[int] = set()
+    for s in soup.find_all(string=_COMMENT_HDR_RE):
+        card = _climb_to_card(s.parent)
+        if card is not None and id(card) not in seen:
+            seen.add(id(card))
+            cards.append(card)
+    return cards
+
+
+def parse_comments(html: str) -> list[dict]:
+    """Extract all comment cards from the ticket detail page."""
+    soup = _soup(html)
+    comments = []
+    for card in _comment_cards(soup):
+        hsn = card.find(string=_COMMENT_HDR_RE)
+        if hsn is None:
+            continue
+        cid = _COMMENT_HDR_RE.search(hsn).group(1)
+
+        # Author is the <a> link that follows "posted by " (the real DOM splits the
+        # name out of the header span). Constrain it to this card.
+        a = hsn.find_next("a")
+        author = _clean(a.get_text()) if (a is not None and card in a.parents) else ""
+
+        # Body is the rendered comment HTML block (NOT the header/meta rows).
+        body_el = card.select_one("div.comment-html-content") or card.select_one("div.max-w-none")
+        if body_el is not None:
+            body = "\n".join(ln.strip() for ln in body_el.get_text("\n").splitlines() if ln.strip())
+        else:
+            body = ""
+
+        text = card.get_text(" ", strip=True)
+        dm = _DATE_RE.search(text)
+        # internal=True only when an exact-text "Internal" badge exists in the card —
+        # NOT when body prose happens to contain the word "internal".
+        internal = any(
+            _clean(el.get_text()) == "Internal"
+            for el in card.find_all(["span", "div"])
+        )
+        comments.append({
+            "id": cid,
+            "author": author,
+            "date": dm.group(1) if dm else "",
+            "internal": internal,
+            "body": body,
+            "attachments": _attachments_in(card),
+            "images": _data_images(body_el),
+        })
+    return comments
+
+
+def parse_resolution(html: str) -> dict:
+    """Extract resolution text + attachments from the Resolve sub-view.
+
+    Confirmed live 2026-06-23: scoped to div.resolution-container; the rendered
+    resolution text is div.post-content (NOT div.ql-editor — that is the empty edit
+    form). Attachments are Download affordances within the panel.
+    """
+    soup = _soup(html)
+    region = soup.select_one("div.resolution-container")
+    if region is None:
+        return {"text": "", "attachments": []}
+    content = region.select_one("div.post-content")
+    text = _clean(content.get_text(" ")) if content else ""
+    # icon_only: the resolution file is an icon button[title="Download"]; never count a
+    # comment's text-"Download" that may be rendered alongside the resolution panel.
+    return {"text": text, "attachments": _attachments_in(region, icon_only=True)}
+
+
+def parse_files(html: str) -> list[dict]:
+    """Extract the files panel's entries from the Files sub-view.
+
+    Confirmed live 2026-06-23: each file is a card with the filename in a
+    p.break-words/p.text-sm and an ICON Download button (title='Download'). We target
+    the icon downloads specifically so we capture the panel's authoritative aggregated
+    list — not the comment text-Download buttons rendered alongside.
+    """
+    soup = _soup(html)
+    files = []
+    for b in soup.find_all("button"):
+        if (b.get("title") or "").strip().strip('"').strip().lower() != "download":
+            continue
+        label = _filename_text(_file_card(b))
+        if label:
+            files.append({"label": label})
+    return files
 
 
 def parse_ticket_detail(html: str, ticket_id: str, portal_url: str) -> dict:
-    """Extract all available fields from edit_bug.aspx.
+    """Orchestrate field + comment extraction into a single ticket dict.
 
-    Returns {} if ticket does not exist or parsing fails entirely.
+    Returns {} when the page is not a ticket detail (not-found redirect).
     """
     if is_not_found(html, ticket_id):
         return {}
 
-    soup = BeautifulSoup(html, "lxml")
-    fields: dict = {}
-
-    # Walk every <tr>; treat first <td> as label, second as value
-    for row in soup.find_all("tr"):
-        cells = [c for c in row.find_all("td", recursive=False) if isinstance(c, Tag)]
-        if len(cells) < 2:
-            continue
-
-        raw_label = _clean(cells[0].get_text()).rstrip(":").lower()
-        raw_value = _get_cell_value(cells[1])
-
-        if not raw_label or not raw_value or raw_value.lower() in _EMPTY_VALUES:
-            continue
-
-        for pattern, fname in _LABEL_MAP:
-            if pattern in raw_label and fname not in fields:
-                fields[fname] = raw_value
-                break
-
-    # Created-by — in label text, NOT in value cell
-    _extract_created_by(soup, fields)
-
-    # Comments and emails — structural extraction
-    fields["comments"] = _extract_comments(soup)
-
+    data = parse_ticket_fields(html)
+    data["ticket_id"] = data.get("ticket_id") or ticket_id
+    data["comments"] = parse_comments(html)
     base = portal_url.rstrip("/")
-    fields.update({
-        "ticket_id":      ticket_id,
-        "url":            f"{base}/edit_bug.aspx?id={ticket_id}",
-        "resolution_url": f"{base}/Resolution.aspx?bugid={ticket_id}",
-        "scraped_at":     datetime.now().isoformat(),
-    })
-    return fields
-
-
-def parse_resolution(html: str) -> str:
-    """Extract resolution text from Resolution.aspx.
-
-    Returns '' if absent, empty, or not found.
-    """
-    if not html:
-        return ""
-    soup = BeautifulSoup(html, "lxml")
-    if "ticket not found" in soup.get_text().lower():
-        return ""
-
-    # Primary: confirmed from portal HTML inspection
-    area = soup.find("textarea", id="txtDescription")
-    if area:
-        return _clean(area.get_text())
-
-    # Fallback: any textarea inside resolutionForm
-    form = soup.find("form", id="resolutionForm") or soup.find(
-        "form", attrs={"name": "resolutionForm"}
-    )
-    if isinstance(form, Tag):
-        area = form.find("textarea")
-        if area:
-            return _clean(area.get_text())
-
-    return ""
-
-
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
-def _cell_data_text(cell: Tag) -> str:
-    """Text content of a cell with UI-chrome elements stripped.
-
-    Excludes text that is a direct child of <a> or <button> tags — these are
-    always navigation/action links (e.g. 'javascript:show_tags()' → 'tags',
-    'javascript:show_calendar(...)' → '[select]'), never field data.
-    """
-    parts = []
-    for node in cell.descendants:
-        if not isinstance(node, NavigableString):
-            continue
-        parent = node.parent
-        if isinstance(parent, Tag) and parent.name in ("a", "button", "script", "style"):
-            continue
-        parts.append(str(node))
-    return re.sub(r"\s+", " ", "".join(parts)).strip()
-
-
-def _get_cell_value(cell: Tag) -> str:
-    """Return the meaningful value from a table cell.
-
-    Priority: <select> selected option → <input> value attr → text content.
-
-    Watermark detection: skip <input> values that equal the input's own id
-    (the portal renders value="tags" on the tags input as a placeholder; JS
-    clears it at runtime but BeautifulSoup sees the server-rendered HTML).
-    """
-    # <select> dropdown — get the selected option's display text
-    select = cell.find("select")
-    if isinstance(select, Tag):
-        selected_opt = select.find("option", selected=True)
-        if selected_opt:
-            t = _clean(selected_opt.get_text())
-            if t and t.lower() not in _EMPTY_VALUES:
-                return t
-        for opt in select.find_all("option"):
-            t = _clean(opt.get_text())
-            if t and t.lower() not in _EMPTY_VALUES:
-                return t
-
-    # <input type="text|number"> — get value attribute
-    for inp in cell.find_all("input"):
-        itype = (inp.get("type") or "text").lower()
-        if itype in ("text", "number", ""):
-            val = _clean(inp.get("value", ""))
-            # Skip watermark: value equals the input's own id or name
-            inp_id   = (inp.get("id")   or "").lower()
-            inp_name = (inp.get("name") or "").lower()
-            if val.lower() in (inp_id, inp_name) and val:
-                continue
-            if val and val.lower() not in _EMPTY_VALUES:
-                return val
-
-    # Plain text — exclude UI control text (<a> and <button> descendants)
-    # Tags cell: <a href="javascript:show_tags()">tags</a>  → must not leak
-    # Date cells: <a href="javascript:show_calendar(...);">[select]</a> → must not leak
-    return _clean(_cell_data_text(cell))
-
-
-def _extract_created_by(soup: BeautifulSoup, fields: dict) -> None:
-    """Find 'Created by X on DATE' in label cells and populate fields."""
-    for row in soup.find_all("tr"):
-        cells = [c for c in row.find_all("td", recursive=False) if isinstance(c, Tag)]
-        if not cells:
-            continue
-        label_text = _clean(cells[0].get_text())
-        m = _CREATED_BY_RE.search(label_text)
-        if m:
-            fields.setdefault("created_by", m.group(1))
-            fields.setdefault("created_at", m.group(2).strip())
-            return
-
-
-def _extract_comments(soup: BeautifulSoup) -> list[dict]:
-    """Extract all comments and email threads from the ticket detail page.
-
-    Structure (confirmed 2026-06-09 via live DOM inspection):
-      Each comment/email has two rendered <tr> rows:
-        Row A (full): cells[0] has exactly 2 direct <table> children
-                      — table[0] = metadata header
-                      — table[1] = body text
-        Row B (meta): cells[0] has <img> + <span class="pst"> (skip)
-
-    We only process Row A rows (2 direct table children).
-    """
-    comments = []
-    for row in soup.find_all("tr"):
-        cells = [c for c in row.find_all("td", recursive=False) if isinstance(c, Tag)]
-        if not cells:
-            continue
-        cell0 = cells[0]
-
-        # Identify full comment rows: exactly 2 direct <table> children
-        direct_tables = [t for t in cell0.find_all("table", recursive=False)
-                         if isinstance(t, Tag)]
-        if len(direct_tables) != 2:
-            continue
-
-        header_text = _clean(direct_tables[0].get_text())
-        body_text   = _clean(direct_tables[1].get_text())
-
-        if not body_text:
-            continue
-
-        header_lower = header_text.lower()
-        if not (header_lower.startswith("comment ") or header_lower.startswith("email ")):
-            continue
-
-        entry: dict = {"body": body_text}
-
-        m_comment = _COMMENT_HDR_RE.match(header_text)
-        m_email   = _EMAIL_HDR_RE.match(header_text)
-
-        if m_comment:
-            entry["type"]   = "comment"
-            entry["id"]     = m_comment.group(1)
-            entry["author"] = m_comment.group(2)
-            entry["date"]   = m_comment.group(3).strip()
-        elif m_email:
-            entry["type"]   = "email"
-            entry["id"]     = m_email.group(1)
-            entry["to"]     = m_email.group(2)
-            entry["author"] = m_email.group(3)
-            entry["date"]   = m_email.group(4).strip()
-        else:
-            entry["type"]   = "unknown"
-            entry["header"] = header_text
-
-        # Inline base64 images embedded in comment body (data:mime/type;base64,...)
-        # Confirmed 2026-06-09: portal embeds screenshots directly in <span class="cmt_text">
-        attachment_images = []
-        for img_tag in direct_tables[1].find_all("img"):
-            src = img_tag.get("src", "")
-            if src.startswith("data:"):
-                try:
-                    meta, b64_data = src.split(",", 1)
-                    mime = meta.split(":")[1].split(";")[0]
-                    attachment_images.append({"mime": mime, "data": b64_data})
-                except (ValueError, IndexError):
-                    pass
-        if attachment_images:
-            entry["attachment_images"] = attachment_images
-
-        comments.append(entry)
-
-    return comments
+    data["url"] = f"{base}/tickets/{ticket_id}/edit"
+    data["scraped_at"] = datetime.now().isoformat()
+    return data

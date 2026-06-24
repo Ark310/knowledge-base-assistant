@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- SYNTHETIC fixture — Files sub-view (real structure confirmed live 2026-06-23).
+     Each file is a rounded-lg card: filename in p.text-sm.break-words, download is an
+     ICON button title='"Download"' (literal quotes, empty text). Two files. No PII.
+     (The comment list is also rendered on this view with text "Download" buttons; the
+      parser targets the icon title='Download' buttons so it captures only the panel.) -->
+<html lang="en">
+<head><title>Ticket ID 76511 - Northwind Trading - Org configuration and scripts</title></head>
+<body>
+<div class="app-root">
+  <nav><button class="sidebar-menu-btn">Ticket</button><button class="sidebar-menu-btn">Files 2</button></nav>
+
+  <div class="files-panel space-y-3">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+      <div class="flex items-start sm:items-center gap-3 min-w-0">
+        <svg class="lucide lucide-paperclip flex-shrink-0"></svg>
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-2"></div>
+          <p class="text-sm text-gray-600 break-words">error-log.txt</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-1 flex-shrink-0">
+        <button class="p-1.5 rounded-md text-blue-600" title='"Download"'><svg class="w-4 h-4"></svg></button>
+        <button class="p-1.5 rounded-md text-red-600" title='"Delete"'><svg class="w-4 h-4"></svg></button>
+      </div>
+    </div>
+
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+      <div class="flex items-start sm:items-center gap-3 min-w-0">
+        <svg class="lucide lucide-paperclip flex-shrink-0"></svg>
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-2"></div>
+          <p class="text-sm text-gray-600 break-words">resolution-script.sql</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-1 flex-shrink-0">
+        <button class="p-1.5 rounded-md text-blue-600" title='"Download"'><svg class="w-4 h-4"></svg></button>
+        <button class="p-1.5 rounded-md text-red-600" title='"Delete"'><svg class="w-4 h-4"></svg></button>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

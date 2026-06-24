@@ -1,0 +1,124 @@
+<!doctype html>
+<!--
+  SYNTHETIC fixture — structure-faithful to the REAL portal.contoso.example ticket detail
+  (classes/nesting confirmed live 2026-06-23 via clean base64 capture). Content is fake
+  (no PII). Key real structure:
+    * fields = button.floating-dropdown-btn (header_bg_* AND bg_* duplicate sets)
+      with span.floating-dropdown-label + span.floating-dropdown-value
+    * comments = div.space-y-2.sm:space-y-4 > div.p-2.sm:p-4.rounded-lg.border.bg-white cards
+      header text "comment {id} posted by " is in span.hidden; the AUTHOR is a SEPARATE
+      <a class="text-blue-600"> that follows; body is div.comment-html-content;
+      an "Internal" badge span marks internal-only comments.
+-->
+<html lang="en">
+<head><title>Ticket ID 76511 - Northwind Trading - Org configuration and scripts</title></head>
+<body>
+<div class="app-root">
+  <!-- sub-view nav (counts drive engine _subview_count) -->
+  <nav>
+    <button class="sidebar-menu-btn" title='"Ticket"'>Ticket</button>
+    <button class="sidebar-menu-btn" title='"Resolution"'>Resolve 1</button>
+    <button class="sidebar-menu-btn" title='"Attachment"'>Files 2</button>
+  </nav>
+
+  <!-- header -->
+  <div class="rounded-xl">
+    <div class="flex"><div class="flex-1"><div class="flex">
+      <span class="text-md">Ticket # 76511</span>
+      <span class="title">Org configuration and scripts</span>
+    </div>
+    <div class="created"><span>Created 06/08/2026 by jordan</span><span>(15 days ago)</span></div>
+    </div></div>
+  </div>
+
+  <!-- field dropdowns: header_bg_* set -->
+  <div class="grid">
+    <button class="floating-dropdown-btn" id="header_bg_org"><span class="floating-dropdown-label">Organization<span class="text-red-500">*</span></span><span class="floating-dropdown-value">Northwind Trading</span><svg></svg></button>
+    <button class="floating-dropdown-btn" id="header_bg_project"><span class="floating-dropdown-label">Project<span class="text-red-500">*</span></span><span class="floating-dropdown-value">TD Client Server</span><svg></svg></button>
+    <button class="floating-dropdown-btn" id="header_bg_priority"><span class="floating-dropdown-label">Priority<span class="text-red-500">*</span></span><span class="floating-dropdown-value">high</span><svg></svg></button>
+    <button class="floating-dropdown-btn" id="header_bg_category"><span class="floating-dropdown-label">Category<span class="text-red-500">*</span></span><span class="floating-dropdown-value">Data Script</span><svg></svg></button>
+    <button class="floating-dropdown-btn" id="header_bg_user_defined_attribute"><span class="floating-dropdown-label">Severity<span class="text-red-500">*</span></span><span class="floating-dropdown-value">SEV 4 (72-n-n)</span><svg></svg></button>
+    <button class="floating-dropdown-btn" id="header_bg_status"><span class="floating-dropdown-label">Status<span class="text-red-500">*</span></span><span class="floating-dropdown-value">18 - Internal CSQA UAT</span><svg></svg></button>
+    <button class="floating-dropdown-btn" id="header_bg_assigned_to_user"><span class="floating-dropdown-label">Assigned to<span class="text-red-500">*</span></span><span class="floating-dropdown-value">jordan.lee (Jordan Lee)</span><svg></svg></button>
+    <button class="floating-dropdown-btn" id="header_CSQA Owner"><span class="floating-dropdown-label">CSQA Owner<span class="text-red-500">*</span></span><span class="floating-dropdown-value">Alex Kim</span><svg></svg></button>
+    <label><input type="checkbox"> Awaiting Production Deployment</label>
+  </div>
+  <!-- duplicate bg_* set (parser must dedupe by label, first wins) -->
+  <div class="grid">
+    <button class="floating-dropdown-btn" id="bg_org"><span class="floating-dropdown-label">Organization<span class="text-red-500">*</span></span><span class="floating-dropdown-value">Northwind Trading</span></button>
+    <button class="floating-dropdown-btn" id="bg_status"><span class="floating-dropdown-label">Status<span class="text-red-500">*</span></span><span class="floating-dropdown-value">18 - Internal CSQA UAT</span></button>
+  </div>
+
+  <!-- comments -->
+  <h3>Comments (3)</h3>
+  <div class="space-y-2 sm:space-y-4">
+
+    <div class="p-2 sm:p-4 rounded-lg border bg-white">
+      <div class="flex gap-2 sm:gap-3">
+        <span class="relative flex shrink-0 rounded-full w-8 h-8"><span class="bg-blue-100 text-blue-700">JL</span></span>
+        <div class="flex-1 min-w-0">
+          <div class="flex flex-col md:flex-row md:justify-between gap-1 mb-1">
+            <div class="flex flex-wrap items-start gap-1 flex-1 min-w-0">
+              <span class="text-xs text-gray-600 italic flex items-center gap-1">
+                <span class="truncate"><span class="hidden sm:inline">comment 1466126 posted by </span><a class="text-blue-600" href="#">Jordan Lee</a></span>
+              </span>
+              <span class="badge">Internal</span>
+            </div>
+            <div class="flex items-center gap-1 flex-shrink-0"><span>Jun 22, 2026 at 12:57 PM, 2 hours ago</span></div>
+          </div>
+          <div class="max-w-none break-words select-text">
+            <div class="text-gray-700 text-sm comment-html-content">
+              <p>Revenue and expense bindings have been completed.</p>
+              <p>The remaining items are tracked against the entity web defaults form.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="p-2 sm:p-4 rounded-lg border bg-white">
+      <div class="flex gap-2 sm:gap-3">
+        <span class="relative flex shrink-0 rounded-full w-8 h-8"><span class="bg-blue-100 text-blue-700">AK</span></span>
+        <div class="flex-1 min-w-0">
+          <div class="flex flex-col md:flex-row md:justify-between gap-1 mb-1">
+            <div class="flex flex-wrap items-start gap-1 flex-1 min-w-0">
+              <span class="text-xs text-gray-600 italic flex items-center gap-1">
+                <span class="truncate"><span class="hidden sm:inline">comment 1461019 posted by </span><a class="text-blue-600" href="#">Alex Kim</a></span>
+              </span>
+            </div>
+            <div class="flex items-center gap-1 flex-shrink-0"><span>Jun 19, 2026 at 5:34 PM, 3 days ago</span></div>
+          </div>
+          <div class="max-w-none break-words select-text">
+            <div class="text-gray-700 text-sm comment-html-content">
+              <p>Revenue and expense bindings are missing for the destination org. This is an internal lookup issue.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="p-2 sm:p-4 rounded-lg border bg-white">
+      <div class="flex gap-2 sm:gap-3">
+        <span class="relative flex shrink-0 rounded-full w-8 h-8"><span class="bg-blue-100 text-blue-700">JL</span></span>
+        <div class="flex-1 min-w-0">
+          <div class="flex flex-col md:flex-row md:justify-between gap-1 mb-1">
+            <div class="flex flex-wrap items-start gap-1 flex-1 min-w-0">
+              <span class="text-xs text-gray-600 italic flex items-center gap-1">
+                <span class="truncate"><span class="hidden sm:inline">comment 1460500 posted by </span><a class="text-blue-600" href="#">Jordan Lee</a></span>
+              </span>
+            </div>
+            <div class="flex items-center gap-1 flex-shrink-0"><span>Jun 18, 2026 at 9:10 AM, 4 days ago</span></div>
+          </div>
+          <div class="max-w-none break-words select-text">
+            <div class="text-gray-700 text-sm comment-html-content">
+              <p>Attaching the export that reproduces the issue.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

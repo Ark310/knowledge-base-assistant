@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from scraper.kb_config import (
-    KB_SPACES, KB_SPACES_BY_KEY, KB_ARTICLES_STATE_FILE, KB_LIBRARY_BASE,
+    KB_SPACES, KB_SPACES_BY_KEY, KB_PRODUCT_GROUPS, KB_ARTICLES_STATE_FILE, KB_LIBRARY_BASE,
 )
 from scraper.config import REPORT_FILE
 from scraper.core import Browser, StateTracker
@@ -25,9 +25,11 @@ class KBEngine:
         self,
         callbacks: EngineCallbacks | None = None,
         cancel_token: CancellationToken | None = None,
+        output_base: Path | None = None,
     ):
         self.cb = callbacks or EngineCallbacks()
         self.cancel = cancel_token or CancellationToken()
+        self.output_base = Path(output_base) if output_base else KB_LIBRARY_BASE
 
     def validate(self) -> bool:
         self.cb.on_started("validate_kb")
@@ -54,8 +56,8 @@ class KBEngine:
     def rebuild_indexes(self) -> None:
         self.cb.on_started("rebuild_kb_indexes")
         self.cb.on_log("info", "Rebuilding KB indexes...")
-        generate_kb_index(KB_LIBRARY_BASE, KB_SPACES)
-        self.cb.on_log("info", f"KB indexes written to {KB_LIBRARY_BASE}")
+        generate_kb_index(self.output_base, KB_SPACES)
+        self.cb.on_log("info", f"KB indexes written to {self.output_base}")
         self.cb.on_finished("rebuild_kb_indexes", {})
 
     def scrape_space(self, space_key: str, force: bool = False) -> dict:
@@ -69,6 +71,7 @@ class KBEngine:
         self.cb.on_started("scrape_kb_all")
         report: dict = {}
         for cfg in KB_SPACES:
+            self.cancel.wait_if_paused()
             if self.cancel.is_cancelled():
                 self.cb.on_log("warning", "Cancelled — stopping scrape_kb_all")
                 break
@@ -82,6 +85,27 @@ class KBEngine:
             self.cb.on_log("error", f"KB index rebuild failed: {exc}")
         self._write_report(report)
         self.cb.on_finished("scrape_kb_all", report)
+        return report
+
+    def scrape_family(self, product_label: str, force: bool = False) -> dict:
+        """Scrape only the spaces belonging to one KB product family."""
+        self.cb.on_started("scrape_kb_family")
+        report: dict = {}
+        for cfg in KB_PRODUCT_GROUPS[product_label]:
+            self.cancel.wait_if_paused()
+            if self.cancel.is_cancelled():
+                self.cb.on_log("warning", "Cancelled — stopping scrape_kb_family")
+                break
+            stats = self._scrape_one(
+                cfg["space_key"], force, with_index_rebuild=False, action_label=None
+            )
+            report[cfg["space_key"]] = stats
+        try:
+            self.rebuild_indexes()
+        except Exception as exc:
+            self.cb.on_log("error", f"KB index rebuild failed: {exc}")
+        self._write_report(report)
+        self.cb.on_finished("scrape_kb_family", report)
         return report
 
     def _scrape_one(
@@ -113,10 +137,11 @@ class KBEngine:
         self.cb.on_status(space_key, stats)
 
         total = len(articles)
-        screenshot_dir = KB_LIBRARY_BASE / cfg["product"] / cfg["lib_folder"] / "screenshots"
+        screenshot_dir = self.output_base / cfg["product"] / cfg["lib_folder"] / "screenshots"
 
         with Browser() as browser:
             for idx, art in enumerate(articles, start=1):
+                self.cancel.wait_if_paused()
                 if self.cancel.is_cancelled():
                     self.cb.on_log("warning", f"{space_key}: cancelled before '{art['title']}'")
                     break
@@ -143,7 +168,7 @@ class KBEngine:
                         url=url,
                         screenshot_path=shot,
                     )
-                    save_article(data, KB_LIBRARY_BASE, cfg)
+                    save_article(data, self.output_base, cfg)
                     tracker.mark_scraped(space_key, slug, url)
                     stats["new"] += 1
                     self.cb.on_log("info", f"[OK] {title}")

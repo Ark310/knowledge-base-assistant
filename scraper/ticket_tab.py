@@ -1,14 +1,15 @@
 # scraper/ticket_tab.py
-"""Tab 3 — Ticket Portal Scraper (v3.1).
+"""Tab 3 — Ticket Portal Scraper (v4).
 
-Lets the user enter ticket IDs (single / comma-list / N-M range),
-portal URL, username, and masked password, then scrapes each ticket
-from support.contoso.example and saves JSON+MD to library/tickets/.
+Lets the user enter ticket IDs (single / comma-list / N-M range) and scrapes
+each ticket from the configured portal, saving JSON+MD to the output folder
+set in app_settings.
 
 Security:
   - Password is stored only in OS keyring (Windows Credential Manager).
-  - Password is never written to any file, never emitted to any log.
-  - QLineEdit.Password echo mode masks the field at all times.
+  - Password is never entered, stored, or logged in this tab.
+  - Credentials are read from ticket_settings + keyring at run time.
+  - If credentials are missing the user is directed to open Settings.
 """
 from __future__ import annotations
 
@@ -18,9 +19,10 @@ from datetime import datetime
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
-    QFrame,
+    QCheckBox,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -32,17 +34,16 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
-    QCheckBox,
-    QSizePolicy,
 )
 
+import scraper.app_settings as app_settings
 import scraper.ticket_settings as ts
+from scraper.control import RunControl
+from scraper.settings_dialog import SettingsDialog
 from scraper.ticket_engine import (
-    CancellationToken,
     TicketEngineCallbacks,
     parse_ticket_input,
     run_ticket_scrape,
-    TICKETS_DIR,
 )
 
 log = logging.getLogger("scraper")
@@ -68,19 +69,21 @@ class _TicketSignals(QObject):
     progress_sig = Signal(int, int)          # current, total
     ticket_sig   = Signal(str, str)          # ticket_id, status
     finished_sig = Signal(dict)              # report
+    meta_sig     = Signal(str, str, int)     # ticket_id, title, files_count
 
 
 class _TicketWorker(QThread):
-    def __init__(self, portal_url, username, password, ticket_ids, force, cancel,
-                 workers=1, parent=None):
+    def __init__(self, portal_url, username, password, ticket_ids, force,
+                 control, workers=4, output_dir=None, parent=None):
         super().__init__(parent)
         self._portal_url = portal_url
         self._username   = username
         self._password   = password   # held in memory only while thread is alive
         self._ticket_ids = ticket_ids
         self._force      = force
-        self._cancel     = cancel
+        self._control    = control
         self._workers    = workers
+        self._output_dir = output_dir
         self.signals     = _TicketSignals()
 
     def run(self):
@@ -89,6 +92,7 @@ class _TicketWorker(QThread):
             on_progress = lambda i, n:     self.signals.progress_sig.emit(i, n),
             on_ticket   = lambda tid, st:  self.signals.ticket_sig.emit(tid, st),
             on_finished = lambda rep:      self.signals.finished_sig.emit(rep),
+            on_ticket_meta = lambda tid, title, n: self.signals.meta_sig.emit(tid, title, n),
         )
         try:
             run_ticket_scrape(
@@ -97,9 +101,10 @@ class _TicketWorker(QThread):
                 password   = self._password,
                 ticket_ids = self._ticket_ids,
                 force      = self._force,
-                cancel     = self._cancel,
+                control    = self._control,
                 cb         = cb,
                 workers    = self._workers,
+                output_dir = self._output_dir,
             )
         except Exception as exc:
             log.exception("TicketWorker crashed")
@@ -119,11 +124,11 @@ class TicketTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker: _TicketWorker | None = None
-        self._cancel  = CancellationToken()
+        self._control = RunControl()
         self._ticket_rows: dict[str, int] = {}   # ticket_id -> table row
 
         self._build_ui()
-        self._load_saved_settings()
+        self._refresh_creds_label()
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -132,52 +137,29 @@ class TicketTab(QWidget):
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
-        outer.addWidget(self._build_credentials_box())
+        outer.addWidget(self._build_creds_status_row())
         outer.addWidget(self._build_ticket_input_box())
+        outer.addWidget(self._build_workers_row())
         outer.addWidget(self._build_controls_row())
         outer.addWidget(self._build_progress_row())
         outer.addWidget(self._build_results_section(), stretch=1)
 
-    def _build_credentials_box(self) -> QGroupBox:
-        box = QGroupBox("Portal Credentials")
-        g = QVBoxLayout(box)
+    def _build_creds_status_row(self) -> QWidget:
+        """Status line showing current credentials + Settings button (no inline entry)."""
+        w = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 0, 0, 0)
 
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Portal URL:"))
-        self.inp_url = QLineEdit()
-        self.inp_url.setPlaceholderText("https://support.contoso.example")
-        self.inp_url.setMinimumWidth(280)
-        row1.addWidget(self.inp_url, stretch=1)
-        g.addLayout(row1)
+        self.lbl_creds = QLabel("")
+        self.lbl_creds.setWordWrap(True)
 
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Username:"))
-        self.inp_user = QLineEdit()
-        self.inp_user.setPlaceholderText("user@contoso.example")
-        row2.addWidget(self.inp_user, stretch=1)
-        g.addLayout(row2)
+        self.btn_settings = QPushButton("⚙ Settings")
+        self.btn_settings.setToolTip("Open Settings to configure portal credentials and output folders.")
+        self.btn_settings.clicked.connect(self._open_settings)
 
-        row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Password:"))
-        self.inp_pass = QLineEdit()
-        self.inp_pass.setEchoMode(QLineEdit.Password)
-        self.inp_pass.setPlaceholderText("Password (stored in Windows Credential Manager)")
-        row3.addWidget(self.inp_pass, stretch=1)
-        g.addLayout(row3)
-
-        save_row = QHBoxLayout()
-        self.btn_save_creds = QPushButton("Save Credentials")
-        self.btn_save_creds.setToolTip(
-            "Saves URL+username to disk; password goes to Windows Credential Manager only."
-        )
-        self.btn_save_creds.clicked.connect(self._save_credentials)
-        self.lbl_keyring = QLabel("")
-        save_row.addWidget(self.btn_save_creds)
-        save_row.addWidget(self.lbl_keyring)
-        save_row.addStretch()
-        g.addLayout(save_row)
-
-        return box
+        row.addWidget(self.lbl_creds, stretch=1)
+        row.addWidget(self.btn_settings)
+        return w
 
     def _build_ticket_input_box(self) -> QGroupBox:
         box = QGroupBox("Tickets to Scrape")
@@ -201,51 +183,54 @@ class TicketTab(QWidget):
 
         return box
 
+    def _build_workers_row(self) -> QWidget:
+        """Prominent, clearly-labelled Workers 1–10 row — given its own line."""
+        w = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 4, 0, 4)
+
+        lbl = QLabel("Workers (1–10):")
+        lbl.setStyleSheet("font-weight: bold;")
+
+        self.spn_workers = QSpinBox()
+        self.spn_workers.setRange(1, 10)
+        self.spn_workers.setValue(4)
+        self.spn_workers.setMinimumWidth(64)
+        self.spn_workers.setToolTip(
+            "Number of parallel Chrome windows (1–10).\n"
+            "Each worker logs in independently. Use 2–4 for large batches."
+        )
+
+        lbl_hint = QLabel("parallel workers")
+        lbl_hint.setStyleSheet("color: #777;")
+
+        row.addWidget(lbl)
+        row.addWidget(self.spn_workers)
+        row.addWidget(lbl_hint)
+        row.addStretch()
+        return w
+
     def _build_controls_row(self) -> QWidget:
         w = QWidget()
-        v = QVBoxLayout(w)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(4)
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 0, 0, 0)
 
-        # ── Button / workers row ──────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(0, 0, 0, 0)
-
-        self.btn_start = QPushButton("Start Scrape")
-        self.btn_start.setStyleSheet(
-            "QPushButton { background: #1b5e20; color: white; font-weight: bold; "
-            "padding: 6px 18px; border-radius: 4px; } "
-            "QPushButton:disabled { background: #aaa; }"
-        )
+        self.btn_start = QPushButton("▶ Start Scrape")
+        self.btn_start.setObjectName("PrimaryButton")
         self.btn_start.clicked.connect(self._start)
+
+        self.btn_pause = QPushButton("⏸ Pause")
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.clicked.connect(self._toggle_pause)
 
         self.btn_stop = QPushButton("⏹ Stop")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._stop)
 
-        lbl_workers = QLabel("Workers:")
-        self.spn_workers = QSpinBox()
-        self.spn_workers.setRange(1, 4)
-        self.spn_workers.setValue(1)
-        self.spn_workers.setToolTip(
-            "Number of parallel Chrome windows (1–4).\n"
-            "Each worker logs in independently. Use 2–4 for large batches."
-        )
-        self.spn_workers.setFixedWidth(52)
-
-        btn_row.addWidget(self.btn_start)
-        btn_row.addWidget(self.btn_stop)
-        btn_row.addSpacing(20)
-        btn_row.addWidget(lbl_workers)
-        btn_row.addWidget(self.spn_workers)
-        btn_row.addStretch()
-        v.addLayout(btn_row)
-
-        # ── Output path label (separate line so it never crowds the spinner) ──
-        self.lbl_output = QLabel(f"Output: {TICKETS_DIR}")
-        self.lbl_output.setStyleSheet("color: #777; font-size: 10px;")
-        v.addWidget(self.lbl_output)
-
+        row.addWidget(self.btn_start)
+        row.addWidget(self.btn_pause)
+        row.addWidget(self.btn_stop)
+        row.addStretch()
         return w
 
     def _build_progress_row(self) -> QWidget:
@@ -266,11 +251,17 @@ class TicketTab(QWidget):
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
 
-        # Results table (top half)
+        # Results table (top half) — 4 columns: Ticket #, Status, Title, Files
         v.addWidget(QLabel("<b>Results</b>"))
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Ticket #", "Status", "Title"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Ticket #", "Status", "Title", "Files"])
+        hdr = self.table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        # Title column (2) stretches; others are sized to content
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
@@ -287,49 +278,24 @@ class TicketTab(QWidget):
 
         return w
 
-    # ── Settings persistence ──────────────────────────────────────────────────
+    # ── Credentials status ────────────────────────────────────────────────────
 
-    def _load_saved_settings(self):
+    def _refresh_creds_label(self):
+        """Update lbl_creds from ticket_settings (no password read — just URL+username)."""
         settings = ts.load()
-        self.inp_url.setText(settings.get("portal_url", "https://support.contoso.example"))
+        url      = settings.get("portal_url", "")
         username = settings.get("username", "")
-        self.inp_user.setText(username)
-
-        if username:
-            pwd = ts.load_password(username)
-            if pwd:
-                self.inp_pass.setText(pwd)
-                self.lbl_keyring.setText("✓ Password loaded from Credential Manager")
-                self.lbl_keyring.setStyleSheet("color: #2e7d32;")
-            else:
-                self.lbl_keyring.setText("No saved password — enter and save.")
-                self.lbl_keyring.setStyleSheet("color: #e65100;")
+        if url and username:
+            self.lbl_creds.setText(f"Portal: {url}  ·  signed in as {username}")
+            self.lbl_creds.setStyleSheet("color: #2e7d32;")
         else:
-            self.lbl_keyring.setText("")
+            self.lbl_creds.setText("Portal credentials not configured — open Settings")
+            self.lbl_creds.setStyleSheet("color: #e65100;")
 
-    def _save_credentials(self):
-        url      = self.inp_url.text().strip()
-        username = self.inp_user.text().strip()
-        password = self.inp_pass.text()
-
-        if not url or not username:
-            QMessageBox.warning(self, "Missing Fields", "Portal URL and username are required.")
-            return
-
-        ts.save(url, username)
-        self._emit_log("info", "Credentials saved (URL+username to disk).")
-
-        if password:
-            if ts.save_password(username, password):
-                self.lbl_keyring.setText("✓ Password saved to Credential Manager")
-                self.lbl_keyring.setStyleSheet("color: #2e7d32;")
-                self._emit_log("info", "Password stored in Windows Credential Manager.")
-            else:
-                self.lbl_keyring.setText("⚠ Keyring unavailable — re-enter each session")
-                self.lbl_keyring.setStyleSheet("color: #e65100;")
-                self._emit_log("warning", "Keyring unavailable; password was not persisted.")
-        else:
-            self._emit_log("warning", "No password entered — not saved.")
+    def _open_settings(self):
+        dlg = SettingsDialog(self)
+        dlg.exec()
+        self._refresh_creds_label()
 
     # ── Ticket input parsing ──────────────────────────────────────────────────
 
@@ -344,24 +310,22 @@ class TicketTab(QWidget):
             self._emit_log("warning", "A scrape is already running.")
             return
 
-        # Validate inputs
-        portal_url = self.inp_url.text().strip()
-        username   = self.inp_user.text().strip()
-        password   = self.inp_pass.text()
-        raw_ids    = self.inp_tickets.text().strip()
+        # Read credentials from settings + keyring at run time (never from tab fields)
+        settings   = ts.load()
+        portal_url = settings.get("portal_url", "").strip()
+        username   = settings.get("username", "").strip()
+        password   = ts.load_password(username) if username else ""
 
-        if not portal_url:
-            QMessageBox.warning(self, "Missing Field", "Please enter the portal URL.")
+        if not (portal_url and username and password):
+            QMessageBox.information(
+                self, "Portal Credentials Required",
+                "Configure portal credentials in Settings before starting a scrape.",
+            )
+            self._open_settings()
+            self._refresh_creds_label()
             return
-        if not username:
-            QMessageBox.warning(self, "Missing Field", "Please enter your username.")
-            return
-        if not password:
-            QMessageBox.warning(self, "Missing Field",
-                "Please enter your password.\n\n"
-                "If you saved it previously, it should be pre-filled. "
-                "Otherwise type it and click 'Save Credentials'.")
-            return
+
+        raw_ids = self.inp_tickets.text().strip()
         if not raw_ids:
             QMessageBox.warning(self, "Missing Field",
                 "Please enter at least one ticket number.")
@@ -373,7 +337,7 @@ class TicketTab(QWidget):
                 "Could not parse any ticket IDs from the input.")
             return
 
-        # Prepare table
+        # Prepare table rows
         self.table.setRowCount(0)
         self._ticket_rows.clear()
         for tid in ticket_ids:
@@ -383,29 +347,56 @@ class TicketTab(QWidget):
             item_status = QTableWidgetItem("Queued")
             item_status.setForeground(QColor("#616161"))
             self.table.setItem(row, 1, item_status)
-            self.table.setItem(row, 2, QTableWidgetItem(""))
+            self.table.setItem(row, 2, QTableWidgetItem(""))   # Title — filled by meta_sig
+            self.table.setItem(row, 3, QTableWidgetItem(""))   # Files — filled by meta_sig
             self._ticket_rows[tid] = row
 
-        self._cancel = CancellationToken()
-        force    = self.chk_force.isChecked()
-        workers  = self.spn_workers.value()
+        self._control    = RunControl()
+        force            = self.chk_force.isChecked()
+        workers          = self.spn_workers.value()
+        output_dir       = app_settings.tickets_dir()
 
-        self._worker = _TicketWorker(portal_url, username, password, ticket_ids, force, self._cancel,
-                                     workers=workers)
+        self._worker = _TicketWorker(
+            portal_url, username, password, ticket_ids, force,
+            control=self._control, workers=workers, output_dir=output_dir,
+        )
         self._worker.signals.log_sig.connect(self._emit_log)
         self._worker.signals.progress_sig.connect(self._on_progress)
         self._worker.signals.ticket_sig.connect(self._on_ticket_done)
         self._worker.signals.finished_sig.connect(self._on_finished)
+        self._worker.signals.meta_sig.connect(self._on_ticket_meta)
         self._worker.finished.connect(self._worker_thread_done)
 
         self._set_running(True)
         self._emit_log("info", f"--- Starting ticket scrape: {len(ticket_ids)} tickets ---")
         self._worker.start()
 
+    def _toggle_pause(self):
+        if self._control.paused:
+            self._control.resume()
+            self.btn_pause.setText("⏸ Pause")
+            self._emit_log("info", "Scrape resumed.")
+        else:
+            self._control.pause()
+            self.btn_pause.setText("▶ Resume")
+            self._emit_log("info", "Scrape paused — will stop after current ticket.")
+
     def _stop(self):
         if self._worker and self._worker.isRunning():
-            self._cancel.cancel()
+            self._control.cancel()
             self._emit_log("warning", "Stop requested — finishing current ticket then stopping.")
+
+    def shutdown(self) -> None:
+        """Cancel a running scrape and wait for the worker thread to exit.
+
+        Called by MainWindow.closeEvent — a child widget's own closeEvent does NOT fire
+        when the parent window closes. cancel() also releases a PAUSED worker blocked in
+        RunControl.wait_if_paused(), so the QThread can return instead of being destroyed
+        while still running.
+        """
+        if self._worker and self._worker.isRunning():
+            self._control.cancel()
+            self._worker.wait(15_000)
 
     # ── Slot handlers ─────────────────────────────────────────────────────────
 
@@ -425,7 +416,7 @@ class TicketTab(QWidget):
         cursor.insertText(line + "\n", fmt)
         self.log_pane.setTextCursor(cursor)
         self.log_pane.ensureCursorVisible()
-        getattr(log, level if level in ("debug","info","warning","error") else "info")(msg)
+        getattr(log, level if level in ("debug", "info", "warning", "error") else "info")(msg)
 
     @Slot(int, int)
     def _on_progress(self, current: int, total: int):
@@ -444,12 +435,21 @@ class TicketTab(QWidget):
         item.setForeground(QColor(color))
         self.table.setItem(row, 1, item)
 
+    @Slot(str, str, int)
+    def _on_ticket_meta(self, tid: str, title: str, files: int):
+        """Populate Title (col 2) and Files (col 3) for a completed ticket row."""
+        row = self._ticket_rows.get(tid)
+        if row is None:
+            return
+        self.table.setItem(row, 2, QTableWidgetItem(title))
+        self.table.setItem(row, 3, QTableWidgetItem(str(files)))
+
     @Slot(dict)
     def _on_finished(self, report: dict):
-        saved      = report.get("saved", 0)
-        skipped    = report.get("skipped", 0)
-        not_found  = report.get("not_found", 0)
-        failed     = report.get("failed", 0)
+        saved     = report.get("saved", 0)
+        skipped   = report.get("skipped", 0)
+        not_found = report.get("not_found", 0)
+        failed    = report.get("failed", 0)
         self._emit_log("info",
             f"--- Done: {saved} saved, {skipped} skipped, "
             f"{not_found} not found, {failed} failed ---"
@@ -465,10 +465,12 @@ class TicketTab(QWidget):
 
     def _set_running(self, running: bool):
         self.btn_start.setEnabled(not running)
+        self.btn_pause.setEnabled(running)
         self.btn_stop.setEnabled(running)
-        self.btn_save_creds.setEnabled(not running)
+        self.btn_settings.setEnabled(not running)
         self.spn_workers.setEnabled(not running)
-        self.inp_url.setReadOnly(running)
-        self.inp_user.setReadOnly(running)
-        self.inp_pass.setReadOnly(running)
         self.inp_tickets.setReadOnly(running)
+        self.chk_force.setEnabled(not running)
+        if not running:
+            # Reset pause button label for next run
+            self.btn_pause.setText("⏸ Pause")
