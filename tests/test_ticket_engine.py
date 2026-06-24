@@ -183,3 +183,23 @@ def test_all_workers_die_remaining_tickets_marked_failed(tmp_path):
     assert all(statuses.get(t) == "failed" for t in ids)
     assert len(rec["tickets"]) == len(ids)       # exactly one terminal status per ticket
     assert rep["failed"] == len(ids) and rep["saved"] == 0
+    assert rep["retried"] == 0
+
+
+def test_multi_worker_crash_is_redispatched_under_concurrency(tmp_path):
+    # 3 workers, 6 tickets; "A3" crashes once (whichever worker pulls it first) then
+    # succeeds on redispatch. The shared queue means another worker finishes it — under
+    # concurrency every ticket still reaches exactly one terminal "ok", none stranded.
+    factory, crashes = _crashing_factory(lambda tid, n: tid == "A3" and n == 0)
+    rec = {}
+    ids = ["A1", "A2", "A3", "A4", "A5", "A6"]
+    rep = te.run_ticket_scrape("https://portal.contoso.example", "u", "p", ids,
+                               force=True, cb=_cb(rec), workers=3,
+                               output_dir=tmp_path, portal_factory=factory)
+    statuses = dict(rec["tickets"])
+    assert set(statuses) == set(ids)
+    assert all(v == "ok" for v in statuses.values())
+    assert crashes["A3"] == 1                     # crashed once, redispatched, then ok
+    assert len(rec["tickets"]) == len(ids)        # finished-guard holds: one terminal per ticket
+    assert rep["saved"] == 6 and rep["failed"] == 0
+    assert rep["retried"] == 1                     # exactly the one redispatched ticket

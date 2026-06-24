@@ -262,6 +262,12 @@ def run_ticket_scrape(
                 except queue.Empty:
                     break
 
+                # Defensive: never re-fetch a ticket that already reached a terminal
+                # state (e.g. a redispatch that crossed paths with its own completion).
+                with stats_lock:
+                    if tid in finished:
+                        continue
+
                 if not force and tid in already_scraped:
                     cb.on_log("info", f"{prefix}[SKIP] #{tid} already scraped.")
                     _terminal(tid, "skipped", "skipped")
@@ -371,6 +377,17 @@ def run_ticket_scrape(
                 cb.on_log("error",
                     f"#{tid}: not processed (all workers stopped) — marked failed.")
                 _terminal(tid, "failed", "failed")
+
+    # Diagnostics: how many tickets needed at least one redispatch.
+    with stats_lock:
+        stats["retried"] = sum(1 for n in attempts.values() if n > 1)
+
+    # One consolidated signal when the whole run failed (e.g. bad credentials or the
+    # portal is down) instead of leaving the operator to infer it from per-ticket lines.
+    if total and stats["failed"] == total:
+        cb.on_log("error",
+            f"All {total} tickets failed — none scraped. "
+            f"Check credentials, network, and portal availability.")
 
     cb.on_finished(stats)
     return stats
