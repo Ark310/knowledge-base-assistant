@@ -18,3 +18,9 @@ def test_app_stylesheet_applies():
     from scraper import theme
     _app.setStyleSheet(theme.app_stylesheet())
     assert theme.PALETTE["brand"] in _app.styleSheet()
+
+def test_mainwindow_has_two_tabs():
+    from scraper.gui import MainWindow
+    win = MainWindow()
+    titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
+    assert titles == ["Tickets", "Knowledge Base"]
