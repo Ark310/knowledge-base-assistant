@@ -87,7 +87,16 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
+    hookspath=[], runtime_hooks=[],
+    excludes=[
+        # QtWidgets-only app — drop the heavy Qt modules we never import
+        # (QtWebEngine alone is ~150 MB; we scrape via Playwright's browser).
+        "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets",
+        "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DInput",
+        "PySide6.Qt3DLogic", "PySide6.Qt3DExtras", "PySide6.Qt3DAnimation",
+        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
+    ],
+    noarchive=False,
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=None)
 exe = EXE(
