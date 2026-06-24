@@ -25,9 +25,11 @@ class KBEngine:
         self,
         callbacks: EngineCallbacks | None = None,
         cancel_token: CancellationToken | None = None,
+        output_base: Path | None = None,
     ):
         self.cb = callbacks or EngineCallbacks()
         self.cancel = cancel_token or CancellationToken()
+        self.output_base = Path(output_base) if output_base else KB_LIBRARY_BASE
 
     def validate(self) -> bool:
         self.cb.on_started("validate_kb")
@@ -54,8 +56,8 @@ class KBEngine:
     def rebuild_indexes(self) -> None:
         self.cb.on_started("rebuild_kb_indexes")
         self.cb.on_log("info", "Rebuilding KB indexes...")
-        generate_kb_index(KB_LIBRARY_BASE, KB_SPACES)
-        self.cb.on_log("info", f"KB indexes written to {KB_LIBRARY_BASE}")
+        generate_kb_index(self.output_base, KB_SPACES)
+        self.cb.on_log("info", f"KB indexes written to {self.output_base}")
         self.cb.on_finished("rebuild_kb_indexes", {})
 
     def scrape_space(self, space_key: str, force: bool = False) -> dict:
@@ -69,6 +71,7 @@ class KBEngine:
         self.cb.on_started("scrape_kb_all")
         report: dict = {}
         for cfg in KB_SPACES:
+            self.cancel.wait_if_paused()
             if self.cancel.is_cancelled():
                 self.cb.on_log("warning", "Cancelled — stopping scrape_kb_all")
                 break
@@ -113,10 +116,11 @@ class KBEngine:
         self.cb.on_status(space_key, stats)
 
         total = len(articles)
-        screenshot_dir = KB_LIBRARY_BASE / cfg["product"] / cfg["lib_folder"] / "screenshots"
+        screenshot_dir = self.output_base / cfg["product"] / cfg["lib_folder"] / "screenshots"
 
         with Browser() as browser:
             for idx, art in enumerate(articles, start=1):
+                self.cancel.wait_if_paused()
                 if self.cancel.is_cancelled():
                     self.cb.on_log("warning", f"{space_key}: cancelled before '{art['title']}'")
                     break
@@ -143,7 +147,7 @@ class KBEngine:
                         url=url,
                         screenshot_path=shot,
                     )
-                    save_article(data, KB_LIBRARY_BASE, cfg)
+                    save_article(data, self.output_base, cfg)
                     tracker.mark_scraped(space_key, slug, url)
                     stats["new"] += 1
                     self.cb.on_log("info", f"[OK] {title}")

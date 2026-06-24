@@ -31,6 +31,9 @@ class RunControl:
     def resume(self) -> None:
         self._resume.set()
 
+    def is_cancelled(self) -> bool:   # back-compat alias for the v1/KB engines
+        return self._cancelled
+
     def wait_if_paused(self) -> None:
         while not self._resume.is_set() and not self._cancelled:
             self._resume.wait(0.2)
