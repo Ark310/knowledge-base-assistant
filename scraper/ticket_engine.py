@@ -11,6 +11,7 @@ passed to any shell command.
 from __future__ import annotations
 
 import json
+import queue
 import re
 import threading
 import logging
@@ -31,6 +32,10 @@ TICKET_STATE_FILE = STATE_DIR / "scraped_tickets.json"
 CancellationToken = RunControl  # back-compat for the (Phase-4) GUI import
 
 _SESSION_EXPIRED = object()   # sentinel
+
+# Resilience knobs for the shared-queue worker pool.
+MAX_TICKET_ATTEMPTS = 3   # one attempt + (N-1) redispatches before a ticket is failed
+MAX_WORKER_REBUILDS = 3   # browser rebuilds a single worker tolerates before it bows out
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
@@ -205,91 +210,167 @@ def run_ticket_scrape(
     stats = {"total": total, "saved": 0, "skipped": 0, "not_found": 0, "failed": 0}
 
     state_lock = threading.Lock()   # protects the scraped-tickets file
-    stats_lock = threading.Lock()   # protects stats dict + progress counter
+    stats_lock = threading.Lock()   # protects stats, progress, attempts, finished
     progress_ctr = [0]
 
-    def worker_fn(chunk: list[str], worker_idx: int) -> None:
+    # Shared work queue. Every worker pulls the next ticket from here, so a worker that
+    # crashes simply stops pulling and its remaining work is drained by the survivors —
+    # nothing is stranded in "queued". A crashed ticket is redispatched (bounded by
+    # MAX_TICKET_ATTEMPTS) and the worker rebuilds its browser in place so it keeps
+    # contributing. Whatever is still queued after every worker exits is failed (below).
+    pending: "queue.Queue[str]" = queue.Queue()
+    for _tid in ticket_ids:
+        pending.put(_tid)
+    attempts: dict[str, int] = {}     # tid -> times pulled (guarded by stats_lock)
+    finished: set[str] = set()        # tids that reached a terminal state (guarded)
+
+    def _terminal(tid: str, status: str, count_key: str, meta=None) -> None:
+        """Record a ticket's terminal outcome exactly once (status, stats, progress)."""
+        with stats_lock:
+            if tid in finished:
+                return
+            finished.add(tid)
+            stats[count_key] += 1
+            progress_ctr[0] += 1
+            prog = progress_ctr[0]
+        cb.on_progress(prog, total)
+        cb.on_ticket(tid, status)
+        if meta is not None:
+            cb.on_ticket_meta(*meta)
+
+    def worker_fn(worker_idx: int) -> None:
         prefix = f"[W{worker_idx + 1}] " if workers > 1 else ""
-        portal = portal_factory(portal_url)
+        if control.cancelled:
+            return
+        portal = None
+        rebuilds = 0
         try:
+            portal = portal_factory(portal_url)
             if not portal.login(username, password):
                 cb.on_log("error", f"{prefix}Login failed; worker exiting.")
                 return
             if workers > 1:
-                cb.on_log("info", f"{prefix}Logged in — processing {len(chunk)} tickets.")
+                cb.on_log("info", f"{prefix}Logged in.")
 
-            for tid in chunk:
+            while True:
                 control.wait_if_paused()
                 if control.cancelled:
                     cb.on_log("warning", f"{prefix}Cancelled.")
                     break
-
-                with stats_lock:
-                    progress_ctr[0] += 1
-                    cb.on_progress(progress_ctr[0], total)
+                try:
+                    tid = pending.get_nowait()
+                except queue.Empty:
+                    break
 
                 if not force and tid in already_scraped:
                     cb.on_log("info", f"{prefix}[SKIP] #{tid} already scraped.")
-                    cb.on_ticket(tid, "skipped")
-                    with stats_lock:
-                        stats["skipped"] += 1
+                    _terminal(tid, "skipped", "skipped")
                     continue
 
-                result = _fetch_ticket(portal, tid, output_dir, cb)
+                with stats_lock:
+                    attempts[tid] = attempts.get(tid, 0) + 1
+                    attempt_n = attempts[tid]
 
-                # Re-login once on session expiry
-                if result is _SESSION_EXPIRED:
-                    cb.on_log("warning", f"{prefix}#{tid}: session expired — re-logging in...")
-                    if not portal.login(username, password):
-                        cb.on_log("error", f"{prefix}Re-login failed; worker aborting.")
-                        break
+                try:
                     result = _fetch_ticket(portal, tid, output_dir, cb)
 
-                if result is _SESSION_EXPIRED or result is None:
-                    with stats_lock:
-                        stats["failed"] += 1
-                    cb.on_ticket(tid, "failed")
-                elif result == "not_found":
-                    with stats_lock:
-                        stats["not_found"] += 1
-                    cb.on_ticket(tid, "not_found")
-                else:
-                    save_ticket(result, output_dir)
-                    with state_lock:
-                        _mark_scraped(tid)
-                        already_scraped.add(tid)  # keep in-process set current
-                    with stats_lock:
-                        stats["saved"] += 1
-                    cb.on_ticket(tid, "ok")
-                    cb.on_ticket_meta(
-                        tid,
-                        result.get("title", ""),
-                        len(result.get("attachments") or []),
-                    )
-                    title = result.get("title") or ""
-                    cb.on_log("info", f"{prefix}[OK] #{tid}: {title}")
+                    # Re-login once on session expiry
+                    if result is _SESSION_EXPIRED:
+                        cb.on_log("warning", f"{prefix}#{tid}: session expired — re-logging in...")
+                        if not portal.login(username, password):
+                            raise RuntimeError("re-login failed")
+                        result = _fetch_ticket(portal, tid, output_dir, cb)
 
+                    if result is _SESSION_EXPIRED or result is None:
+                        _terminal(tid, "failed", "failed")
+                    elif result == "not_found":
+                        _terminal(tid, "not_found", "not_found")
+                    else:
+                        save_ticket(result, output_dir)
+                        with state_lock:
+                            _mark_scraped(tid)
+                            already_scraped.add(tid)  # keep in-process set current
+                        _terminal(tid, "ok", "saved",
+                                  meta=(tid, result.get("title", ""),
+                                        len(result.get("attachments") or [])))
+                        cb.on_log("info", f"{prefix}[OK] #{tid}: {result.get('title') or ''}")
+
+                except Exception as exc:
+                    # The browser/tab most likely crashed (common at high worker counts
+                    # under load). Redispatch this ticket so another (or this rebuilt)
+                    # worker retries it, then rebuild this worker's browser so it keeps
+                    # helping. Log the exception TYPE only — never its message, which
+                    # could carry ticket data (org policy: no PII/secrets in logs).
+                    if attempt_n < MAX_TICKET_ATTEMPTS:
+                        cb.on_log("warning",
+                            f"{prefix}#{tid}: worker error ({type(exc).__name__}) — "
+                            f"redispatching (attempt {attempt_n}/{MAX_TICKET_ATTEMPTS}).")
+                        pending.put(tid)
+                    else:
+                        cb.on_log("error",
+                            f"{prefix}#{tid}: failed after {attempt_n} attempts "
+                            f"({type(exc).__name__}).")
+                        _terminal(tid, "failed", "failed")
+
+                    rebuilds += 1
+                    try:
+                        if portal is not None:
+                            portal.b.close()
+                    except Exception:
+                        pass
+                    if rebuilds > MAX_WORKER_REBUILDS:
+                        cb.on_log("error",
+                            f"{prefix}too many crashes — worker exiting; "
+                            f"remaining tickets go to other workers.")
+                        portal = None
+                        break
+                    try:
+                        portal = portal_factory(portal_url)
+                        if not portal.login(username, password):
+                            cb.on_log("error",
+                                f"{prefix}re-login after rebuild failed — worker exiting.")
+                            portal = None
+                            break
+                    except Exception:
+                        cb.on_log("error",
+                            f"{prefix}browser rebuild failed — worker exiting.")
+                        portal = None
+                        break
         finally:
-            portal.b.close()  # portal.b is the Browser instance (TradeDeskPortal contract)
+            if portal is not None:
+                try:
+                    portal.b.close()  # portal.b is the Browser instance (TradeDeskPortal contract)
+                except Exception:
+                    pass
 
     cb.on_log("info",
         f"--- Starting ticket scrape: {total} tickets"
         + (f" ({workers} workers)" if workers > 1 else "") + " ---")
 
-    if workers == 1:
-        worker_fn(ticket_ids, 0)
-    else:
-        # Round-robin interleave for balanced distribution
-        chunks = [ticket_ids[i::workers] for i in range(workers)]
+    if total:
+        # Spawn at most one worker per ticket (no point opening idle browsers).
+        nthreads = max(1, min(workers, total))
         threads = [
-            threading.Thread(target=worker_fn, args=(chunk, i), daemon=True)
-            for i, chunk in enumerate(chunks)
-            if chunk
+            threading.Thread(target=worker_fn, args=(i,), daemon=True)
+            for i in range(nthreads)
         ]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
+
+        # Safety net: if every worker exited (all browsers crashed), drain whatever is
+        # still queued to a terminal "failed" so no ticket is ever left at "queued".
+        # Skipped on cancel — the user stopped intentionally.
+        if not control.cancelled:
+            while True:
+                try:
+                    tid = pending.get_nowait()
+                except queue.Empty:
+                    break
+                cb.on_log("error",
+                    f"#{tid}: not processed (all workers stopped) — marked failed.")
+                _terminal(tid, "failed", "failed")
 
     cb.on_finished(stats)
     return stats
