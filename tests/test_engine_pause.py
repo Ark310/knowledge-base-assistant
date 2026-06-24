@@ -19,6 +19,28 @@ def test_kbengine_output_base_default_and_override(tmp_path):
     assert kb_engine.KBEngine().output_base == KB_LIBRARY_BASE
     assert kb_engine.KBEngine(output_base=tmp_path / "kb").output_base == tmp_path / "kb"
 
+def test_kbengine_scrape_family_scopes_to_family():
+    """scrape_family iterates only the spaces for the given product_label, not all 43."""
+    from scraper.kb_config import KB_PRODUCT_GROUPS
+    engine = kb_engine.KBEngine()
+    scraped_keys = []
+    rebuilt = []
+    reported = []
+
+    engine._scrape_one    = lambda space_key, force, with_index_rebuild, action_label: (
+        scraped_keys.append(space_key) or {"discovered": 0, "new": 0, "skipped": 0, "failed": 0}
+    )
+    engine.rebuild_indexes = lambda: rebuilt.append(1)
+    engine._write_report  = lambda r: reported.append(r)
+
+    label = "TradeDesk KB"
+    engine.scrape_family(label)
+
+    expected = [s["space_key"] for s in KB_PRODUCT_GROUPS[label]]
+    assert scraped_keys == expected
+    assert len(scraped_keys) < 43  # sanity-check: not the full KB
+    assert rebuilt  # index rebuilt after the family run
+
 def test_paused_runcontrol_then_cancel_releases():
     # wait_if_paused returns once cancelled even while paused (engines won't hang on close)
     import threading, time

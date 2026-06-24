@@ -239,20 +239,18 @@ class KBTab(QWidget):
         self.detail.setRowCount(0)
         self._key_to_row.clear()
 
-        filter_text = self.inp_filter.text().lower()
         running = bool(self.worker and self.worker.isRunning())
 
-        for row_idx, sp in enumerate(spaces):
-            display = sp["display_name"]
-            if filter_text and filter_text not in display.lower():
-                continue
-            actual_row = self.detail.rowCount()
-            self.detail.insertRow(actual_row)
-            self._key_to_row[sp["key"]] = actual_row
+        # Insert ALL rows and register every key so status updates are never
+        # lost mid-run — then call _filter_detail() to hide non-matching rows.
+        for sp in spaces:
+            row = self.detail.rowCount()
+            self.detail.insertRow(row)
+            self._key_to_row[sp["key"]] = row
 
-            self.detail.setItem(actual_row, 0, QTableWidgetItem(display))
+            self.detail.setItem(row, 0, QTableWidgetItem(sp["display_name"]))
             for col in (_COL_FOUND, _COL_NEW, _COL_SKIP, _COL_FAIL):
-                self.detail.setItem(actual_row, col, QTableWidgetItem("—"))
+                self.detail.setItem(row, col, QTableWidgetItem("—"))
 
             btn = QPushButton("Scrape")
             btn.setEnabled(not running)
@@ -260,7 +258,9 @@ class KBTab(QWidget):
             key = sp["key"]
             kind = sp["engine_kind"]
             btn.clicked.connect(lambda _=False, k=key, kd=kind: self._scrape_space(k, kd, force=False))
-            self.detail.setCellWidget(actual_row, _COL_BTN, btn)
+            self.detail.setCellWidget(row, _COL_BTN, btn)
+
+        self._filter_detail(self.inp_filter.text())
 
     def _filter_detail(self, text: str):
         """Show/hide rows whose Space column matches the filter text."""
@@ -318,8 +318,7 @@ class KBTab(QWidget):
             return
         # All spaces in a KB family use KBEngine; RN family uses v1 Engine
         if spaces[0]["engine_kind"] == "kb":
-            # Scrape each space sequentially via scrape_all for the family's keys
-            self._start_kb("scrape_all", {"force": force})
+            self._start_kb("scrape_family", {"product_label": label, "force": force})
         else:
             self._start_rn("scrape_all", {"force": force})
 
@@ -330,7 +329,6 @@ class KBTab(QWidget):
             return
         self._log("info", "--- Scrape All: KB + Release Notes ---")
         self._fresh_control()
-        self._pending_rn_after_kb = True
         self.worker = _Worker(self._kb_engine, "scrape_all", {"force": False}, self._control)
         self.worker.finished.connect(self._kb_done_start_rn)
         self._set_running(True)
@@ -343,7 +341,6 @@ class KBTab(QWidget):
             return
         self._log("info", "--- Force All: KB + Release Notes ---")
         self._fresh_control()
-        self._pending_rn_after_kb = True
         self.worker = _Worker(self._kb_engine, "scrape_all", {"force": True}, self._control)
         self.worker.finished.connect(lambda: self._kb_done_start_rn(force=True))
         self._set_running(True)
@@ -427,6 +424,7 @@ class KBTab(QWidget):
     def _on_status(self, key: str, stats: dict):
         row = self._key_to_row.get(key)
         if row is None:
+            # Space belongs to a family not currently shown (e.g. during Scrape All) — intentionally ignored.
             return
         self.detail.item(row, _COL_FOUND).setText(str(stats.get("discovered", "—")))
         self.detail.item(row, _COL_NEW).setText(str(stats.get("new", 0)))

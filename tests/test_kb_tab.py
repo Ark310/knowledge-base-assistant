@@ -41,3 +41,21 @@ def test_toolbar_and_pause_present():
 
 def test_shutdown_no_worker_is_noop():
     KBTab().shutdown()
+
+def test_scrape_family_kb_targets_scrape_family():
+    """Clicking 'Scrape family' on a KB family dispatches scrape_family, not scrape_all."""
+    captured = {}
+
+    def fake_start_kb(action, kwargs=None):
+        captured["action"] = action
+        captured["kwargs"] = kwargs or {}
+
+    t = KBTab()
+    t._start_kb = fake_start_kb
+
+    fam = next(iter(KB_PRODUCT_GROUPS))
+    t._current_family = fam
+    t._scrape_family(force=False)
+
+    assert captured.get("action") == "scrape_family"
+    assert captured.get("kwargs", {}).get("product_label") == fam

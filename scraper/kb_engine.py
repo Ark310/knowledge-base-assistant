@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from scraper.kb_config import (
-    KB_SPACES, KB_SPACES_BY_KEY, KB_ARTICLES_STATE_FILE, KB_LIBRARY_BASE,
+    KB_SPACES, KB_SPACES_BY_KEY, KB_PRODUCT_GROUPS, KB_ARTICLES_STATE_FILE, KB_LIBRARY_BASE,
 )
 from scraper.config import REPORT_FILE
 from scraper.core import Browser, StateTracker
@@ -85,6 +85,27 @@ class KBEngine:
             self.cb.on_log("error", f"KB index rebuild failed: {exc}")
         self._write_report(report)
         self.cb.on_finished("scrape_kb_all", report)
+        return report
+
+    def scrape_family(self, product_label: str, force: bool = False) -> dict:
+        """Scrape only the spaces belonging to one KB product family."""
+        self.cb.on_started("scrape_kb_family")
+        report: dict = {}
+        for cfg in KB_PRODUCT_GROUPS[product_label]:
+            self.cancel.wait_if_paused()
+            if self.cancel.is_cancelled():
+                self.cb.on_log("warning", "Cancelled — stopping scrape_kb_family")
+                break
+            stats = self._scrape_one(
+                cfg["space_key"], force, with_index_rebuild=False, action_label=None
+            )
+            report[cfg["space_key"]] = stats
+        try:
+            self.rebuild_indexes()
+        except Exception as exc:
+            self.cb.on_log("error", f"KB index rebuild failed: {exc}")
+        self._write_report(report)
+        self.cb.on_finished("scrape_kb_family", report)
         return report
 
     def _scrape_one(
