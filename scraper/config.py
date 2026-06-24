@@ -43,11 +43,12 @@ v1.0  2026-05-27  Release notes scraper (Tab 1): TradeDesk, Web4, SalesHub.
 # When frozen as a PyInstaller exe, __file__ points inside a temp extract dir;
 # library/state must sit next to the executable instead.
 if getattr(sys, "frozen", False):
-    # exe lives at Knowledge Base/dist/ContosoKBScraper.exe
-    # go up one level past dist/ to reach the project root
-    _EXE_DIR  = Path(sys.executable).parent          # .../dist/
-    BASE_DIR  = _EXE_DIR.parent                       # .../Knowledge Base/
-    STATE_DIR = _EXE_DIR / "state"                    # .../dist/state/  (runtime artifacts)
+    _EXE_DIR  = Path(sys.executable).parent          # .../dist-v4/ContosoKBScraper-v4/
+    # one-folder layout: exe-dir -> dist-v4 -> project root. Output folders are
+    # user-overridable in Settings; this default writes to the existing library/
+    # when the exe runs in-place under the project.
+    BASE_DIR  = _EXE_DIR.parent.parent                # project root
+    STATE_DIR = _EXE_DIR / "state"                    # writable, next to the exe
 else:
     BASE_DIR  = Path(__file__).parent.parent           # Knowledge Base/
     STATE_DIR = Path(__file__).parent / "state"

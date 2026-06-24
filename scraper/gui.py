@@ -133,11 +133,9 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv)
-    app.setApplicationName("Contoso KB Scraper")
-    win = MainWindow()
-    win.show()
-    sys.exit(app.exec())
+    # Single themed entry point — delegate to app.main() (stylesheet + splash + icon).
+    from scraper.app import main as app_main
+    app_main()
 
 
 if __name__ == "__main__":
