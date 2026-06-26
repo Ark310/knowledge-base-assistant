@@ -1,10 +1,13 @@
 """Async adapter for portal.contoso.example SPA. Page-bound (one page per worker tab).
 Selectors/timing identical to the sync TradeDeskPortal; login happens once per context."""
 from __future__ import annotations
+import logging
 import re
 from pathlib import Path
 from scraper.parsers.ticket_parser import is_not_found as _is_not_found
 from scraper.portal.base_portal import looks_like_login
+
+log = logging.getLogger("scraper")
 
 def _unique_path(dest_dir: Path, name: str) -> Path:
     name = name or "file"
@@ -90,8 +93,12 @@ class AsyncTradeDeskPortal:
         try:
             await self.page.wait_for_selector('button[title*="Download"]', timeout=10_000)
         except Exception:
+            log.info("download_all: no Download button rendered in time")
             return saved
-        for btn in await self.page.locator('button[title*="Download"]').all():
+        btns = await self.page.locator('button[title*="Download"]').all()
+        log.info("download_all: %d Download button(s) found", len(btns))
+        skipped = 0
+        for i, btn in enumerate(btns):
             try:
                 async with self.page.expect_download(timeout=30_000) as dl:
                     await btn.click()
@@ -99,8 +106,13 @@ class AsyncTradeDeskPortal:
                 target = _unique_path(dest_dir, d.suggested_filename)
                 await d.save_as(str(target))
                 saved.append(target)
-            except Exception:
-                continue
+            except Exception as exc:
+                skipped += 1
+                # filename omitted — may carry PII; log index + error type only
+                log.warning("download_all: button %d/%d failed (%s)",
+                            i + 1, len(btns), type(exc).__name__)
+        if skipped:
+            log.warning("download_all: %d of %d download(s) skipped", skipped, len(btns))
         return saved
 
 def make_factory(base: str):
