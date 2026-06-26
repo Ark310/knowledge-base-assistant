@@ -5,9 +5,8 @@ from scraper.portal import base_portal as bp
 
 def test_empty_ticket_has_canonical_shape():
     t = bp.empty_ticket("76511", "https://x/tickets/76511/edit")
-    assert t["id"] == "76511"
+    assert t["ticket_id"] == "76511"   # the key save_ticket writes by
     assert t["url"].endswith("/76511/edit")
-    assert t["fields"] == {}
     assert t["comments"] == [] and t["attachments"] == []
     assert t["resolution"] == {"text": "", "comments": [], "attachments": []}
 

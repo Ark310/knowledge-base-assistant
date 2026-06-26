@@ -3,13 +3,16 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 from pathlib import Path
 
-TICKET_SCHEMA_KEYS = ("id", "title", "url", "fields", "comments", "resolution", "attachments")
+TICKET_SCHEMA_KEYS = ("ticket_id", "title", "url", "comments", "resolution", "attachments")
 
 def empty_ticket(ticket_id: str, url: str = "") -> dict:
-    """A canonical ticket dict with every key present (the shape both portals emit)."""
+    """Canonical structural skeleton both portals' parsers build on. Portal-specific
+    fields (product, organization, assignee, severity, status, ...) are added FLAT at
+    the top level by each parser — there is no nested "fields" dict on disk. The key
+    save_ticket writes by is "ticket_id"."""
     return {
-        "id": ticket_id, "title": "", "url": url, "fields": {},
-        "comments": [],   # [{author,date,body,images:[{mime,saved_path}],attachments:[{label,saved_path}]}]
+        "ticket_id": ticket_id, "title": "", "url": url,
+        "comments": [],   # [{id,author,date,internal,body,images:[{mime,saved_path}],attachments:[{label,saved_path}]}]
         "resolution": {"text": "", "comments": [], "attachments": []},
         "attachments": [],  # [{filename, saved_path}]
     }

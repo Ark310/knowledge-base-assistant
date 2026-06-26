@@ -67,3 +67,29 @@ def test_comment_images_decoded_to_files(tmp_path):
     assert img["saved_path"] and Path(img["saved_path"]).exists()
     md = (tmp_path / "ticket_50001.md").read_text(encoding="utf-8")
     assert "![image]" in md
+
+def test_resolution_thread_images_scrubbed_and_rendered(tmp_path):
+    # A resolution comment thread with an inline base64 image: raw b64 must be stripped
+    # from the JSON (policy) AND the thread must appear in the markdown.
+    png_b64 = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk"
+               "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+    d = {
+        "ticket_id": "50002", "comments": [],
+        "resolution": {
+            "text": "Resolved.", "attachments": [],
+            "comments": [{
+                "id": "9001", "author": "Resolver", "date": "Jun 22, 2026 at 1:00 PM",
+                "internal": False, "body": "fixed in build 12", "attachments": [],
+                "images": [{"mime": "image/png", "data": png_b64}],
+            }],
+        },
+    }
+    save_ticket(d, tmp_path)
+    loaded = json.loads((tmp_path / "ticket_50002.json").read_text(encoding="utf-8"))
+    rimg = loaded["resolution"]["comments"][0]["images"][0]
+    assert "data" not in rimg, "raw base64 must be stripped from resolution-thread images"
+    assert rimg["saved_path"] and Path(rimg["saved_path"]).exists()
+    md = (tmp_path / "ticket_50002.md").read_text(encoding="utf-8")
+    assert "Resolution thread" in md
+    assert "Resolver" in md and "fixed in build 12" in md
+    assert "![image]" in md

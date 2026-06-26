@@ -7,7 +7,7 @@ from pathlib import Path
 
 from scraper.ticket_engine import (
     MAX_TICKET_ATTEMPTS, MAX_WORKER_REBUILDS, TicketEngineCallbacks,
-    parse_ticket_input, _load_scraped, _mark_scraped, _match_paths, TICKETS_DIR,
+    _load_scraped, _mark_scraped, _match_paths, TICKETS_DIR,
 )
 from scraper.parsers.ticket_parser import parse_ticket_detail, parse_resolution
 from scraper.writers.ticket_writer import save_ticket
