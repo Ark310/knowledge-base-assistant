@@ -102,13 +102,21 @@ async def run_ticket_scrape_async(
             return stats
 
     async def _open_worker_page():
-        """Acquire (own_browser_or_None, page) for a worker per mode. Raises on failure."""
+        """Acquire (own_browser_or_None, page) for a worker per mode. Raises on failure,
+        always closing a just-opened browser first so a post-login new_page() error
+        (or login failure) can't orphan it."""
         if mode == "multi":
             b = await browser_factory().open()
-            if not await login_once(b, username, password):
-                await b.close()
-                raise RuntimeError("login failed")
-            return b, await b.new_page()
+            try:
+                if not await login_once(b, username, password):
+                    raise RuntimeError("login failed")
+                return b, await b.new_page()
+            except Exception:
+                try:
+                    await b.close()
+                except Exception:
+                    pass
+                raise
         return None, await shared_browser.new_page()
 
     async def worker(idx):

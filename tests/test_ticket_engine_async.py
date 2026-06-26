@@ -139,3 +139,23 @@ def test_multi_mode_login_failure_drains_all_failed(tmp_path):
         workers=2, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
         page_portal_factory=factory, login_once=login_fail, parse_fn=fake_parse, mode="multi"))
     assert all(s == "failed" for _, s in rec["tickets"]) and rec["report"]["failed"] == 2
+
+def test_multi_mode_new_page_failure_closes_browser_no_orphan(tmp_path):
+    # If new_page() fails AFTER a successful login, the just-opened browser must be
+    # closed (no orphan) and the ticket must reach a terminal "failed" (not stranded).
+    closed = []
+    class _FailNewPageBrowser:
+        async def open(self): return self
+        async def new_page(self): raise RuntimeError("new_page boom")
+        async def close(self): closed.append(True)
+    async def login_once(browser, u, p): return True
+    factory, _ = make_factory(lambda tid, n: False)
+    def fake_parse(html, tid, base):
+        return {**empty_ticket(tid, base), "title": tid}
+    rec = {}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ["1"], force=True, control=RunControl(), cb=_cb(rec),
+        workers=1, output_dir=tmp_path, browser_factory=lambda: _FailNewPageBrowser(),
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="multi"))
+    assert dict(rec["tickets"]).get("1") == "failed"   # drained, not stranded
+    assert closed, "browser must be closed when new_page fails post-login (no orphan)"
