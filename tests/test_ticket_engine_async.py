@@ -79,3 +79,31 @@ def test_all_workers_die_drains_to_failed(tmp_path):
     rec, _ = run(["1", "2", "3"], 2, lambda tid, n: True, tmp_path)
     assert all(st == "failed" for _, st in rec["tickets"])
     assert len(rec["tickets"]) == 3
+
+def test_login_failure_drains_all_failed(tmp_path):
+    # login_once returns False -> every ticket gets a terminal "failed" (never stranded).
+    rec = {}
+    factory, _ = make_factory(lambda tid, n: False)
+    async def login_fail(browser, u, p): return False
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ["1", "2"], force=True, control=RunControl(), cb=_cb(rec),
+        workers=2, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=factory, login_once=login_fail, parse_fn=fake_parse, mode="light"))
+    assert all(st == "failed" for _, st in rec["tickets"])
+    assert rec["report"]["failed"] == 2 and rec["report"]["saved"] == 0
+
+def test_cancel_before_run_skips_drain(tmp_path):
+    # Pre-cancelled: workers break at the top; the leftover-drain is SKIPPED on cancel,
+    # so nothing is force-marked failed (the user stopped intentionally).
+    rec = {}
+    ctrl = RunControl(); ctrl.cancel()
+    factory, _ = make_factory(lambda tid, n: False)
+    async def login_once(browser, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ["1", "2"], force=True, control=ctrl, cb=_cb(rec),
+        workers=2, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
+    assert rec.get("tickets", []) == []
+    assert rec["report"]["saved"] == 0 and rec["report"]["failed"] == 0

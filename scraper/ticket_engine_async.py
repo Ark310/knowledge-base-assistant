@@ -91,7 +91,9 @@ async def run_ticket_scrape_async(
             rebuilds = 0
             try:
                 while True:
-                    control.wait_if_paused()
+                    # Awaitable pause gate — a sync wait here would block the whole
+                    # event loop (all workers + Playwright I/O) while paused.
+                    await control.wait_if_paused_async()
                     if control.cancelled:
                         cb.on_log("warning", f"{prefix}Cancelled."); break
                     try:
@@ -101,6 +103,8 @@ async def run_ticket_scrape_async(
                     async with lock:
                         if tid in finished:
                             continue
+                    # Single asyncio loop: this read can't interleave with the
+                    # state_lock'd `already.add` below, so it needs no lock.
                     if not force and tid in already:
                         cb.on_log("info", f"{prefix}[SKIP] #{tid}")
                         await terminal(tid, "skipped", "skipped"); continue
