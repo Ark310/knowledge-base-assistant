@@ -1,0 +1,81 @@
+import sys, asyncio
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from scraper.control import RunControl
+from scraper import ticket_engine as te          # for callbacks + constants
+from scraper import ticket_engine_async as tea
+from scraper.portal.base_portal import empty_ticket
+
+class FakeAsyncBrowser:
+    def __init__(self): self.pages = 0
+    async def open(self): return self
+    async def new_page(self):
+        self.pages += 1
+        return object()      # opaque page handle; the fake portal ignores it
+    async def close(self): pass
+
+def _cb(rec):
+    return te.TicketEngineCallbacks(
+        on_log=lambda l, m: None,
+        on_progress=lambda i, n: None,
+        on_ticket=lambda tid, st: rec.setdefault("tickets", []).append((tid, st)),
+        on_ticket_meta=lambda tid, t, n: rec.setdefault("meta", []).append((tid, t, n)),
+        on_finished=lambda rep: rec.update(report=rep),
+    )
+
+def make_factory(crash_rule):
+    """crash_rule(tid, prior_crashes)->bool. Shared crash counts across rebuilt portals."""
+    crashes = {}
+    class FakePortal:
+        base = "https://x"
+        def __init__(self, page): self.page = page
+        def ticket_url(self, tid): return f"{self.base}/tickets/{tid}/edit"
+        def is_login_page(self, html): return False
+        def is_not_found(self, html, tid): return tid == "404"
+        async def login(self, u, p): return True
+        async def open_ticket(self, tid):
+            n = crashes.get(tid, 0)
+            if crash_rule(tid, n):
+                crashes[tid] = n + 1
+                raise RuntimeError("simulated tab crash")
+            return f"<html>{tid}</html>"
+        async def subview_count(self, label): return 0
+        async def open_subview(self, label, ready_selector=None): return ""
+        async def download_all(self, dest): return []
+    return (lambda page: FakePortal(page)), crashes
+
+def run(ids, workers, crash_rule, tmp_path, force=True, monkeyparse=True):
+    rec = {}
+    factory, crashes = make_factory(crash_rule)
+    async def login_once(browser, u, p): return True
+    # parse returns a minimal canonical ticket so save_ticket writes a file
+    def fake_parse(html, tid, base):
+        return None if "404" in html else {**empty_ticket(tid, f"{base}/{tid}"), "title": f"T{tid}"}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ids, force=force, control=RunControl(), cb=_cb(rec),
+        workers=workers, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
+    return rec, crashes
+
+def test_all_tickets_reach_terminal_ok(tmp_path):
+    rec, _ = run(["1", "2", "3"], 2, lambda tid, n: False, tmp_path)
+    assert {t for t, _ in rec["tickets"]} == {"1", "2", "3"}
+    assert all(st == "ok" for _, st in rec["tickets"])
+    assert rec["report"]["saved"] == 3
+
+def test_transient_crash_redispatched_then_ok(tmp_path):
+    rec, crashes = run(["1", "2"], 2, lambda tid, n: tid == "1" and n == 0, tmp_path)
+    assert dict(rec["tickets"])["1"] == "ok"
+    assert crashes["1"] == 1
+
+def test_permanent_crash_failed_not_stranded(tmp_path):
+    rec, crashes = run(["1", "BAD", "2"], 2, lambda tid, n: tid == "BAD", tmp_path)
+    s = dict(rec["tickets"])
+    assert s["1"] == "ok" and s["2"] == "ok" and s["BAD"] == "failed"
+    assert len(rec["tickets"]) == 3
+    assert crashes["BAD"] == te.MAX_TICKET_ATTEMPTS
+
+def test_all_workers_die_drains_to_failed(tmp_path):
+    rec, _ = run(["1", "2", "3"], 2, lambda tid, n: True, tmp_path)
+    assert all(st == "failed" for _, st in rec["tickets"])
+    assert len(rec["tickets"]) == 3
