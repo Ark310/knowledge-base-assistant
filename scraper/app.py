@@ -9,6 +9,10 @@ import sys
 import time
 from pathlib import Path
 
+# Allow running as a script (`python scraper/app.py`): put the repo root on the
+# path so `import scraper...` resolves. Harmless when frozen (PyInstaller manages path).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen
