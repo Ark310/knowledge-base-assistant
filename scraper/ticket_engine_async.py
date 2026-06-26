@@ -87,93 +87,141 @@ async def run_ticket_scrape_async(
         if meta is not None:
             cb.on_ticket_meta(*meta)
 
-    browser = await browser_factory().open()
-    try:
-        if not await login_once(browser, username, password):
+    # ── Browser provisioning differs by mode ─────────────────────────────────
+    # light : ONE shared browser + ONE login; each worker opens a tab (page).
+    # multi : each worker opens its OWN browser + logs in (separate windows).
+    shared_browser = None
+    if mode != "multi":
+        shared_browser = await browser_factory().open()
+        if not await login_once(shared_browser, username, password):
             cb.on_log("error", "Login failed; aborting.")
             while not pending.empty():
                 await terminal(pending.get_nowait(), "failed", "failed")
-            cb.on_finished(stats); return stats
+            await shared_browser.close()
+            cb.on_finished(stats)
+            return stats
 
-        async def worker(idx):
-            prefix = f"[W{idx + 1}] " if workers > 1 else ""
-            page = await browser.new_page()
-            portal = page_portal_factory(page)
-            rebuilds = 0
+    async def _open_worker_page():
+        """Acquire (own_browser_or_None, page) for a worker per mode. Raises on failure."""
+        if mode == "multi":
+            b = await browser_factory().open()
+            if not await login_once(b, username, password):
+                await b.close()
+                raise RuntimeError("login failed")
+            return b, await b.new_page()
+        return None, await shared_browser.new_page()
+
+    async def worker(idx):
+        prefix = f"[W{idx + 1}] " if workers > 1 else ""
+        if control.cancelled:
+            return
+        own_browser = None
+        page = None
+        rebuilds = 0
+        try:
             try:
-                while True:
-                    # Awaitable pause gate — a sync wait here would block the whole
-                    # event loop (all workers + Playwright I/O) while paused.
-                    await control.wait_if_paused_async()
-                    if control.cancelled:
-                        cb.on_log("warning", f"{prefix}Cancelled."); break
+                own_browser, page = await _open_worker_page()
+            except Exception:
+                cb.on_log("error", f"{prefix}could not start (browser/login) — worker exiting.")
+                return
+            portal = page_portal_factory(page)
+            while True:
+                await control.wait_if_paused_async()
+                if control.cancelled:
+                    cb.on_log("warning", f"{prefix}Cancelled."); break
+                try:
+                    tid = pending.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                async with lock:
+                    if tid in finished:
+                        continue
+                if not force and tid in already:
+                    cb.on_log("info", f"{prefix}[SKIP] #{tid}")
+                    await terminal(tid, "skipped", "skipped"); continue
+                async with lock:
+                    attempts[tid] = attempts.get(tid, 0) + 1
+                    n = attempts[tid]
+                try:
+                    res = await _fetch_ticket(portal, tid, output_dir, cb, parse_fn)
+                    if res is _SESSION_EXPIRED:
+                        cb.on_log("warning", f"{prefix}#{tid}: session expired")
+                        raise RuntimeError("session expired")
+                    if res is None:
+                        await terminal(tid, "failed", "failed")
+                    elif res == "not_found":
+                        await terminal(tid, "not_found", "not_found")
+                    else:
+                        save_ticket(res, output_dir)
+                        async with state_lock:
+                            _mark_scraped(tid); already.add(tid)
+                        await terminal(tid, "ok", "saved",
+                            meta=(tid, res.get("title", ""), len(res.get("attachments") or [])))
+                        cb.on_log("info", f"{prefix}[OK] #{tid}: {res.get('title') or ''}")
+                except Exception as exc:
+                    if n < MAX_TICKET_ATTEMPTS:
+                        cb.on_log("warning", f"{prefix}#{tid}: worker error ({type(exc).__name__}) "
+                                             f"— redispatching ({n}/{MAX_TICKET_ATTEMPTS}).")
+                        pending.put_nowait(tid)
+                    else:
+                        cb.on_log("error", f"{prefix}#{tid}: failed after {n} ({type(exc).__name__}).")
+                        await terminal(tid, "failed", "failed")
+                    rebuilds += 1
+                    # tear down this worker's page (+ its own browser in multi mode)
                     try:
-                        tid = pending.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    async with lock:
-                        if tid in finished:
-                            continue
-                    # Single asyncio loop: this read can't interleave with the
-                    # state_lock'd `already.add` below, so it needs no lock.
-                    if not force and tid in already:
-                        cb.on_log("info", f"{prefix}[SKIP] #{tid}")
-                        await terminal(tid, "skipped", "skipped"); continue
-                    async with lock:
-                        attempts[tid] = attempts.get(tid, 0) + 1
-                        n = attempts[tid]
-                    try:
-                        res = await _fetch_ticket(portal, tid, output_dir, cb, parse_fn)
-                        if res is _SESSION_EXPIRED:
-                            cb.on_log("warning", f"{prefix}#{tid}: session expired"); raise RuntimeError("session expired")
-                        if res is None:
-                            await terminal(tid, "failed", "failed")
-                        elif res == "not_found":
-                            await terminal(tid, "not_found", "not_found")
-                        else:
-                            save_ticket(res, output_dir)
-                            async with state_lock:
-                                _mark_scraped(tid); already.add(tid)
-                            await terminal(tid, "ok", "saved",
-                                meta=(tid, res.get("title", ""), len(res.get("attachments") or [])))
-                            cb.on_log("info", f"{prefix}[OK] #{tid}: {res.get('title') or ''}")
-                    except Exception as exc:
-                        if n < MAX_TICKET_ATTEMPTS:
-                            cb.on_log("warning", f"{prefix}#{tid}: worker error ({type(exc).__name__}) "
-                                                 f"— redispatching ({n}/{MAX_TICKET_ATTEMPTS}).")
-                            pending.put_nowait(tid)
-                        else:
-                            cb.on_log("error", f"{prefix}#{tid}: failed after {n} ({type(exc).__name__}).")
-                            await terminal(tid, "failed", "failed")
-                        rebuilds += 1
-                        try: await page.close()
-                        except Exception: pass
-                        if rebuilds > MAX_WORKER_REBUILDS:
-                            cb.on_log("error", f"{prefix}too many crashes — worker exiting."); page = None; break
+                        if page is not None:
+                            await page.close()
+                    except Exception:
+                        pass
+                    if own_browser is not None:
                         try:
-                            page = await browser.new_page(); portal = page_portal_factory(page)
+                            await own_browser.close()
                         except Exception:
-                            cb.on_log("error", f"{prefix}page rebuild failed — worker exiting."); page = None; break
-            finally:
+                            pass
+                        own_browser = None
+                    page = None
+                    if rebuilds > MAX_WORKER_REBUILDS:
+                        cb.on_log("error", f"{prefix}too many crashes — worker exiting.")
+                        break
+                    try:
+                        own_browser, page = await _open_worker_page()
+                        portal = page_portal_factory(page)
+                    except Exception:
+                        cb.on_log("error", f"{prefix}rebuild failed — worker exiting.")
+                        page = None
+                        break
+        finally:
+            try:
                 if page is not None:
-                    try: await page.close()
-                    except Exception: pass
+                    await page.close()
+            except Exception:
+                pass
+            if own_browser is not None:
+                try:
+                    await own_browser.close()
+                except Exception:
+                    pass
 
-        cb.on_log("info", f"--- Starting ticket scrape: {total} tickets"
-                          + (f" ({workers} workers, {mode})" if workers > 1 else "") + " ---")
-        n_workers = max(1, min(workers, total)) if total else 0
-        await asyncio.gather(*(worker(i) for i in range(n_workers)))
-
-        if not control.cancelled:
-            while not pending.empty():
-                tid = pending.get_nowait()
-                cb.on_log("error", f"#{tid}: not processed (all workers stopped) — marked failed.")
-                await terminal(tid, "failed", "failed")
+    cb.on_log("info",
+        f"--- Starting ticket scrape: {total} tickets"
+        + (f" ({workers} workers, {mode})" if workers > 1 else "") + " ---")
+    try:
+        if total:
+            n_workers = max(1, min(workers, total))
+            await asyncio.gather(*(worker(i) for i in range(n_workers)))
+            if not control.cancelled:
+                while not pending.empty():
+                    tid = pending.get_nowait()
+                    cb.on_log("error",
+                        f"#{tid}: not processed (all workers stopped) — marked failed.")
+                    await terminal(tid, "failed", "failed")
         async with lock:
             stats["retried"] = sum(1 for c in attempts.values() if c > 1)
         if total and stats["failed"] == total:
-            cb.on_log("error", f"All {total} tickets failed — check credentials/network/portal.")
+            cb.on_log("error",
+                f"All {total} tickets failed — check credentials/network/portal.")
     finally:
-        await browser.close()
+        if shared_browser is not None:
+            await shared_browser.close()
     cb.on_finished(stats)
     return stats

@@ -107,3 +107,35 @@ def test_cancel_before_run_skips_drain(tmp_path):
         page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
     assert rec.get("tickets", []) == []
     assert rec["report"]["saved"] == 0 and rec["report"]["failed"] == 0
+
+def test_multi_mode_own_browser_and_login_per_worker(tmp_path):
+    created = {"n": 0}
+    def bf():
+        created["n"] += 1
+        return FakeAsyncBrowser()
+    logins = {"n": 0}
+    async def login_once(browser, u, p):
+        logins["n"] += 1; return True
+    factory, _ = make_factory(lambda tid, n: False)
+    def fake_parse(html, tid, base):
+        return {**empty_ticket(tid, base), "title": tid}
+    rec = {}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ["1", "2", "3", "4"], force=True, control=RunControl(), cb=_cb(rec),
+        workers=2, output_dir=tmp_path, browser_factory=bf,
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="multi"))
+    assert all(s == "ok" for _, s in rec["tickets"]) and rec["report"]["saved"] == 4
+    # multi: one browser + one login PER WORKER (n_workers = min(2,4) = 2), not a single shared one
+    assert created["n"] >= 2 and logins["n"] >= 2
+
+def test_multi_mode_login_failure_drains_all_failed(tmp_path):
+    async def login_fail(browser, u, p): return False
+    factory, _ = make_factory(lambda tid, n: False)
+    def fake_parse(html, tid, base):
+        return {**empty_ticket(tid, base), "title": tid}
+    rec = {}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ["1", "2"], force=True, control=RunControl(), cb=_cb(rec),
+        workers=2, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=factory, login_once=login_fail, parse_fn=fake_parse, mode="multi"))
+    assert all(s == "failed" for _, s in rec["tickets"]) and rec["report"]["failed"] == 2
