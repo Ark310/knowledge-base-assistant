@@ -86,6 +86,14 @@ class AsyncTradeDeskPortal:
             except Exception:
                 pass
         await self.page.wait_for_timeout(500)
+        try:   # diagnostic (counts only, no PII): what does this sub-view expose?
+            dl = await self.page.locator('button[title*="Download"]').count()
+            cc = await self.page.locator('div.comment-html-content').count()
+            rc = await self.page.locator('div.resolution-container').count()
+            log.info("open_subview(%s): %d download-btn, %d comment-block, %d resolution-container",
+                     label, dl, cc, rc)
+        except Exception:
+            pass
         return await self.page.content()
     async def download_all(self, dest_dir: Path) -> list[Path]:
         dest_dir = Path(dest_dir); dest_dir.mkdir(parents=True, exist_ok=True)
