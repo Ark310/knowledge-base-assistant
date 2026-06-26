@@ -263,6 +263,36 @@ def test_resolution_counts_only_icon_download_not_comment_text():
     assert "resolution-script.sql" in r["attachments"][0]["label"]
 
 
+def test_resolution_always_has_comments_key():
+    # canonical schema: resolution always carries text/comments/attachments
+    r = parse_resolution(RESOLUTION_HTML)
+    assert "comments" in r and isinstance(r["comments"], list)
+
+
+def test_resolution_captures_scoped_comment_thread():
+    # A resolution can carry its own comment THREAD (same card markup as ticket
+    # comments). Capture it scoped to div.resolution-container — a comment card
+    # OUTSIDE the container (a main ticket comment) must NOT be pulled in.
+    synthetic = """
+    <html><body>
+      <div class="rounded-lg border bg-white">
+        <span class="hidden">comment 111 posted by </span><a class="text-blue-600">Outsider</a>
+        <div class="comment-html-content"><p>main ticket comment</p></div>
+      </div>
+      <div class="resolution-container">
+        <div class="post-content"><p>Fixed it.</p></div>
+        <div class="rounded-lg border bg-white">
+          <span class="hidden">comment 222 posted by </span><a class="text-blue-600">Resolver</a>
+          <div class="comment-html-content"><p>resolution reply</p></div>
+        </div>
+      </div>
+    </body></html>
+    """
+    r = parse_resolution(synthetic)
+    assert [c["author"] for c in r["comments"]] == ["Resolver"]
+    assert "resolution reply" in r["comments"][0]["body"]
+
+
 # ── parse_files ───────────────────────────────────────────────────────────────
 
 def test_files_count():

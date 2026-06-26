@@ -192,64 +192,82 @@ def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
     return cards
 
 
+def _card_to_comment(card: Tag) -> dict | None:
+    """Parse one comment card into the canonical comment dict (or None if no header)."""
+    hsn = card.find(string=_COMMENT_HDR_RE)
+    if hsn is None:
+        return None
+    cid = _COMMENT_HDR_RE.search(hsn).group(1)
+
+    # Author is the <a> link that follows "posted by " (the real DOM splits the
+    # name out of the header span). Constrain it to this card.
+    a = hsn.find_next("a")
+    author = _clean(a.get_text()) if (a is not None and card in a.parents) else ""
+
+    # Body is the rendered comment HTML block (NOT the header/meta rows).
+    body_el = card.select_one("div.comment-html-content") or card.select_one("div.max-w-none")
+    if body_el is not None:
+        body = "\n".join(ln.strip() for ln in body_el.get_text("\n").splitlines() if ln.strip())
+    else:
+        body = ""
+
+    text = card.get_text(" ", strip=True)
+    dm = _DATE_RE.search(text)
+    # internal=True only when an exact-text "Internal" badge exists in the card —
+    # NOT when body prose happens to contain the word "internal".
+    internal = any(
+        _clean(el.get_text()) == "Internal"
+        for el in card.find_all(["span", "div"])
+    )
+    return {
+        "id": cid,
+        "author": author,
+        "date": dm.group(1) if dm else "",
+        "internal": internal,
+        "body": body,
+        "attachments": _attachments_in(card),
+        "images": _data_images(body_el),
+    }
+
+
+def _comments_in(scope) -> list[dict]:
+    """Parse every comment card found within `scope` (a BeautifulSoup doc or a Tag)."""
+    out: list[dict] = []
+    for card in _comment_cards(scope):
+        c = _card_to_comment(card)
+        if c is not None:
+            out.append(c)
+    return out
+
+
 def parse_comments(html: str) -> list[dict]:
     """Extract all comment cards from the ticket detail page."""
-    soup = _soup(html)
-    comments = []
-    for card in _comment_cards(soup):
-        hsn = card.find(string=_COMMENT_HDR_RE)
-        if hsn is None:
-            continue
-        cid = _COMMENT_HDR_RE.search(hsn).group(1)
-
-        # Author is the <a> link that follows "posted by " (the real DOM splits the
-        # name out of the header span). Constrain it to this card.
-        a = hsn.find_next("a")
-        author = _clean(a.get_text()) if (a is not None and card in a.parents) else ""
-
-        # Body is the rendered comment HTML block (NOT the header/meta rows).
-        body_el = card.select_one("div.comment-html-content") or card.select_one("div.max-w-none")
-        if body_el is not None:
-            body = "\n".join(ln.strip() for ln in body_el.get_text("\n").splitlines() if ln.strip())
-        else:
-            body = ""
-
-        text = card.get_text(" ", strip=True)
-        dm = _DATE_RE.search(text)
-        # internal=True only when an exact-text "Internal" badge exists in the card —
-        # NOT when body prose happens to contain the word "internal".
-        internal = any(
-            _clean(el.get_text()) == "Internal"
-            for el in card.find_all(["span", "div"])
-        )
-        comments.append({
-            "id": cid,
-            "author": author,
-            "date": dm.group(1) if dm else "",
-            "internal": internal,
-            "body": body,
-            "attachments": _attachments_in(card),
-            "images": _data_images(body_el),
-        })
-    return comments
+    return _comments_in(_soup(html))
 
 
 def parse_resolution(html: str) -> dict:
-    """Extract resolution text + attachments from the Resolve sub-view.
+    """Extract resolution text + its own comment thread + attachments from the Resolve
+    sub-view.
 
     Confirmed live 2026-06-23: scoped to div.resolution-container; the rendered
     resolution text is div.post-content (NOT div.ql-editor — that is the empty edit
-    form). Attachments are Download affordances within the panel.
+    form). Attachments are Download affordances within the panel. A resolution can
+    also carry a comment THREAD (same card markup as ticket comments) — captured here
+    scoped to the container so the main ticket comments are never double-counted.
     """
     soup = _soup(html)
     region = soup.select_one("div.resolution-container")
     if region is None:
-        return {"text": "", "attachments": []}
+        return {"text": "", "comments": [], "attachments": []}
     content = region.select_one("div.post-content")
     text = _clean(content.get_text(" ")) if content else ""
     # icon_only: the resolution file is an icon button[title="Download"]; never count a
     # comment's text-"Download" that may be rendered alongside the resolution panel.
-    return {"text": text, "attachments": _attachments_in(region, icon_only=True)}
+    return {
+        "text": text,
+        "comments": _comments_in(region),
+        "attachments": _attachments_in(region, icon_only=True),
+    }
 
 
 def parse_files(html: str) -> list[dict]:

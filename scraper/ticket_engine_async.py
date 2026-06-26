@@ -28,20 +28,31 @@ async def _fetch_ticket(portal, tid, output_dir, cb, parse_fn) -> dict | str | o
     resolve_n = await portal.subview_count("Resolve")
     files_n = await portal.subview_count("Files")
     cb.on_log("info", f"#{tid}: sub-views — Resolve={resolve_n}, Files={files_n}")
+    res_saved: list[Path] = []
     if resolve_n > 0:
         res_html = await portal.open_subview("Resolve", ready_selector="div.resolution-container")
         data["resolution"] = parse_resolution(res_html)
-    saved: list[Path] = []
+        # The Resolve view has its OWN Download button(s); the Files panel does NOT
+        # include the resolution's file, so download it here while the view is open.
+        res_saved = await portal.download_all(Path(output_dir) / "attachments" / tid)
+        _res = data["resolution"]
+        cb.on_log("info",
+            f"#{tid}: resolution {len(_res.get('text') or '')} chars, "
+            f"{len(_res.get('comments') or [])} comment(s), {len(res_saved)} file(s)")
+    files_saved: list[Path] = []
     if files_n > 0:
         await portal.open_subview("Files", ready_selector='button[title*="Download"]')
-        saved = await portal.download_all(Path(output_dir) / "attachments" / tid)
-        cb.on_log("info", f"#{tid}: downloaded {len(saved)} file(s)")
-    data["attachments"] = [{"filename": p.name, "saved_path": str(p)} for p in saved]
-    by_name = {p.name: p for p in saved}
+        files_saved = await portal.download_all(Path(output_dir) / "attachments" / tid)
+        cb.on_log("info", f"#{tid}: downloaded {len(files_saved)} file(s)")
+    data["attachments"] = [{"filename": p.name, "saved_path": str(p)} for p in files_saved]
+    # Resolution files come from the Resolve view's own Download button(s).
+    if isinstance(data.get("resolution"), dict):
+        data["resolution"]["attachments"] = [
+            {"filename": p.name, "saved_path": str(p)} for p in res_saved]
+    # Comment files are matched by name against everything downloaded this ticket.
+    by_name = {p.name: p for p in (res_saved + files_saved)}
     for c in data.get("comments") or []:
         _match_paths(c.get("attachments"), by_name)
-    if isinstance(data.get("resolution"), dict):
-        _match_paths(data["resolution"].get("attachments"), by_name)
     return data
 
 async def run_ticket_scrape_async(
