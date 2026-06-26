@@ -1,13 +1,14 @@
 # scraper/settings_dialog.py
-"""Settings dialog: per-type output folders (Tickets / Knowledge Base) and
-hidden portal credentials. Output paths are persisted via app_settings; the
-password is stored in the OS keyring via ticket_settings — never logged."""
+"""Settings dialog: per-type output folders (Tickets / Knowledge Base),
+browser mode toggle, and hidden portal credentials.  Output paths and browser
+mode are persisted via app_settings; the password is stored in the OS keyring
+via ticket_settings — never logged."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QWidget, QFileDialog, QDialogButtonBox, QMessageBox,
+    QButtonGroup, QDialog, QDialogButtonBox, QFileDialog, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton,
+    QVBoxLayout, QWidget,
 )
 
 import scraper.app_settings as app_settings
@@ -35,6 +36,31 @@ class SettingsDialog(QDialog):
         self.inp_kb = self._folder_row(
             layout, "Knowledge Base folder:", str(app_settings.kb_dir())
         )
+
+        # ── Browser mode ─────────────────────────────────────────────────────
+        layout.addWidget(_section_label("Browser Mode"))
+
+        mode_box = QGroupBox()
+        mode_layout = QVBoxLayout(mode_box)
+        mode_layout.setContentsMargins(8, 6, 8, 6)
+        mode_layout.setSpacing(6)
+
+        self._radio_light = QRadioButton(
+            "Light — one window, many tabs (recommended)"
+        )
+        self._radio_multi = QRadioButton(
+            "Multi-window — one Chrome per worker"
+        )
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.addButton(self._radio_light)
+        self._mode_group.addButton(self._radio_multi)
+
+        mode_layout.addWidget(self._radio_light)
+        mode_layout.addWidget(self._radio_multi)
+        layout.addWidget(mode_box)
+
+        # Initialise from persisted setting (default = light)
+        self.set_browser_mode_value(app_settings.browser_mode())
 
         # ── Portal credentials (collapsible) ─────────────────────────────────
         self._toggle_btn = QPushButton("▸  Portal credentials")
@@ -86,6 +112,19 @@ class SettingsDialog(QDialog):
         bb.rejected.connect(self.reject)
         layout.addWidget(bb)
 
+    # ── browser-mode helpers ──────────────────────────────────────────────────
+
+    def set_browser_mode_value(self, m: str) -> None:
+        """Select the radio button matching *m* ("light" or "multi"). Defaults to light."""
+        if m == "multi":
+            self._radio_multi.setChecked(True)
+        else:
+            self._radio_light.setChecked(True)
+
+    def _browser_mode_value(self) -> str:
+        """Return the currently selected browser mode string."""
+        return "multi" if self._radio_multi.isChecked() else "light"
+
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _folder_row(self, parent_layout: QVBoxLayout, label: str, value: str) -> QLineEdit:
@@ -127,9 +166,18 @@ class SettingsDialog(QDialog):
                     "You will need to re-enter it each session.")
         QMessageBox.information(self, "Saved", "Portal credentials saved.")
 
-    def _save_paths(self):
-        app_settings.save(self.inp_tickets.text(), self.inp_kb.text())
+    def _save(self):
+        """Persist output folders + browser mode, then close the dialog."""
+        app_settings.save(
+            self.inp_tickets.text(),
+            self.inp_kb.text(),
+            browser_mode=self._browser_mode_value(),
+        )
         self.accept()
+
+    def _save_paths(self):
+        """Alias kept for back-compat (button box still connects here via accepted signal)."""
+        self._save()
 
 
 def _section_label(text: str) -> QLabel:

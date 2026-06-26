@@ -61,3 +61,34 @@ def test_shutdown_cancels_and_waits_running_worker():
     t._worker = _FakeWorker()
     t.shutdown()
     assert t._control.cancelled and t._worker.waited
+
+
+def test_ticket_tab_passes_browser_mode_to_worker(tmp_path, monkeypatch):
+    import scraper.app_settings as s
+    monkeypatch.setattr(s, "_file", lambda: tmp_path / "app_settings.json")
+    s.set_browser_mode("multi")
+    import scraper.ticket_tab as tt
+    import scraper.ticket_settings as ts_mod
+    captured = {}
+
+    class _NoOp:
+        """Callable no-op that also acts as a signal (has .connect)."""
+        def __call__(self, *a, **k): pass
+        def connect(self, *a, **k): pass
+
+    class _StubWorker:
+        def __init__(self, *a, **k):
+            captured.update(k)
+            self.control = k.get("control")
+
+        def __getattr__(self, n):
+            return _NoOp()  # signals/.start/isRunning — all no-op
+
+    monkeypatch.setattr(tt, "AsyncTicketWorker", _StubWorker)
+    monkeypatch.setattr(ts_mod, "load", lambda: {"portal_url": "https://x", "username": "u"})
+    monkeypatch.setattr(ts_mod, "load_password", lambda u: "pw")
+
+    tab = tt.TicketTab()
+    tab.inp_tickets.setText("76511")   # real input widget (QLineEdit)
+    tab._start()
+    assert captured.get("mode") == "multi"

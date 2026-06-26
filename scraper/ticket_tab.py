@@ -304,10 +304,11 @@ class TicketTab(QWidget):
         workers          = self.spn_workers.value()
         output_dir       = app_settings.tickets_dir()
 
+        mode = app_settings.browser_mode()
         self._worker = AsyncTicketWorker(
             portal_url, username, password, ticket_ids,
             force=force, workers=workers, output_dir=output_dir,
-            control=self._control, mode="light",
+            control=self._control, mode=mode,
         )
         self._worker.log.connect(self._emit_log)
         self._worker.progress.connect(self._on_progress)

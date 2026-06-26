@@ -21,3 +21,12 @@ def test_dialog_constructs_and_prefills(tmp_path, monkeypatch):
 def test_credentials_section_hidden_by_default():
     dlg = SettingsDialog()
     assert dlg.cred_box.isVisible() is False  # collapsed until expanded
+
+
+def test_settings_dialog_persists_browser_mode(tmp_path, monkeypatch):
+    import scraper.app_settings as s
+    monkeypatch.setattr(s, "_file", lambda: tmp_path / "app_settings.json")
+    dlg = SettingsDialog()
+    dlg.set_browser_mode_value("multi")   # helper the dialog exposes for the control
+    dlg._save()                            # the dialog's save handler
+    assert s.browser_mode() == "multi"
