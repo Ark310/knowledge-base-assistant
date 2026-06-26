@@ -62,3 +62,5 @@ class AsyncTicketWorker(QThread):
             self.log.emit("error", f"Scrape thread error ({type(exc).__name__}).")
             self.finished_report.emit({"total": len(self._ids), "saved": 0, "skipped": 0,
                                        "not_found": 0, "failed": len(self._ids), "retried": 0})
+        finally:
+            self._pw = ""   # drop the password from memory as soon as the run ends
