@@ -14,7 +14,7 @@ from scraper.writers.ticket_writer import save_ticket
 
 _SESSION_EXPIRED = object()
 
-async def _fetch_ticket(portal, tid, output_dir, cb, parse_fn) -> dict | str | object | None:
+async def _fetch_ticket(portal, tid, output_dir, cb, parse_fn, parse_resolution_fn) -> dict | str | object | None:
     html = await portal.open_ticket(tid)
     if portal.is_login_page(html):
         return _SESSION_EXPIRED
@@ -31,7 +31,7 @@ async def _fetch_ticket(portal, tid, output_dir, cb, parse_fn) -> dict | str | o
     res_saved: list[Path] = []
     if resolve_n > 0:
         res_html = await portal.open_subview("Resolve", ready_selector="div.resolution-container")
-        data["resolution"] = parse_resolution(res_html)
+        data["resolution"] = parse_resolution_fn(res_html)
         # The Resolve view has its OWN Download button(s); the Files panel does NOT
         # include the resolution's file, so download it here while the view is open.
         res_saved = await portal.download_all(Path(output_dir) / "attachments" / tid)
@@ -59,7 +59,7 @@ async def run_ticket_scrape_async(
     portal_url, username, password, ticket_ids, *,
     force=False, control, cb: TicketEngineCallbacks | None = None,
     workers=4, output_dir=None, browser_factory, page_portal_factory,
-    login_once, parse_fn=parse_ticket_detail, mode="light",
+    login_once, parse_fn=parse_ticket_detail, parse_resolution_fn=parse_resolution, mode="light",
 ) -> dict:
     cb = cb or TicketEngineCallbacks()
     workers = max(1, min(10, int(workers or 1)))
@@ -151,7 +151,7 @@ async def run_ticket_scrape_async(
                     attempts[tid] = attempts.get(tid, 0) + 1
                     n = attempts[tid]
                 try:
-                    res = await _fetch_ticket(portal, tid, output_dir, cb, parse_fn)
+                    res = await _fetch_ticket(portal, tid, output_dir, cb, parse_fn, parse_resolution_fn)
                     if res is _SESSION_EXPIRED:
                         cb.on_log("warning", f"{prefix}#{tid}: session expired")
                         raise RuntimeError("session expired")

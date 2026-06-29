@@ -159,3 +159,28 @@ def test_multi_mode_new_page_failure_closes_browser_no_orphan(tmp_path):
         page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="multi"))
     assert dict(rec["tickets"]).get("1") == "failed"   # drained, not stranded
     assert closed, "browser must be closed when new_page fails post-login (no orphan)"
+
+def test_resolution_parser_is_injectable(tmp_path):
+    seen = {}
+    class ResPortal:
+        base = "https://x"
+        def __init__(self, page): self.page = page
+        def ticket_url(self, t): return f"{self.base}/{t}"
+        def is_login_page(self, h): return False
+        def is_not_found(self, h, t): return False
+        async def login(self, u, p): return True
+        async def open_ticket(self, t): return f"<html>{t}</html>"
+        async def subview_count(self, label): return 1 if label == "Resolve" else 0
+        async def open_subview(self, label, ready_selector=None): return "RESHTML"
+        async def download_all(self, dest): return []
+    def my_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    def my_res(html): seen["html"] = html; return {"text": "R", "comments": [], "attachments": []}
+    rec = {}
+    async def login_ok(b, u, p): return True
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ["7"], force=True, control=RunControl(), cb=_cb(rec),
+        workers=1, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=lambda page: ResPortal(page),
+        login_once=login_ok, parse_fn=my_parse, parse_resolution_fn=my_res, mode="light"))
+    assert seen.get("html") == "RESHTML"          # injected resolution parser was used
+    assert dict(rec["tickets"])["7"] == "ok"
