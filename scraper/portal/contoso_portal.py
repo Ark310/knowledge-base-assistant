@@ -46,7 +46,14 @@ async def contoso_login_once(browser, username: str, password: str) -> bool:
 
 
 def _view_attachment_urls(html: str, base: str) -> list[tuple[str, str]]:
-    """Unique (absolute_url, link_text) for every view_attachment.aspx anchor."""
+    """Unique (absolute_url, link_text) for every view_attachment.aspx anchor.
+
+    Scans the WHOLE detail page — the live portal renders file links only at the
+    top level (confirmed: 76511=4, 76091=8 matched the saved files exactly), so they
+    map to top-level attachments. If a future ticket renders a view_attachment link
+    INSIDE a comment body, scope this scan to exclude comment-row tables and attach
+    it to that comment instead.
+    """
     out, seen = [], set()
     for a in BeautifulSoup(html or "", "lxml").find_all("a", href=True):
         href = a["href"]
