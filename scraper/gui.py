@@ -57,7 +57,12 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.tabs)
 
         self.ticket_tab = TicketTab()
-        self.tabs.addTab(self.ticket_tab, "Tickets")
+        self.tabs.addTab(self.ticket_tab, "Tickets — tradedesk")
+
+        self.ticket_tab_legacy = TicketTab(
+            portal_kind="contoso", default_url="https://support.contoso.example"
+        )
+        self.tabs.addTab(self.ticket_tab_legacy, "Tickets — Legacy")
 
         self.kb_tab = KBTab()
         self.tabs.addTab(self.kb_tab, "Knowledge Base")
@@ -110,15 +115,18 @@ class MainWindow(QMainWindow):
         SettingsDialog(self).exec()
 
     def closeEvent(self, event):
-        # Drain BOTH tabs — each tab's shutdown() cancels (which releases any pause)
+        # Drain ALL tabs — each tab's shutdown() cancels (which releases any pause)
         # and joins its worker, avoiding a QThread destroyed while still running.
         ticket_running = (hasattr(self, "ticket_tab")
                           and getattr(self.ticket_tab, "_worker", None) is not None
                           and self.ticket_tab._worker.isRunning())
+        legacy_running = (hasattr(self, "ticket_tab_legacy")
+                          and getattr(self.ticket_tab_legacy, "_worker", None) is not None
+                          and self.ticket_tab_legacy._worker.isRunning())
         kb_running = (hasattr(self, "kb_tab")
                       and getattr(self.kb_tab, "worker", None) is not None
                       and self.kb_tab.worker.isRunning())
-        if ticket_running or kb_running:
+        if ticket_running or legacy_running or kb_running:
             reply = QMessageBox.question(self, "Quit?",
                 "A scrape is running. Stop it and quit?",
                 QMessageBox.Yes | QMessageBox.No)
@@ -127,6 +135,8 @@ class MainWindow(QMainWindow):
                 return
         if hasattr(self, "ticket_tab"):
             self.ticket_tab.shutdown()
+        if hasattr(self, "ticket_tab_legacy"):
+            self.ticket_tab_legacy.shutdown()
         if hasattr(self, "kb_tab"):
             self.kb_tab.shutdown()
         event.accept()

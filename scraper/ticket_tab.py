@@ -69,8 +69,10 @@ class TicketTab(QWidget):
 
     MAX_LOG_LINES = 3000
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, portal_kind: str = "tradedesk", default_url: str | None = None):
         super().__init__(parent)
+        self._portal_kind = portal_kind
+        self._default_url = default_url
         self._worker: AsyncTicketWorker | None = None
         self._control = RunControl()
         self._ticket_rows: dict[str, int] = {}   # ticket_id -> table row
@@ -259,8 +261,13 @@ class TicketTab(QWidget):
             return
 
         # Read credentials from settings + keyring at run time (never from tab fields)
+        # Both portals share the same keyring entry (ticket_settings).
         settings   = ts.load()
-        portal_url = settings.get("portal_url", "").strip()
+        # tradedesk uses the configured URL; contoso uses the legacy default URL
+        if self._portal_kind == "contoso":
+            portal_url = self._default_url or "https://support.contoso.example"
+        else:
+            portal_url = settings.get("portal_url", "").strip()
         username   = settings.get("username", "").strip()
         password   = ts.load_password(username) if username else ""
 
@@ -309,6 +316,7 @@ class TicketTab(QWidget):
             portal_url, username, password, ticket_ids,
             force=force, workers=workers, output_dir=output_dir,
             control=self._control, mode=mode,
+            portal_kind=self._portal_kind,
         )
         self._worker.log.connect(self._emit_log)
         self._worker.progress.connect(self._on_progress)

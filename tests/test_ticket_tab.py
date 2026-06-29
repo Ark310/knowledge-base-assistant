@@ -92,3 +92,35 @@ def test_ticket_tab_passes_browser_mode_to_worker(tmp_path, monkeypatch):
     tab.inp_tickets.setText("76511")   # real input widget (QLineEdit)
     tab._start()
     assert captured.get("mode") == "multi"
+
+
+def test_ticket_tab_contoso_passes_portal_kind(tmp_path, monkeypatch):
+    """TicketTab(portal_kind='contoso') constructs offscreen and _start passes
+    portal_kind='contoso' to AsyncTicketWorker."""
+    import scraper.app_settings as s
+    monkeypatch.setattr(s, "_file", lambda: tmp_path / "app_settings.json")
+    import scraper.ticket_tab as tt
+    import scraper.ticket_settings as ts_mod
+    captured = {}
+
+    class _NoOp:
+        """Callable no-op that also acts as a signal (has .connect)."""
+        def __call__(self, *a, **k): pass
+        def connect(self, *a, **k): pass
+
+    class _StubWorker:
+        def __init__(self, *a, **k):
+            captured.update(k)
+            self.control = k.get("control")
+
+        def __getattr__(self, n):
+            return _NoOp()  # signals/.start/isRunning — all no-op
+
+    monkeypatch.setattr(tt, "AsyncTicketWorker", _StubWorker)
+    monkeypatch.setattr(ts_mod, "load", lambda: {"portal_url": "https://x", "username": "u"})
+    monkeypatch.setattr(ts_mod, "load_password", lambda u: "pw")
+
+    tab = tt.TicketTab(portal_kind="contoso", default_url="https://support.contoso.example")
+    tab.inp_tickets.setText("76511")
+    tab._start()
+    assert captured.get("portal_kind") == "contoso"
