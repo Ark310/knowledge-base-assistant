@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head><title>edit_bug.aspx - Acme Corp Bug Tracker</title></head>
+<body>
+<form id="ctl00" method="post" action="/edit_bug.aspx">
+
+<!-- Resolution marker — present means resolution exists -->
+<ul>
+  <li id="resolution">Resolution(filled)</li>
+</ul>
+
+<!-- Field rows (tr/td label-value structure) -->
+<table>
+  <tr>
+    <td>Created by testuser on 2026-01-15 10:30:00 AM</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>Project:</td>
+    <td>TradeDesk Demo</td>
+  </tr>
+  <tr>
+    <td>Organization:</td>
+    <td>Acme Corp</td>
+  </tr>
+</table>
+
+<!-- Comment row 1: 2 direct <table> children in cells[0] (standard comment, no image) -->
+<table>
+  <tr>
+    <td>
+      <table>
+        <tr><td>comment 1001 posted by agent.smith on 2026-01-15 11:00:00 AM</td></tr>
+      </table>
+      <table>
+        <tr><td>The login issue appears after a cache clear. Will investigate further.</td></tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+<!-- Comment row 2: contains a base64 image inside span.cmt_text -->
+<table>
+  <tr>
+    <td>
+      <table>
+        <tr><td>comment 1002 posted by dev.jones on 2026-01-16 09:00:00 AM</td></tr>
+      </table>
+      <table>
+        <tr>
+          <td>
+            Screenshot attached for reference:
+            <span class="cmt_text">
+              <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="screenshot" />
+            </span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+</form>
+</body>
+</html>
