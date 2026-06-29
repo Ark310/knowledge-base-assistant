@@ -14,7 +14,12 @@ class AsyncBrowser:
     async def open(self) -> "AsyncBrowser":
         self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.launch(headless=self.headless, channel="chrome")
-        self.context = await self._browser.new_context(accept_downloads=True)
+        # ignore_https_errors: the corporate portals' TLS chain is trusted by Chrome but
+        # not by Playwright's Node fetch (APIRequestContext) — without this, attachment
+        # downloads via context.request fail with "unable to get local issuer certificate"
+        # (bug-101). Only cert ERRORS are ignored; valid certs are unaffected.
+        self.context = await self._browser.new_context(
+            accept_downloads=True, ignore_https_errors=True)
         self.context.set_default_timeout(self.timeout_ms)
         return self
 

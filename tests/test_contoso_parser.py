@@ -174,3 +174,34 @@ def test_parse_resolution_empty_html():
 def test_parse_resolution_not_found_html():
     result = parse_resolution("<html><body>Ticket not found</body></html>")
     assert result == {"text": "", "comments": [], "attachments": []}
+
+
+def test_internal_comment_is_captured_with_flag():
+    # bug-101: internal comments render with an "Internal" badge before "comment N
+    # posted by …", so a startswith("comment") gate dropped them. Now captured + flagged.
+    html = """<html><body><table>
+      <tr><td>
+        <table><tr><td>Internal comment 555 posted by Bob on 2026-01-01 10:00 AM</td></tr></table>
+        <table><tr><td><span class="cmt_text">internal note body</span></td></tr></table>
+      </td></tr>
+    </table></body></html>"""
+    d = parse_ticket_detail(html, "999", "https://support.contoso.example")
+    by_id = {c["id"]: c for c in d["comments"]}
+    assert "555" in by_id, "internal comment must be captured"
+    assert by_id["555"]["internal"] is True
+    assert by_id["555"]["author"] == "Bob"
+    assert "internal note body" in by_id["555"]["body"]
+
+
+def test_image_only_comment_kept_even_with_empty_body():
+    # bug-101: a comment whose body is just a screenshot (no text) must still be kept.
+    html = """<html><body><table>
+      <tr><td>
+        <table><tr><td>comment 777 posted by Ann on 2026-02-02 09:00 AM</td></tr></table>
+        <table><tr><td><span class="cmt_text"><img src="data:image/png;base64,iVBORw0KGgo="></span></td></tr></table>
+      </td></tr>
+    </table></body></html>"""
+    d = parse_ticket_detail(html, "999", "https://support.contoso.example")
+    by_id = {c["id"]: c for c in d["comments"]}
+    assert "777" in by_id, "image-only comment must not be dropped on empty body"
+    assert by_id["777"]["images"] and by_id["777"]["images"][0]["data"]

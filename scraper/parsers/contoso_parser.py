@@ -107,12 +107,15 @@ _CREATED_BY_RE = re.compile(
 )
 
 # Regex to parse comment/email metadata header
+# NOT anchored with ^: an internal comment's header is prefixed with an "Internal"
+# badge ("Internal comment 12345 posted by …"), so we search rather than match-from-start
+# (bug-101 — internal comments were silently dropped by a startswith gate).
 _COMMENT_HDR_RE = re.compile(
-    r"^comment\s+(\d+)\s+posted\s+by\s+(\S+)\s+on\s+([\d-]+\s+[\d:]+\s+(?:AM|PM))",
+    r"comment\s+(\d+)\s+posted\s+by\s+(\S+)\s+on\s+([\d-]+\s+[\d:]+\s+(?:AM|PM))",
     re.IGNORECASE,
 )
 _EMAIL_HDR_RE = re.compile(
-    r"^email\s+(\d+)\s+sent\s+to\s+(\S+)\s+by\s+(\S+)\s+on\s+([\d-]+\s+[\d:]+\s+(?:AM|PM))",
+    r"email\s+(\d+)\s+sent\s+to\s+(\S+)\s+by\s+(\S+)\s+on\s+([\d-]+\s+[\d:]+\s+(?:AM|PM))",
     re.IGNORECASE,
 )
 
@@ -319,37 +322,32 @@ def _extract_comments(soup: BeautifulSoup) -> list[dict]:
         header_text = _clean(direct_tables[0].get_text())
         body_text   = _clean(direct_tables[1].get_text())
 
-        if not body_text:
-            continue
-
-        header_lower = header_text.lower()
-        if not (header_lower.startswith("comment ") or header_lower.startswith("email ")):
+        # Gate on the comment/email header pattern found ANYWHERE in the header (so an
+        # "Internal" badge prefix doesn't hide it). Do NOT skip on empty body_text — an
+        # image-only comment (screenshot, no text) is a real comment. (bug-101)
+        m_comment = _COMMENT_HDR_RE.search(header_text)
+        m_email   = _EMAIL_HDR_RE.search(header_text)
+        if not (m_comment or m_email):
             continue
 
         entry: dict = {
             "id":          "",
             "author":      "",
             "date":        "",
-            "internal":    False,
+            "internal":    "internal" in header_text.lower(),
             "body":        body_text,
             "images":      [],
             "attachments": [],
         }
 
-        m_comment = _COMMENT_HDR_RE.match(header_text)
-        m_email   = _EMAIL_HDR_RE.match(header_text)
-
         if m_comment:
             entry["id"]     = m_comment.group(1)
             entry["author"] = m_comment.group(2)
             entry["date"]   = m_comment.group(3).strip()
-        elif m_email:
+        else:
             entry["id"]     = m_email.group(1)
             entry["author"] = m_email.group(3)
             entry["date"]   = m_email.group(4).strip()
-        else:
-            entry["id"]     = "?"
-            entry["author"] = ""
 
         # Inline base64 images embedded in comment body
         # (data:mime/type;base64,...) in <span class="cmt_text"> <img> tags.
