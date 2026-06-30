@@ -11,8 +11,12 @@ from scraper.ticket_engine import (
 )
 from scraper.parsers.ticket_parser import parse_ticket_detail, parse_resolution
 from scraper.writers.ticket_writer import save_ticket
+from scraper.throttle import AdaptiveGate
 
 _SESSION_EXPIRED = object()
+# Recycle a worker's tab (close + reopen, same logged-in context) every N successful
+# tickets, to shed accumulated per-tab memory on long runs (bug-111 endurance).
+PAGE_RECYCLE_EVERY = 150
 # When a run ends with many tickets still pending (pool collapse / login failure /
 # cancel), we mark them all failed but emit at most this many per-ticket GUI updates —
 # a full per-item emit floods the Qt signal queue and hangs the UI on large batches
@@ -142,13 +146,14 @@ async def run_ticket_scrape_async(
                 raise
         return None, await shared_browser.new_page()
 
-    async def worker(idx):
+    async def worker(idx, gate):
         prefix = f"[W{idx + 1}] " if workers > 1 else ""
         if control.cancelled:
             return
         own_browser = None
         page = None
         rebuilds = 0
+        since_recycle = 0
         try:
             try:
                 own_browser, page = await _open_worker_page()
@@ -173,11 +178,17 @@ async def run_ticket_scrape_async(
                 async with lock:
                     attempts[tid] = attempts.get(tid, 0) + 1
                     n = attempts[tid]
+                # Adaptive gate: caps concurrent in-flight fetches + applies backoff so a
+                # timeout burst throttles load instead of saturating the shared browser.
+                await gate.acquire()
+                ok = False
+                broke = False
                 try:
                     res = await _fetch_ticket(portal, tid, output_dir, cb, parse_fn, parse_resolution_fn)
                     if res is _SESSION_EXPIRED:
                         cb.on_log("warning", f"{prefix}#{tid}: session expired")
                         raise RuntimeError("session expired")
+                    ok = True
                     # A page operation succeeded — reset the CONSECUTIVE-failure budget.
                     # (bug-111: this counter was never reset, so on a large batch a worker
                     # accumulated transient timeouts until it exhausted MAX_WORKER_REBUILDS
@@ -194,6 +205,7 @@ async def run_ticket_scrape_async(
                         await terminal(tid, "ok", "saved",
                             meta=(tid, res.get("title", ""), len(res.get("attachments") or [])))
                         cb.on_log("info", f"{prefix}[OK] #{tid}: {res.get('title') or ''}")
+                        since_recycle += 1
                 except Exception as exc:
                     if n < MAX_TICKET_ATTEMPTS:
                         cb.on_log("warning", f"{prefix}#{tid}: worker error ({type(exc).__name__}) "
@@ -216,14 +228,45 @@ async def run_ticket_scrape_async(
                             pass
                         own_browser = None
                     page = None
+                    since_recycle = 0
                     if rebuilds > MAX_WORKER_REBUILDS:
-                        cb.on_log("error", f"{prefix}too many crashes — worker exiting.")
-                        break
+                        cb.on_log("error", f"{prefix}too many consecutive failures — worker exiting.")
+                        broke = True
+                    else:
+                        try:
+                            own_browser, page = await _open_worker_page()
+                            portal = page_portal_factory(page)
+                        except Exception:
+                            cb.on_log("error", f"{prefix}rebuild failed — worker exiting.")
+                            page = None
+                            broke = True
+                finally:
+                    await gate.release(ok)
+                if broke:
+                    break
+                # Circuit breaker: failures persisted even after throttling to the floor.
+                # Pause for operator attention (resume after fixing) rather than burning
+                # through workers and mass-failing the rest (bug-111).
+                if gate.consume_trip():
+                    cb.on_log("error",
+                        f"{prefix}⚠ Sustained failures — run PAUSED. Check credentials/"
+                        "network/portal; reduce workers or enable Headless in Settings, "
+                        "then Resume.")
+                    control.pause()
+                    continue
+                # Periodic tab recycle: shed accumulated per-tab memory on long runs by
+                # reopening a fresh page in the same logged-in context (no re-login).
+                if ok and page is not None and since_recycle >= PAGE_RECYCLE_EVERY:
+                    since_recycle = 0
                     try:
-                        own_browser, page = await _open_worker_page()
+                        await page.close()
+                    except Exception:
+                        pass
+                    try:
+                        page = await (own_browser or shared_browser).new_page()
                         portal = page_portal_factory(page)
                     except Exception:
-                        cb.on_log("error", f"{prefix}rebuild failed — worker exiting.")
+                        cb.on_log("error", f"{prefix}recycle failed — worker exiting.")
                         page = None
                         break
         finally:
@@ -244,7 +287,8 @@ async def run_ticket_scrape_async(
     try:
         if total:
             n_workers = max(1, min(workers, total))
-            await asyncio.gather(*(worker(i) for i in range(n_workers)))
+            gate = AdaptiveGate(n_workers)
+            await asyncio.gather(*(worker(i, gate) for i in range(n_workers)))
             if not control.cancelled:
                 await drain_to_failed("(not processed — all workers stopped)")
         async with lock:

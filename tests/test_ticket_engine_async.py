@@ -183,6 +183,50 @@ def test_large_drain_is_capped_no_ui_flood(tmp_path):
     assert len(rec.get("tickets", [])) <= tea._DRAIN_TICKET_CAP   # NOT 300 — capped
 
 
+def test_page_recycled_on_long_run(tmp_path, monkeypatch):
+    # bug-111 endurance: a worker reopens a fresh tab every PAGE_RECYCLE_EVERY successful
+    # tickets to shed per-tab memory. With the interval at 3, a 7-ticket run recycles
+    # twice -> the shared browser hands out > 1 page (initial + 2 recycles).
+    monkeypatch.setattr(tea, "PAGE_RECYCLE_EVERY", 3)
+    browser = FakeAsyncBrowser()
+    factory, _ = make_factory(lambda tid, n: False)        # never crash
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    rec = {}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", [str(i) for i in range(1, 8)],
+        force=True, control=RunControl(), cb=_cb(rec),
+        workers=1, output_dir=tmp_path, browser_factory=lambda: browser,
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
+    assert rec["report"]["saved"] == 7
+    assert browser.pages >= 3, "page should have been recycled at least twice"
+
+
+def test_circuit_breaker_pauses_on_sustained_failure(tmp_path, monkeypatch):
+    # bug-111: when failures persist after throttling to the floor, the run PAUSES for
+    # operator attention instead of mass-failing. Use a small window so the breaker trips
+    # quickly, and a control whose pause() also cancels so the test can never hang.
+    import scraper.throttle as throttle
+    monkeypatch.setattr(tea, "AdaptiveGate",
+        lambda mp: throttle.AdaptiveGate(mp, window=6, min_permits=1, breaker_at=0.85,
+                                         backoff_base=0.01, backoff_max=0.05))
+    paused = {"n": 0}
+    class Ctl(RunControl):
+        def pause(self):
+            paused["n"] += 1
+            self.cancel()                                  # break workers out -> no hang
+    factory, _ = make_factory(lambda tid, n: True)         # everything fails
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    rec = {}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", [str(i) for i in range(1, 41)],
+        force=True, control=Ctl(), cb=_cb(rec),
+        workers=4, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
+    assert paused["n"] >= 1, "breaker should pause the run on sustained failure"
+
+
 def test_resolution_parser_is_injectable(tmp_path):
     seen = {}
     class ResPortal:
