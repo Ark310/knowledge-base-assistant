@@ -38,9 +38,18 @@ _LABEL_MAP: dict[str, str] = {
 
 _TICKET_NO_RE = re.compile(r"Ticket\s*#\s*(\d+)", re.I)
 _CREATED_RE = re.compile(r"Created\s+(\d{2}/\d{2}/\d{4})\s+by\s+(\S+)", re.I)
-# The header text is "comment {id} posted by " — the author name is a SEPARATE
-# <a> link that follows (confirmed live 2026-06-23), so we capture only the id here.
-_COMMENT_HDR_RE = re.compile(r"comment\s+(\d+)\s+posted by", re.I)
+# Each thread entry's header text identifies it. A comment reads "comment {id} posted
+# by "; an email reads "email {id} received from " (inbound) or "email {id} sent by "
+# (outbound). The phrase sits in one text node; the author/sender is a SEPARATE <a> link
+# that follows (confirmed live: comments 2026-06-23, emails 2026-06-30 on ticket 70403).
+# NB the tradedesk phrasing differs from the legacy contoso portal ("email N sent to X
+# by Y") — do not share the legacy _EMAIL_HDR_RE. Emails were previously dropped
+# entirely because only the comment header was matched (bug-106).
+_COMMENT_HDR_RE = re.compile(r"comment\s+(\d+)\s+posted\s+by", re.I)
+_EMAIL_HDR_RE = re.compile(r"email\s+(\d+)\s+(?:received\s+from|sent\s+by)", re.I)
+# Combined comment|email matcher: group(1) = comment id, group(2) = email id.
+_ENTRY_HDR_RE = re.compile(
+    r"comment\s+(\d+)\s+posted\s+by|email\s+(\d+)\s+(?:received\s+from|sent\s+by)", re.I)
 _DATE_RE = re.compile(r"([A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*[AP]M)")
 
 
@@ -180,11 +189,13 @@ def _climb_to_card(node) -> Tag | None:
 
 
 def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
-    """Each comment is a `div.(p-2 sm:p-4) rounded-lg border bg-white` holding a
-    "comment N posted by " header. Anchor on the header text, climb to that card."""
+    """Each thread entry (comment OR email) is a `div.(p-2 sm:p-4) rounded-lg border
+    bg-white` holding a "comment N posted by " / "email N received from " / "email N
+    sent by " header. Anchor on the header text, climb to that card. Each live entry
+    has its OWN card (confirmed on 70403: 7 entries → 7 cards), so dedup by card."""
     cards: list[Tag] = []
     seen: set[int] = set()
-    for s in soup.find_all(string=_COMMENT_HDR_RE):
+    for s in soup.find_all(string=_ENTRY_HDR_RE):
         card = _climb_to_card(s.parent)
         if card is not None and id(card) not in seen:
             seen.add(id(card))
@@ -193,14 +204,16 @@ def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
 
 
 def _card_to_comment(card: Tag) -> dict | None:
-    """Parse one comment card into the canonical comment dict (or None if no header)."""
-    hsn = card.find(string=_COMMENT_HDR_RE)
+    """Parse one thread-entry card (comment or email) into the canonical comment dict
+    (or None if no header). Emails carry the same shape; author = sender."""
+    hsn = card.find(string=_ENTRY_HDR_RE)
     if hsn is None:
         return None
-    cid = _COMMENT_HDR_RE.search(hsn).group(1)
+    m = _ENTRY_HDR_RE.search(hsn)
+    cid = m.group(1) or m.group(2)
 
-    # Author is the <a> link that follows "posted by " (the real DOM splits the
-    # name out of the header span). Constrain it to this card.
+    # Author is the <a> link that follows the header phrase (the real DOM splits the
+    # name/sender out of the header span). Constrain it to this card.
     a = hsn.find_next("a")
     author = _clean(a.get_text()) if (a is not None and card in a.parents) else ""
 
