@@ -188,6 +188,27 @@ def _climb_to_card(node) -> Tag | None:
     return None
 
 
+def _in_comment_body(node) -> bool:
+    """True if *node* sits inside a `div.comment-html-content` — i.e. it is body text,
+    not a header. A real entry header is never inside the body, so quoted/forwarded
+    prose (e.g. a forwarded email rendered as a nested card whose own header text reads
+    "email 5 sent by …") must not be mistaken for a thread entry (bug-106 review)."""
+    p = node.parent
+    while isinstance(p, Tag):
+        if "comment-html-content" in (p.get("class") or []):
+            return True
+        p = p.parent
+    return False
+
+
+def _entry_header(scope: Tag):
+    """First entry-header text node in *scope*, in document order, that is NOT body text."""
+    for s in scope.find_all(string=_ENTRY_HDR_RE):
+        if not _in_comment_body(s):
+            return s
+    return None
+
+
 def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
     """Each thread entry (comment OR email) is a `div.(p-2 sm:p-4) rounded-lg border
     bg-white` holding a "comment N posted by " / "email N received from " / "email N
@@ -196,6 +217,8 @@ def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
     cards: list[Tag] = []
     seen: set[int] = set()
     for s in soup.find_all(string=_ENTRY_HDR_RE):
+        if _in_comment_body(s):
+            continue  # body prose / nested forwarded card — not a real header
         card = _climb_to_card(s.parent)
         if card is not None and id(card) not in seen:
             seen.add(id(card))
@@ -206,7 +229,7 @@ def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
 def _card_to_comment(card: Tag) -> dict | None:
     """Parse one thread-entry card (comment or email) into the canonical comment dict
     (or None if no header). Emails carry the same shape; author = sender."""
-    hsn = card.find(string=_ENTRY_HDR_RE)
+    hsn = _entry_header(card)
     if hsn is None:
         return None
     m = _ENTRY_HDR_RE.search(hsn)

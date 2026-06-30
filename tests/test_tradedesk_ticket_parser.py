@@ -263,6 +263,51 @@ def test_comment_still_captured_alongside_emails():
     assert e["internal"] is True
 
 
+def test_quoted_email_in_body_does_not_create_phantom_entry():
+    # A forwarded/quoted email rendered as a NESTED bordered card INSIDE a real
+    # entry's body must NOT be parsed as its own thread entry. Because the header
+    # matcher searches text nodes (re.search), body prose like "email 5 sent by …"
+    # inside a nested rounded-lg/border/bg-white block would otherwise climb to that
+    # inner card and become a phantom entry with its own id/author (bug-106 review).
+    synthetic = """
+    <html><body><div class="space-y-2 sm:space-y-4">
+      <div class="p-2 sm:p-4 rounded-lg border bg-white">
+        <div class="flex-1 min-w-0">
+          <span class="truncate"><span class="hidden sm:inline">email 800 received from </span><a class="text-blue-500">Real Customer &lt;rc@example.com&gt;</a></span>
+          <span>Jun 12, 2025 at 2:00 PM</span>
+          <div class="comment-html-content">
+            <p>See the forwarded message below.</p>
+            <div class="p-2 rounded-lg border bg-white">
+              <span class="truncate"><span class="hidden sm:inline">email 5 sent by </span><a class="text-green-600">vendor@x.com</a></span>
+              <div class="comment-html-content"><p>Original vendor reply text.</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></body></html>
+    """
+    cs = parse_comments(synthetic)
+    assert [c["id"] for c in cs] == ["800"], "quoted/forwarded email must not be a phantom entry"
+
+
+def test_header_like_prose_in_body_is_not_a_separate_entry():
+    # Plain body prose containing a header-like phrase (no nested card) must not add
+    # an entry; the real header is what counts.
+    synthetic = """
+    <html><body><div class="space-y-2 sm:space-y-4">
+      <div class="p-2 sm:p-4 rounded-lg border bg-white">
+        <div class="flex-1 min-w-0">
+          <span class="truncate"><span class="hidden sm:inline">comment 700 posted by </span><a class="text-blue-600">Agent</a></span>
+          <span>Jun 12, 2025 at 2:00 PM</span>
+          <div class="comment-html-content"><p>Customer wrote: email 42 received from billing was never delivered.</p></div>
+        </div>
+      </div>
+    </div></body></html>
+    """
+    cs = parse_comments(synthetic)
+    assert len(cs) == 1 and cs[0]["id"] == "700"
+
+
 # ── parse_resolution ──────────────────────────────────────────────────────────
 
 def test_resolution_text_non_empty():
