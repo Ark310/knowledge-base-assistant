@@ -49,3 +49,21 @@ def test_invalid_browser_mode_falls_back_to_light(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "_file", lambda: tmp_path / "app_settings.json")
     s.set_browser_mode("bogus")
     assert s.browser_mode() == "light"
+
+def test_headless_default_is_false(tmp_path, monkeypatch):
+    import scraper.app_settings as s
+    monkeypatch.setattr(s, "_file", lambda: tmp_path / "app_settings.json")
+    assert s.headless() is False
+
+def test_set_headless_persists_and_preserves_other_settings(tmp_path, monkeypatch):
+    import scraper.app_settings as s
+    monkeypatch.setattr(s, "_file", lambda: tmp_path / "app_settings.json")
+    s.save("T:/tickets", "K:/kb")
+    s.set_browser_mode("multi")
+    s.set_headless(True)
+    assert s.headless() is True
+    # must NOT wipe the saved paths or browser mode
+    assert s.browser_mode() == "multi"
+    assert str(s.tickets_dir()) in ("T:\\tickets", "T:/tickets")
+    s.set_headless(False)
+    assert s.headless() is False

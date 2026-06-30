@@ -50,6 +50,18 @@ def set_browser_mode(mode: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(d, indent=2), encoding="utf-8")
 
+def headless() -> bool:
+    """Run the scrape browser headless (no visible windows). Default False (headed).
+    Headless is far lighter per tab — recommended for large batches (bug-111)."""
+    return bool(load().get("headless", False))
+
+def set_headless(on: bool) -> None:
+    d = load()
+    d["headless"] = bool(on)
+    p = _file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(d, indent=2), encoding="utf-8")
+
 def tickets_dir() -> Path:
     v = load().get("tickets_dir")
     return Path(v) if v else _default_tickets()
