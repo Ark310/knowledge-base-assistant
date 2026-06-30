@@ -1,10 +1,21 @@
 from pathlib import Path
 import sys
 
-APP_VERSION = "4.0.1"
+APP_VERSION = "4.0.2"
 """
 Changelog
 ─────────
+v4.0.2 2026-06-30  Robust large-batch scraping (bug-111: an 18k-ticket @ 10-worker run
+                   collapsed — 0 saved). Fixes: (a) the per-worker failure budget is now
+                   CONSECUTIVE (reset on success) — it was a lifetime counter that
+                   guaranteed pool collapse on big batches; (b) a Headless browser toggle
+                   in Settings (far lighter per tab — validated headless@5 = 99 saved/0
+                   timeouts vs 0 saved headed@10); (c) an adaptive concurrency gate +
+                   backoff that throttles load on a timeout burst instead of saturating
+                   the shared Chrome; (d) a circuit breaker that PAUSES + alerts on
+                   sustained failure rather than mass-failing; (e) periodic tab recycling
+                   for long-run endurance; (f) a batched fail-drain so a collapse can't
+                   flood/hang the UI. Also tradedesk email entries are now captured (bug-106).
 v4.0.1 2026-06-29  Async rewrite (feat/kb-scraper-v4.0.1): default LIGHT mode (one
                    Chrome window, one login, N tabs) fixes the high-worker freeze, with
                    a multi-window Settings toggle; resolution file/thread completeness;
