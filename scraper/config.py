@@ -1,10 +1,15 @@
 from pathlib import Path
 import sys
 
-APP_VERSION = "4.0"
+APP_VERSION = "4.0.1"
 """
 Changelog
 ─────────
+v4.0.1 2026-06-29  Async rewrite (feat/kb-scraper-v4.0.1): default LIGHT mode (one
+                   Chrome window, one login, N tabs) fixes the high-worker freeze, with
+                   a multi-window Settings toggle; resolution file/thread completeness;
+                   added a Legacy support.contoso.example portal tab at parity (internal
+                   comments + view_attachment.aspx files). Packaged to dist/.
 v4.0  2026-06-23  Major overhaul (in progress on feat/kb-scraper-v4):
                    A) Support portal moved support.contoso.example → portal.contoso.example
                       (encrypted JS SPA): rebuilt ticket scraping on a TradeDeskPortal

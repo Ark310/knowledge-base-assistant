@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import Slot
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -38,13 +38,10 @@ from PySide6.QtWidgets import (
 
 import scraper.app_settings as app_settings
 import scraper.ticket_settings as ts
+from scraper.async_runner import AsyncTicketWorker
 from scraper.control import RunControl
 from scraper.settings_dialog import SettingsDialog
-from scraper.ticket_engine import (
-    TicketEngineCallbacks,
-    parse_ticket_input,
-    run_ticket_scrape,
-)
+from scraper.ticket_engine import parse_ticket_input
 
 log = logging.getLogger("scraper")
 
@@ -62,56 +59,7 @@ _STATUS_LABELS = {
 }
 
 
-# ── Worker thread ─────────────────────────────────────────────────────────────
-
-class _TicketSignals(QObject):
-    log_sig      = Signal(str, str)          # level, message
-    progress_sig = Signal(int, int)          # current, total
-    ticket_sig   = Signal(str, str)          # ticket_id, status
-    finished_sig = Signal(dict)              # report
-    meta_sig     = Signal(str, str, int)     # ticket_id, title, files_count
-
-
-class _TicketWorker(QThread):
-    def __init__(self, portal_url, username, password, ticket_ids, force,
-                 control, workers=4, output_dir=None, parent=None):
-        super().__init__(parent)
-        self._portal_url = portal_url
-        self._username   = username
-        self._password   = password   # held in memory only while thread is alive
-        self._ticket_ids = ticket_ids
-        self._force      = force
-        self._control    = control
-        self._workers    = workers
-        self._output_dir = output_dir
-        self.signals     = _TicketSignals()
-
-    def run(self):
-        cb = TicketEngineCallbacks(
-            on_log      = lambda lvl, msg: self.signals.log_sig.emit(lvl, msg),
-            on_progress = lambda i, n:     self.signals.progress_sig.emit(i, n),
-            on_ticket   = lambda tid, st:  self.signals.ticket_sig.emit(tid, st),
-            on_finished = lambda rep:      self.signals.finished_sig.emit(rep),
-            on_ticket_meta = lambda tid, title, n: self.signals.meta_sig.emit(tid, title, n),
-        )
-        try:
-            run_ticket_scrape(
-                portal_url = self._portal_url,
-                username   = self._username,
-                password   = self._password,
-                ticket_ids = self._ticket_ids,
-                force      = self._force,
-                control    = self._control,
-                cb         = cb,
-                workers    = self._workers,
-                output_dir = self._output_dir,
-            )
-        except Exception as exc:
-            log.exception("TicketWorker crashed")
-            self.signals.log_sig.emit("error", f"Ticket scraper crashed: {exc}")
-            self.signals.finished_sig.emit({})
-        finally:
-            self._password = ""   # clear from memory as soon as we're done
+# (AsyncTicketWorker imported from scraper.async_runner — no local worker class needed)
 
 
 # ── Tab widget ────────────────────────────────────────────────────────────────
@@ -121,9 +69,11 @@ class TicketTab(QWidget):
 
     MAX_LOG_LINES = 3000
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, portal_kind: str = "tradedesk", default_url: str | None = None):
         super().__init__(parent)
-        self._worker: _TicketWorker | None = None
+        self._portal_kind = portal_kind
+        self._default_url = default_url
+        self._worker: AsyncTicketWorker | None = None
         self._control = RunControl()
         self._ticket_rows: dict[str, int] = {}   # ticket_id -> table row
 
@@ -311,8 +261,13 @@ class TicketTab(QWidget):
             return
 
         # Read credentials from settings + keyring at run time (never from tab fields)
+        # Both portals share the same keyring entry (ticket_settings).
         settings   = ts.load()
-        portal_url = settings.get("portal_url", "").strip()
+        # tradedesk uses the configured URL; contoso uses the legacy default URL
+        if self._portal_kind == "contoso":
+            portal_url = self._default_url or "https://support.contoso.example"
+        else:
+            portal_url = settings.get("portal_url", "").strip()
         username   = settings.get("username", "").strip()
         password   = ts.load_password(username) if username else ""
 
@@ -356,15 +311,18 @@ class TicketTab(QWidget):
         workers          = self.spn_workers.value()
         output_dir       = app_settings.tickets_dir()
 
-        self._worker = _TicketWorker(
-            portal_url, username, password, ticket_ids, force,
-            control=self._control, workers=workers, output_dir=output_dir,
+        mode = app_settings.browser_mode()
+        self._worker = AsyncTicketWorker(
+            portal_url, username, password, ticket_ids,
+            force=force, workers=workers, output_dir=output_dir,
+            control=self._control, mode=mode,
+            portal_kind=self._portal_kind,
         )
-        self._worker.signals.log_sig.connect(self._emit_log)
-        self._worker.signals.progress_sig.connect(self._on_progress)
-        self._worker.signals.ticket_sig.connect(self._on_ticket_done)
-        self._worker.signals.finished_sig.connect(self._on_finished)
-        self._worker.signals.meta_sig.connect(self._on_ticket_meta)
+        self._worker.log.connect(self._emit_log)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.ticket.connect(self._on_ticket_done)
+        self._worker.finished_report.connect(self._on_finished)
+        self._worker.ticket_meta.connect(self._on_ticket_meta)
         self._worker.finished.connect(self._worker_thread_done)
 
         self._set_running(True)

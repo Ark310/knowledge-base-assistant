@@ -27,11 +27,28 @@ def load() -> dict:
         pass
     return {}
 
-def save(tickets_dir: str, kb_dir: str) -> None:
+_VALID_MODES = ("light", "multi")
+
+def save(tickets_dir: str, kb_dir: str, browser_mode: str | None = None) -> None:
+    d = load()
+    d["tickets_dir"] = str(tickets_dir)
+    d["kb_dir"] = str(kb_dir)
+    if browser_mode in _VALID_MODES:
+        d["browser_mode"] = browser_mode
     p = _file()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"tickets_dir": str(tickets_dir), "kb_dir": str(kb_dir)}, indent=2),
-                 encoding="utf-8")
+    p.write_text(json.dumps(d, indent=2), encoding="utf-8")
+
+def browser_mode() -> str:
+    m = load().get("browser_mode")
+    return m if m in _VALID_MODES else "light"
+
+def set_browser_mode(mode: str) -> None:
+    d = load()
+    d["browser_mode"] = mode if mode in _VALID_MODES else "light"
+    p = _file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(d, indent=2), encoding="utf-8")
 
 def tickets_dir() -> Path:
     v = load().get("tickets_dir")

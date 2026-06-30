@@ -38,9 +38,18 @@ _LABEL_MAP: dict[str, str] = {
 
 _TICKET_NO_RE = re.compile(r"Ticket\s*#\s*(\d+)", re.I)
 _CREATED_RE = re.compile(r"Created\s+(\d{2}/\d{2}/\d{4})\s+by\s+(\S+)", re.I)
-# The header text is "comment {id} posted by " — the author name is a SEPARATE
-# <a> link that follows (confirmed live 2026-06-23), so we capture only the id here.
-_COMMENT_HDR_RE = re.compile(r"comment\s+(\d+)\s+posted by", re.I)
+# Each thread entry's header text identifies it. A comment reads "comment {id} posted
+# by "; an email reads "email {id} received from " (inbound) or "email {id} sent by "
+# (outbound). The phrase sits in one text node; the author/sender is a SEPARATE <a> link
+# that follows (confirmed live: comments 2026-06-23, emails 2026-06-30 on ticket 70403).
+# NB the tradedesk phrasing differs from the legacy contoso portal ("email N sent to X
+# by Y") — do not share the legacy _EMAIL_HDR_RE. Emails were previously dropped
+# entirely because only the comment header was matched (bug-106).
+_COMMENT_HDR_RE = re.compile(r"comment\s+(\d+)\s+posted\s+by", re.I)
+_EMAIL_HDR_RE = re.compile(r"email\s+(\d+)\s+(?:received\s+from|sent\s+by)", re.I)
+# Combined comment|email matcher: group(1) = comment id, group(2) = email id.
+_ENTRY_HDR_RE = re.compile(
+    r"comment\s+(\d+)\s+posted\s+by|email\s+(\d+)\s+(?:received\s+from|sent\s+by)", re.I)
 _DATE_RE = re.compile(r"([A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*[AP]M)")
 
 
@@ -179,12 +188,37 @@ def _climb_to_card(node) -> Tag | None:
     return None
 
 
+def _in_comment_body(node) -> bool:
+    """True if *node* sits inside a `div.comment-html-content` — i.e. it is body text,
+    not a header. A real entry header is never inside the body, so quoted/forwarded
+    prose (e.g. a forwarded email rendered as a nested card whose own header text reads
+    "email 5 sent by …") must not be mistaken for a thread entry (bug-106 review)."""
+    p = node.parent
+    while isinstance(p, Tag):
+        if "comment-html-content" in (p.get("class") or []):
+            return True
+        p = p.parent
+    return False
+
+
+def _entry_header(scope: Tag):
+    """First entry-header text node in *scope*, in document order, that is NOT body text."""
+    for s in scope.find_all(string=_ENTRY_HDR_RE):
+        if not _in_comment_body(s):
+            return s
+    return None
+
+
 def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
-    """Each comment is a `div.(p-2 sm:p-4) rounded-lg border bg-white` holding a
-    "comment N posted by " header. Anchor on the header text, climb to that card."""
+    """Each thread entry (comment OR email) is a `div.(p-2 sm:p-4) rounded-lg border
+    bg-white` holding a "comment N posted by " / "email N received from " / "email N
+    sent by " header. Anchor on the header text, climb to that card. Each live entry
+    has its OWN card (confirmed on 70403: 7 entries → 7 cards), so dedup by card."""
     cards: list[Tag] = []
     seen: set[int] = set()
-    for s in soup.find_all(string=_COMMENT_HDR_RE):
+    for s in soup.find_all(string=_ENTRY_HDR_RE):
+        if _in_comment_body(s):
+            continue  # body prose / nested forwarded card — not a real header
         card = _climb_to_card(s.parent)
         if card is not None and id(card) not in seen:
             seen.add(id(card))
@@ -192,64 +226,84 @@ def _comment_cards(soup: BeautifulSoup) -> list[Tag]:
     return cards
 
 
+def _card_to_comment(card: Tag) -> dict | None:
+    """Parse one thread-entry card (comment or email) into the canonical comment dict
+    (or None if no header). Emails carry the same shape; author = sender."""
+    hsn = _entry_header(card)
+    if hsn is None:
+        return None
+    m = _ENTRY_HDR_RE.search(hsn)
+    cid = m.group(1) or m.group(2)
+
+    # Author is the <a> link that follows the header phrase (the real DOM splits the
+    # name/sender out of the header span). Constrain it to this card.
+    a = hsn.find_next("a")
+    author = _clean(a.get_text()) if (a is not None and card in a.parents) else ""
+
+    # Body is the rendered comment HTML block (NOT the header/meta rows).
+    body_el = card.select_one("div.comment-html-content") or card.select_one("div.max-w-none")
+    if body_el is not None:
+        body = "\n".join(ln.strip() for ln in body_el.get_text("\n").splitlines() if ln.strip())
+    else:
+        body = ""
+
+    text = card.get_text(" ", strip=True)
+    dm = _DATE_RE.search(text)
+    # internal=True only when an exact-text "Internal" badge exists in the card —
+    # NOT when body prose happens to contain the word "internal".
+    internal = any(
+        _clean(el.get_text()) == "Internal"
+        for el in card.find_all(["span", "div"])
+    )
+    return {
+        "id": cid,
+        "author": author,
+        "date": dm.group(1) if dm else "",
+        "internal": internal,
+        "body": body,
+        "attachments": _attachments_in(card),
+        "images": _data_images(body_el),
+    }
+
+
+def _comments_in(scope) -> list[dict]:
+    """Parse every comment card found within `scope` (a BeautifulSoup doc or a Tag)."""
+    out: list[dict] = []
+    for card in _comment_cards(scope):
+        c = _card_to_comment(card)
+        if c is not None:
+            out.append(c)
+    return out
+
+
 def parse_comments(html: str) -> list[dict]:
     """Extract all comment cards from the ticket detail page."""
-    soup = _soup(html)
-    comments = []
-    for card in _comment_cards(soup):
-        hsn = card.find(string=_COMMENT_HDR_RE)
-        if hsn is None:
-            continue
-        cid = _COMMENT_HDR_RE.search(hsn).group(1)
-
-        # Author is the <a> link that follows "posted by " (the real DOM splits the
-        # name out of the header span). Constrain it to this card.
-        a = hsn.find_next("a")
-        author = _clean(a.get_text()) if (a is not None and card in a.parents) else ""
-
-        # Body is the rendered comment HTML block (NOT the header/meta rows).
-        body_el = card.select_one("div.comment-html-content") or card.select_one("div.max-w-none")
-        if body_el is not None:
-            body = "\n".join(ln.strip() for ln in body_el.get_text("\n").splitlines() if ln.strip())
-        else:
-            body = ""
-
-        text = card.get_text(" ", strip=True)
-        dm = _DATE_RE.search(text)
-        # internal=True only when an exact-text "Internal" badge exists in the card —
-        # NOT when body prose happens to contain the word "internal".
-        internal = any(
-            _clean(el.get_text()) == "Internal"
-            for el in card.find_all(["span", "div"])
-        )
-        comments.append({
-            "id": cid,
-            "author": author,
-            "date": dm.group(1) if dm else "",
-            "internal": internal,
-            "body": body,
-            "attachments": _attachments_in(card),
-            "images": _data_images(body_el),
-        })
-    return comments
+    return _comments_in(_soup(html))
 
 
 def parse_resolution(html: str) -> dict:
-    """Extract resolution text + attachments from the Resolve sub-view.
+    """Extract resolution text + its own comment thread + attachments from the Resolve
+    sub-view.
 
     Confirmed live 2026-06-23: scoped to div.resolution-container; the rendered
     resolution text is div.post-content (NOT div.ql-editor — that is the empty edit
-    form). Attachments are Download affordances within the panel.
+    form). Attachments are Download affordances within the panel. A resolution can
+    also carry a comment THREAD (same card markup as ticket comments) — captured here
+    scoped to the container so the main ticket comments are never double-counted.
     """
     soup = _soup(html)
     region = soup.select_one("div.resolution-container")
     if region is None:
-        return {"text": "", "attachments": []}
+        return {"text": "", "comments": [], "attachments": []}
     content = region.select_one("div.post-content")
     text = _clean(content.get_text(" ")) if content else ""
     # icon_only: the resolution file is an icon button[title="Download"]; never count a
     # comment's text-"Download" that may be rendered alongside the resolution panel.
-    return {"text": text, "attachments": _attachments_in(region, icon_only=True)}
+    return {
+        "text": text,
+        "comments": _comments_in(region),
+        "attachments": _attachments_in(region, icon_only=True),
+    }
 
 
 def parse_files(html: str) -> list[dict]:

@@ -24,6 +24,11 @@ DETAIL_HTML = html("ticket_detail.html")
 RESOLUTION_HTML = html("resolution.html")
 FILES_HTML = html("files.html")
 NOT_FOUND_HTML = html("not_found.html")
+EMAILS_HTML = html("ticket_emails.html")
+
+
+def _by_id(entries: list[dict], cid: str) -> dict:
+    return next(e for e in entries if e["id"] == cid)
 
 
 # ── is_not_found ──────────────────────────────────────────────────────────────
@@ -220,6 +225,89 @@ def test_comment_without_image_has_empty_images():
     assert all(c.get("images") == [] for c in cs)
 
 
+# ── parse_comments: EMAIL entries (bug-106) ────────────────────────────────────
+# The tradedesk thread interleaves comments with EMAIL entries (inbound "received from"
+# and outbound "sent by"). The parser must capture emails alongside comments — they
+# were silently dropped, so threaded tickets lost most of their content.
+
+def test_thread_captures_comments_and_emails():
+    entries = parse_comments(EMAILS_HTML)
+    assert len(entries) == 3  # 1 comment + 1 inbound email + 1 outbound email
+
+
+def test_inbound_email_author_is_sender():
+    e = _by_id(parse_comments(EMAILS_HTML), "1315581")
+    assert e["author"].startswith("Test Sender")
+
+
+def test_outbound_email_author_is_sender_not_recipient():
+    # "email N sent by <sender> to: <recipient>" — author must be the SENDER.
+    e = _by_id(parse_comments(EMAILS_HTML), "1312283")
+    assert "Pat Agent" in e["author"]
+    assert "Test Customer" not in e["author"]
+
+
+def test_email_entries_are_not_internal():
+    for cid in ("1315581", "1312283"):
+        assert _by_id(parse_comments(EMAILS_HTML), cid)["internal"] is False
+
+
+def test_email_entry_bodies_non_empty():
+    for cid in ("1315581", "1312283"):
+        assert _by_id(parse_comments(EMAILS_HTML), cid)["body"]
+
+
+def test_comment_still_captured_alongside_emails():
+    e = _by_id(parse_comments(EMAILS_HTML), "1310529")
+    assert e["author"] == "Casey Park"
+    assert e["internal"] is True
+
+
+def test_quoted_email_in_body_does_not_create_phantom_entry():
+    # A forwarded/quoted email rendered as a NESTED bordered card INSIDE a real
+    # entry's body must NOT be parsed as its own thread entry. Because the header
+    # matcher searches text nodes (re.search), body prose like "email 5 sent by …"
+    # inside a nested rounded-lg/border/bg-white block would otherwise climb to that
+    # inner card and become a phantom entry with its own id/author (bug-106 review).
+    synthetic = """
+    <html><body><div class="space-y-2 sm:space-y-4">
+      <div class="p-2 sm:p-4 rounded-lg border bg-white">
+        <div class="flex-1 min-w-0">
+          <span class="truncate"><span class="hidden sm:inline">email 800 received from </span><a class="text-blue-500">Real Customer &lt;rc@example.com&gt;</a></span>
+          <span>Jun 12, 2025 at 2:00 PM</span>
+          <div class="comment-html-content">
+            <p>See the forwarded message below.</p>
+            <div class="p-2 rounded-lg border bg-white">
+              <span class="truncate"><span class="hidden sm:inline">email 5 sent by </span><a class="text-green-600">vendor@x.com</a></span>
+              <div class="comment-html-content"><p>Original vendor reply text.</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></body></html>
+    """
+    cs = parse_comments(synthetic)
+    assert [c["id"] for c in cs] == ["800"], "quoted/forwarded email must not be a phantom entry"
+
+
+def test_header_like_prose_in_body_is_not_a_separate_entry():
+    # Plain body prose containing a header-like phrase (no nested card) must not add
+    # an entry; the real header is what counts.
+    synthetic = """
+    <html><body><div class="space-y-2 sm:space-y-4">
+      <div class="p-2 sm:p-4 rounded-lg border bg-white">
+        <div class="flex-1 min-w-0">
+          <span class="truncate"><span class="hidden sm:inline">comment 700 posted by </span><a class="text-blue-600">Agent</a></span>
+          <span>Jun 12, 2025 at 2:00 PM</span>
+          <div class="comment-html-content"><p>Customer wrote: email 42 received from billing was never delivered.</p></div>
+        </div>
+      </div>
+    </div></body></html>
+    """
+    cs = parse_comments(synthetic)
+    assert len(cs) == 1 and cs[0]["id"] == "700"
+
+
 # ── parse_resolution ──────────────────────────────────────────────────────────
 
 def test_resolution_text_non_empty():
@@ -261,6 +349,56 @@ def test_resolution_counts_only_icon_download_not_comment_text():
     r = parse_resolution(synthetic)
     assert len(r["attachments"]) == 1, "only the icon download is a resolution file"
     assert "resolution-script.sql" in r["attachments"][0]["label"]
+
+
+def test_resolution_always_has_comments_key():
+    # canonical schema: resolution always carries text/comments/attachments
+    r = parse_resolution(RESOLUTION_HTML)
+    assert "comments" in r and isinstance(r["comments"], list)
+
+
+def test_resolution_captures_scoped_comment_thread():
+    # A resolution can carry its own comment THREAD (same card markup as ticket
+    # comments). Capture it scoped to div.resolution-container — a comment card
+    # OUTSIDE the container (a main ticket comment) must NOT be pulled in.
+    synthetic = """
+    <html><body>
+      <div class="rounded-lg border bg-white">
+        <span class="hidden">comment 111 posted by </span><a class="text-blue-600">Outsider</a>
+        <div class="comment-html-content"><p>main ticket comment</p></div>
+      </div>
+      <div class="resolution-container">
+        <div class="post-content"><p>Fixed it.</p></div>
+        <div class="rounded-lg border bg-white">
+          <span class="hidden">comment 222 posted by </span><a class="text-blue-600">Resolver</a>
+          <div class="comment-html-content"><p>resolution reply</p></div>
+        </div>
+      </div>
+    </body></html>
+    """
+    r = parse_resolution(synthetic)
+    assert [c["author"] for c in r["comments"]] == ["Resolver"]
+    assert "resolution reply" in r["comments"][0]["body"]
+
+
+def test_resolution_captures_email_in_thread():
+    # A resolution thread can contain EMAIL entries too (bug-106) — they must be
+    # captured scoped to div.resolution-container, just like comments.
+    synthetic = """
+    <html><body>
+      <div class="resolution-container">
+        <div class="post-content"><p>Closed.</p></div>
+        <div class="rounded-lg border bg-white">
+          <span class="truncate"><span class="hidden sm:inline">email 333 received from </span><a class="text-blue-500">Customer Name &lt;c@example.com&gt;</a></span>
+          <div class="comment-html-content"><p>resolution-stage inbound email</p></div>
+        </div>
+      </div>
+    </body></html>
+    """
+    r = parse_resolution(synthetic)
+    assert len(r["comments"]) == 1
+    assert r["comments"][0]["id"] == "333"
+    assert r["comments"][0]["author"].startswith("Customer Name")
 
 
 # ── parse_files ───────────────────────────────────────────────────────────────

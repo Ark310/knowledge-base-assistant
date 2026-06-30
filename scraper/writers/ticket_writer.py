@@ -26,13 +26,21 @@ def save_ticket(data: dict, tickets_base: Path) -> None:
 
 
 def _save_comment_images(data: dict, tickets_base: Path) -> None:
-    """Decode inline base64 comment images to files; replace raw data with saved_path.
-
-    Mutates data["comments"][*]["images"] in place: {mime, data} -> {mime, saved_path}.
-    Idempotent — entries already lacking raw "data" are passed through unchanged.
+    """Decode inline base64 images to files; replace raw data with saved_path so the
+    raw base64 never lands in the JSON. Scrubs BOTH the ticket comments AND the
+    resolution's own comment thread (resolution.comments). Idempotent.
     """
     tid = data.get("ticket_id", "unknown")
-    for c in data.get("comments") or []:
+    _scrub_images(data.get("comments") or [], tickets_base, tid, "comment")
+    res = data.get("resolution")
+    if isinstance(res, dict):
+        _scrub_images(res.get("comments") or [], tickets_base, tid, "rescomment")
+
+
+def _scrub_images(comments: list, tickets_base: Path, tid: str, prefix: str) -> None:
+    """Mutate each comment's images[] in place: {mime, data(b64)} -> {mime, saved_path}.
+    `prefix` keeps resolution-thread image filenames from colliding with ticket comments."""
+    for c in comments:
         imgs = c.get("images")
         if not imgs:
             continue
@@ -47,7 +55,7 @@ def _save_comment_images(data: dict, tickets_base: Path) -> None:
                 resolved.append({k: v for k, v in im.items() if k != "data"})
                 continue
             ext = _MIME_EXT.get(mime, "bin")
-            fp = adir / f"comment_{cid}_img{n}.{ext}"
+            fp = adir / f"{prefix}_{cid}_img{n}.{ext}"
             try:
                 fp.write_bytes(base64.b64decode(b64))
                 resolved.append({"mime": mime, "saved_path": str(fp)})
@@ -58,6 +66,19 @@ def _save_comment_images(data: dict, tickets_base: Path) -> None:
 def _f(lines, label, value):
     if value:
         lines.append(f"**{label}:** {value}")
+
+def _render_comment_body(lines: list, c: dict) -> None:
+    """Append a comment's body + file links + inline images (shared by the Comments
+    section and the resolution thread)."""
+    if c.get("body"):
+        lines.append(c["body"])
+    for a in c.get("attachments") or []:
+        sp = a.get("saved_path"); name = a.get("label") or (Path(sp).name if sp else "file")
+        lines.append(f"- [{name}]({sp})" if sp else f"- {name}")
+    for im in c.get("images") or []:
+        sp = im.get("saved_path")
+        if sp:
+            lines.append(f"![image]({sp})")
 
 def _to_markdown(d: dict) -> str:
     tid = d.get("ticket_id", "?")
@@ -73,11 +94,20 @@ def _to_markdown(d: dict) -> str:
     lines.append("")
 
     res = d.get("resolution")
-    if res and (res.get("text") or res.get("attachments")):
+    if res and (res.get("text") or res.get("attachments") or res.get("comments")):
         lines += ["## Resolution", "", res.get("text", ""), ""]
         for a in res.get("attachments") or []:
             sp = a.get("saved_path"); name = a.get("label") or (Path(sp).name if sp else "file")
             lines.append(f"- [{name}]({sp})" if sp else f"- {name}")
+        rcoms = res.get("comments") or []
+        if rcoms:
+            lines += ["", "### Resolution thread", ""]
+            for c in rcoms:
+                tag = " (internal)" if c.get("internal") else ""
+                lines.append(f"**#{c.get('id','')} — {c.get('author','')} · {c.get('date','')}{tag}**")
+                lines.append("")
+                _render_comment_body(lines, c)
+                lines.append("")
         lines.append("")
 
     comments = d.get("comments") or []
@@ -87,15 +117,7 @@ def _to_markdown(d: dict) -> str:
             tag = " (internal)" if c.get("internal") else ""
             lines.append(f"### #{c.get('id','')} — {c.get('author','')} · {c.get('date','')}{tag}")
             lines.append("")
-            if c.get("body"):
-                lines.append(c["body"])
-            for a in c.get("attachments") or []:
-                sp = a.get("saved_path"); name = a.get("label") or (Path(sp).name if sp else "file")
-                lines.append(f"- [{name}]({sp})" if sp else f"- {name}")
-            for im in c.get("images") or []:
-                sp = im.get("saved_path")
-                if sp:
-                    lines.append(f"![image]({sp})")
+            _render_comment_body(lines, c)
             lines.append("")
 
     files = d.get("attachments") or []
