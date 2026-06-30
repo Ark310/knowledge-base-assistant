@@ -312,10 +312,11 @@ class TicketTab(QWidget):
         output_dir       = app_settings.tickets_dir()
 
         mode = app_settings.browser_mode()
+        headless = app_settings.headless()
         self._worker = AsyncTicketWorker(
             portal_url, username, password, ticket_ids,
             force=force, workers=workers, output_dir=output_dir,
-            control=self._control, mode=mode,
+            control=self._control, mode=mode, headless=headless,
             portal_kind=self._portal_kind,
         )
         self._worker.log.connect(self._emit_log)

@@ -20,11 +20,12 @@ class AsyncTicketWorker(QThread):
     def __init__(self, portal_url, username, password, ticket_ids, *,
                  force=False, workers=4, output_dir=None, control=None, mode="light",
                  browser_factory=None, page_portal_factory=None,
-                 login_once=None, parse_fn=None, portal_kind="tradedesk"):
+                 login_once=None, parse_fn=None, portal_kind="tradedesk", headless=False):
         super().__init__()
         self._url, self._user, self._pw = portal_url, username, password
         self._ids, self._force, self._workers = ticket_ids, force, workers
         self._out, self._mode = output_dir, mode
+        self._headless = headless
         self.control = control or RunControl()
         self._bf, self._ppf = browser_factory, page_portal_factory
         self._login, self._parse = login_once, parse_fn
@@ -52,7 +53,7 @@ class AsyncTicketWorker(QThread):
                     parse_resolution as ds_res,
                 )
                 def bf():
-                    b = AsyncBrowser(headless=False)
+                    b = AsyncBrowser(headless=self._headless)
                     b.base = url
                     return b
                 ppf = ds_factory(url)
@@ -63,7 +64,7 @@ class AsyncTicketWorker(QThread):
             else:   # tradedesk (default)
                 from scraper.portal.tradedesk_portal_async import make_factory, tradedesk_login_once
                 def bf():
-                    b = AsyncBrowser(headless=False)
+                    b = AsyncBrowser(headless=self._headless)
                     b.base = url
                     return b
                 ppf = make_factory(url)

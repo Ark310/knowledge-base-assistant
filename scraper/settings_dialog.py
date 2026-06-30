@@ -6,7 +6,7 @@ via ticket_settings — never logged."""
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QButtonGroup, QDialog, QDialogButtonBox, QFileDialog, QGroupBox,
+    QButtonGroup, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton,
     QVBoxLayout, QWidget,
 )
@@ -57,6 +57,14 @@ class SettingsDialog(QDialog):
 
         mode_layout.addWidget(self._radio_light)
         mode_layout.addWidget(self._radio_multi)
+
+        # Headless toggle — far lighter per tab; recommended for large batches (bug-111).
+        self.chk_headless = QCheckBox(
+            "Run browser hidden (headless) — faster & more stable for large batches"
+        )
+        self.chk_headless.setChecked(app_settings.headless())
+        mode_layout.addWidget(self.chk_headless)
+
         layout.addWidget(mode_box)
 
         # Initialise from persisted setting (default = light)
@@ -173,6 +181,7 @@ class SettingsDialog(QDialog):
             self.inp_kb.text(),
             browser_mode=self._browser_mode_value(),
         )
+        app_settings.set_headless(self.chk_headless.isChecked())
         self.accept()
 
     def _save_paths(self):

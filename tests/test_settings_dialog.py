@@ -30,3 +30,14 @@ def test_settings_dialog_persists_browser_mode(tmp_path, monkeypatch):
     dlg.set_browser_mode_value("multi")   # helper the dialog exposes for the control
     dlg._save()                            # the dialog's save handler
     assert s.browser_mode() == "multi"
+
+
+def test_settings_dialog_persists_headless(tmp_path, monkeypatch):
+    import scraper.app_settings as s
+    monkeypatch.setattr(s, "_file", lambda: tmp_path / "app_settings.json")
+    dlg = SettingsDialog()
+    dlg.chk_headless.setChecked(True)
+    dlg.set_browser_mode_value("multi")
+    dlg._save()
+    assert s.headless() is True            # headless persisted
+    assert s.browser_mode() == "multi"     # alongside browser mode, not clobbered
