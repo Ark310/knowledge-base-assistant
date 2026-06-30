@@ -13,6 +13,11 @@ from scraper.parsers.ticket_parser import parse_ticket_detail, parse_resolution
 from scraper.writers.ticket_writer import save_ticket
 
 _SESSION_EXPIRED = object()
+# When a run ends with many tickets still pending (pool collapse / login failure /
+# cancel), we mark them all failed but emit at most this many per-ticket GUI updates —
+# a full per-item emit floods the Qt signal queue and hangs the UI on large batches
+# (bug-111: an 18k run drained ~17k tickets one-by-one and froze the app).
+_DRAIN_TICKET_CAP = 200
 
 async def _fetch_ticket(portal, tid, output_dir, cb, parse_fn, parse_resolution_fn) -> dict | str | object | None:
     html = await portal.open_ticket(tid)
@@ -87,6 +92,25 @@ async def run_ticket_scrape_async(
         if meta is not None:
             cb.on_ticket_meta(*meta)
 
+    async def drain_to_failed(reason: str):
+        """Mark every still-pending ticket failed in ONE batch: bulk-update stats, emit a
+        single summary log + one progress tick, and cap per-ticket GUI updates at
+        _DRAIN_TICKET_CAP so a large collapse can't flood/hang the UI (bug-111)."""
+        remaining = []
+        while not pending.empty():
+            remaining.append(pending.get_nowait())
+        async with lock:
+            fresh = [t for t in remaining if t not in finished]
+            for t in fresh:
+                finished.add(t); stats["failed"] += 1; progress[0] += 1
+            p = progress[0]
+        if not fresh:
+            return
+        cb.on_log("error", f"{len(fresh)} ticket(s) {reason} — marked failed.")
+        cb.on_progress(p, total)
+        for t in fresh[:_DRAIN_TICKET_CAP]:
+            cb.on_ticket(t, "failed")
+
     # ── Browser provisioning differs by mode ─────────────────────────────────
     # light : ONE shared browser + ONE login; each worker opens a tab (page).
     # multi : each worker opens its OWN browser + logs in (separate windows).
@@ -95,8 +119,7 @@ async def run_ticket_scrape_async(
         shared_browser = await browser_factory().open()
         if not await login_once(shared_browser, username, password):
             cb.on_log("error", "Login failed; aborting.")
-            while not pending.empty():
-                await terminal(pending.get_nowait(), "failed", "failed")
+            await drain_to_failed("(login failed)")
             await shared_browser.close()
             cb.on_finished(stats)
             return stats
@@ -155,6 +178,11 @@ async def run_ticket_scrape_async(
                     if res is _SESSION_EXPIRED:
                         cb.on_log("warning", f"{prefix}#{tid}: session expired")
                         raise RuntimeError("session expired")
+                    # A page operation succeeded — reset the CONSECUTIVE-failure budget.
+                    # (bug-111: this counter was never reset, so on a large batch a worker
+                    # accumulated transient timeouts until it exhausted MAX_WORKER_REBUILDS
+                    # and exited, collapsing the whole pool.)
+                    rebuilds = 0
                     if res is None:
                         await terminal(tid, "failed", "failed")
                     elif res == "not_found":
@@ -218,11 +246,7 @@ async def run_ticket_scrape_async(
             n_workers = max(1, min(workers, total))
             await asyncio.gather(*(worker(i) for i in range(n_workers)))
             if not control.cancelled:
-                while not pending.empty():
-                    tid = pending.get_nowait()
-                    cb.on_log("error",
-                        f"#{tid}: not processed (all workers stopped) — marked failed.")
-                    await terminal(tid, "failed", "failed")
+                await drain_to_failed("(not processed — all workers stopped)")
         async with lock:
             stats["retried"] = sum(1 for c in attempts.values() if c > 1)
         if total and stats["failed"] == total:

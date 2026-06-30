@@ -160,6 +160,29 @@ def test_multi_mode_new_page_failure_closes_browser_no_orphan(tmp_path):
     assert dict(rec["tickets"]).get("1") == "failed"   # drained, not stranded
     assert closed, "browser must be closed when new_page fails post-login (no orphan)"
 
+def test_worker_survives_interspersed_failures(tmp_path):
+    # bug-111: `rebuilds` was a LIFETIME counter (never reset on success), so a single
+    # worker accumulating > MAX_WORKER_REBUILDS transient failures across a long batch
+    # would exit even with many successes between them — collapsing the pool on big
+    # runs. With a CONSECUTIVE budget (reset on each success), one transient failure on
+    # each even ticket must NOT kill the worker: all 10 tickets complete.
+    ids = [str(i) for i in range(1, 11)]            # 1..10  -> 5 evens fail once each
+    rec, _ = run(ids, 1, lambda tid, n: int(tid) % 2 == 0 and n == 0, tmp_path)
+    s = dict(rec["tickets"])
+    assert all(s.get(t) == "ok" for t in ids), f"some tickets did not complete: {s}"
+    assert rec["report"]["saved"] == 10
+
+
+def test_large_drain_is_capped_no_ui_flood(tmp_path):
+    # bug-111: a pool collapse with hundreds/thousands of pending tickets must NOT emit
+    # one GUI update per ticket (that flooded the Qt queue and hung the app on the 18k
+    # run). All tickets are still accounted as failed, but per-ticket on_ticket is capped.
+    ids = [str(i) for i in range(1, 301)]                 # 300 tickets
+    rec, _ = run(ids, 1, lambda tid, n: True, tmp_path)   # everything crashes -> collapse
+    assert rec["report"]["failed"] == 300                 # all accounted as failed
+    assert len(rec.get("tickets", [])) <= tea._DRAIN_TICKET_CAP   # NOT 300 — capped
+
+
 def test_resolution_parser_is_injectable(tmp_path):
     seen = {}
     class ResPortal:
