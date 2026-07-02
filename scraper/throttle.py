@@ -17,12 +17,15 @@ from collections import deque
 
 class AdaptiveGate:
     def __init__(self, max_permits: int, *, window: int = 20, min_permits: int = 1,
-                 down_at: float = 0.40, up_at: float = 0.0, breaker_at: float = 0.85,
-                 backoff_base: float = 0.5, backoff_max: float = 8.0):
+                 cpu_high: float = 90.0, cpu_low: float = 75.0, ram_low_mb: float = 800.0,
+                 ram_ok_mb: float = 1500.0, down_at: float = 0.40, up_at: float = 0.0,
+                 breaker_at: float = 0.85, backoff_base: float = 0.5, backoff_max: float = 8.0):
         self.max_permits = max(1, int(max_permits))
         self.min_permits = max(1, min(int(min_permits), self.max_permits))
         self.permits = self.max_permits
         self.window = max(4, int(window))
+        self.cpu_high, self.cpu_low = cpu_high, cpu_low
+        self.ram_low_mb, self.ram_ok_mb = ram_low_mb, ram_ok_mb
         self.down_at, self.up_at, self.breaker_at = down_at, up_at, breaker_at
         self.backoff_base, self.backoff_max = backoff_base, backoff_max
         self.delay = 0.0
@@ -65,6 +68,25 @@ class AdaptiveGate:
             self._recent.clear()
             return True
         return False
+
+    def tune(self, cpu_pct: float, ram_free_mb: float) -> None:
+        """Resource-aware step (v4.0.3): shrink under CPU/RAM pressure, grow toward
+        the ceiling when there's clear headroom AND recent outcomes aren't failing.
+        Pure + sync (called from the engine's tuner task inside the loop)."""
+        if cpu_pct >= self.cpu_high or ram_free_mb <= self.ram_low_mb:
+            if self.permits > self.min_permits:
+                self.permits -= 1
+        elif cpu_pct <= self.cpu_low and ram_free_mb >= self.ram_ok_mb:
+            if self.permits < self.max_permits and self._fail_ratio() < self.down_at:
+                self.permits += 1
+
+    def set_ceiling(self, n: int) -> None:
+        """Live worker-slider ceiling. Lowering clamps permits immediately; raising
+        only lifts the ceiling — permits climb back via tune()/record()."""
+        self.max_permits = max(1, int(n))
+        self.min_permits = min(self.min_permits, self.max_permits)
+        if self.permits > self.max_permits:
+            self.permits = self.max_permits
 
     # ── async gate ────────────────────────────────────────────────────────────
     async def acquire(self) -> None:
