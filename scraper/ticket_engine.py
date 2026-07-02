@@ -47,6 +47,7 @@ class TicketEngineCallbacks:
     on_ticket:      Callable[[str, str], None]        = field(default=lambda tid, st: None)
     on_finished:    Callable[[dict], None]            = field(default=lambda rep: None)
     on_ticket_meta: Callable[[str, str, int], None]   = field(default=lambda tid, title, nf: None)
+    on_alert:       Callable[[str, str, str], None]   = field(default=lambda sev, title, body: None)
 
 
 # ── Ticket ID parsing ─────────────────────────────────────────────────────────

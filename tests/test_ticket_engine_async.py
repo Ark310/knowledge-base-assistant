@@ -88,7 +88,10 @@ def test_permanent_crash_failed_not_stranded(tmp_path):
     assert len(rec["tickets"]) == 3
     assert crashes["BAD"] == te.MAX_TICKET_ATTEMPTS
 
-def test_all_workers_die_drains_to_failed(tmp_path):
+def test_persistent_crashes_fail_tickets_not_stranded(tmp_path):
+    # v4.0.3: workers no longer die on repeated crashes in light mode (they recover in
+    # place — bug-116); every persistently-crashing ticket still reaches a terminal
+    # "failed" via MAX_TICKET_ATTEMPTS, never stranded at "queued".
     rec, _ = run(["1", "2", "3"], 2, lambda tid, n: True, tmp_path)
     assert all(st == "failed" for _, st in rec["tickets"])
     assert len(rec["tickets"]) == 3
@@ -187,11 +190,20 @@ def test_worker_survives_interspersed_failures(tmp_path):
 
 
 def test_large_drain_is_capped_no_ui_flood(tmp_path):
-    # bug-111: a pool collapse with hundreds/thousands of pending tickets must NOT emit
+    # bug-111: a mass drain with hundreds/thousands of pending tickets must NOT emit
     # one GUI update per ticket (that flooded the Qt queue and hung the app on the 18k
-    # run). All tickets are still accounted as failed, but per-ticket on_ticket is capped.
+    # run). Since v4.0.3 an INFRA failure never drains (the run pauses — bug-116), so
+    # the remaining mass-drain path is startup LOGIN failure: all 300 pending tickets
+    # are accounted failed, but per-ticket on_ticket emits stay capped.
     ids = [str(i) for i in range(1, 301)]                 # 300 tickets
-    rec, _ = run(ids, 1, lambda tid, n: True, tmp_path)   # everything crashes -> collapse
+    rec = {}
+    factory, _ = make_factory(lambda tid, n: False)
+    async def login_fail(browser, u, p): return False
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ids, force=True, control=RunControl(), cb=_cb(rec),
+        workers=1, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=factory, login_once=login_fail, parse_fn=fake_parse, mode="light"))
     assert rec["report"]["failed"] == 300                 # all accounted as failed
     assert len(rec.get("tickets", [])) <= tea._DRAIN_TICKET_CAP   # NOT 300 — capped
 
@@ -238,6 +250,108 @@ def test_circuit_breaker_pauses_on_sustained_failure(tmp_path, monkeypatch):
         workers=4, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
         page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
     assert paused["n"] >= 1, "breaker should pause the run on sustained failure"
+
+
+def test_shared_browser_death_recovers_and_never_mass_fails(tmp_path, monkeypatch):
+    # bug-116 regression (2026-07-02: 28,620 tickets mass-failed): the ONE shared
+    # Chrome dies mid-run. The worker's tab rebuild fails on the corpse, which must
+    # trigger single-flight BrowserSupervisor recovery (new browser + re-login) —
+    # the run then COMPLETES: zero failed, all saved, one recovery log line.
+    import scraper.throttle as throttle
+    monkeypatch.setattr(tea, "_RECOVER_RETRY_DELAY", 0.01)
+    monkeypatch.setattr(tea, "AdaptiveGate",
+        lambda mp: throttle.AdaptiveGate(mp, backoff_base=0.01, backoff_max=0.02))
+
+    class DyingBrowser:
+        """Hands out die_after pages, then every new_page raises (Chrome corpse)."""
+        def __init__(self, die_after):
+            self.die_after = die_after; self.pages = 0; self.closed = False
+        async def open(self): return self
+        async def new_page(self):
+            self.pages += 1
+            if self.pages > self.die_after:
+                raise RuntimeError("chrome dead")
+            return object()
+        async def close(self): self.closed = True
+
+    browsers = []
+    def bf():
+        # 1st browser serves the 2 initial worker tabs, then is a corpse; the
+        # factory's NEXT browser (post-recovery) is healthy.
+        b = DyingBrowser(2) if not browsers else FakeAsyncBrowser()
+        browsers.append(b)
+        return b
+
+    factory, _ = make_factory(lambda tid, n: tid == "3" and n == 0)  # one tab crash
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    logs = []
+    rec = {}
+    cb = _cb(rec)
+    cb.on_log = lambda lvl, msg: logs.append(msg)
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", [str(i) for i in range(1, 7)],
+        force=True, control=RunControl(), cb=cb,
+        workers=2, output_dir=tmp_path, browser_factory=bf,
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
+    assert rec["report"]["failed"] == 0, f"mass-fail regression: {rec['report']}"
+    assert rec["report"]["saved"] == 6
+    assert any("shared browser recovered" in m for m in logs)
+    assert len(browsers) == 2 and browsers[0].closed is True
+
+
+def test_supervisor_give_up_pauses_and_alerts_instead_of_draining(tmp_path, monkeypatch):
+    # bug-116: when the browser is UNRECOVERABLE (factory keeps failing), the engine
+    # must PAUSE with exactly ONE alert and keep every pending ticket queued (zero
+    # drained/failed) — the operator's Stop (cancel) then releases the run cleanly.
+    monkeypatch.setattr(tea, "_RECOVER_RETRY_DELAY", 0.01)
+
+    class NewPageDead:
+        """Opens + logs in fine, but every new_page raises (dies right away)."""
+        def __init__(self): self.closed = False
+        async def open(self): return self
+        async def new_page(self): raise RuntimeError("chrome dead")
+        async def close(self): self.closed = True
+
+    class DeadOnArrival:
+        async def open(self): raise RuntimeError("no chrome")
+        async def close(self): pass
+
+    browsers = []
+    def bf():
+        b = NewPageDead() if not browsers else DeadOnArrival()
+        browsers.append(b)
+        return b
+
+    factory, _ = make_factory(lambda tid, n: False)
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    alerts = []
+    rec = {}
+    cb = _cb(rec)
+    cb.on_alert = lambda s, t, b: alerts.append((s, t, b))
+    ctrl = RunControl()
+
+    async def main():
+        task = asyncio.create_task(tea.run_ticket_scrape_async(
+            "https://x", "u", "p", ["1", "2", "3", "4"],
+            force=True, control=ctrl, cb=cb,
+            workers=2, output_dir=tmp_path, browser_factory=bf,
+            page_portal_factory=factory, login_once=login_once,
+            parse_fn=fake_parse, mode="light"))
+        for _ in range(500):                    # wait (≤5 s) for the give-up pause
+            if ctrl.paused:
+                break
+            await asyncio.sleep(0.01)
+        assert ctrl.paused, "engine must pause when the browser is unrecoverable"
+        ctrl.cancel()                            # operator presses Stop
+        return await asyncio.wait_for(task, timeout=10)
+
+    stats = asyncio.run(main())
+    assert len(alerts) == 1, f"exactly ONE alert expected, got {alerts}"
+    assert alerts[0][0] == "error"
+    assert stats["failed"] == 0 and stats["saved"] == 0   # nothing drained/failed
+    assert rec.get("tickets", []) == []                   # no per-ticket emits
 
 
 def test_resolution_parser_is_injectable(tmp_path):

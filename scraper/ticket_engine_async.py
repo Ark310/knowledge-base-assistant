@@ -1,5 +1,7 @@
-"""Async ticket engine — light mode (1 browser, 1 login, N tabs). Crash-resilient:
-shared asyncio.Queue, bounded redispatch, in-place page rebuild, drain-to-failed,
+"""Async ticket engine — light mode (1 shared browser via BrowserSupervisor, 1 login,
+N tabs). Crash-resilient: shared asyncio.Queue, bounded redispatch, single-flight
+shared-browser auto-recovery (a worker NEVER mass-fails on browser death — bug-116),
+an adaptive-gate circuit breaker that PAUSES (never drains) on sustained failure, and
 exactly-once terminal status. Logs exception TYPE only (no PII)."""
 from __future__ import annotations
 import asyncio
@@ -12,6 +14,7 @@ from scraper.ticket_engine import (
 from scraper.parsers.ticket_parser import parse_ticket_detail, parse_resolution
 from scraper.writers.ticket_writer import save_ticket
 from scraper.scrape_state import ScrapedState
+from scraper.supervisor import BrowserSupervisor
 from scraper.throttle import AdaptiveGate
 
 _SESSION_EXPIRED = object()
@@ -23,6 +26,9 @@ PAGE_RECYCLE_EVERY = 150
 # a full per-item emit floods the Qt signal queue and hangs the UI on large batches
 # (bug-111: an 18k run drained ~17k tickets one-by-one and froze the app).
 _DRAIN_TICKET_CAP = 200
+# Backoff between a light-mode worker's failed shared-browser recovery attempts, so a
+# transient outage (portal blip) isn't hammered. Module-level so tests can shrink it.
+_RECOVER_RETRY_DELAY = 1.0
 
 async def _fetch_ticket(portal, tid, output_dir, cb, parse_fn, parse_resolution_fn) -> dict | str | object | None:
     html = await portal.open_ticket(tid)
@@ -118,15 +124,21 @@ async def run_ticket_scrape_async(
             cb.on_ticket(t, "failed")
 
     # ── Browser provisioning differs by mode ─────────────────────────────────
-    # light : ONE shared browser + ONE login; each worker opens a tab (page).
+    # light : ONE shared browser owned by a BrowserSupervisor + ONE login; each
+    #         worker opens a tab (page). If the shared browser DIES, workers run
+    #         single-flight supervisor recovery instead of exiting (bug-116).
     # multi : each worker opens its OWN browser + logs in (separate windows).
-    shared_browser = None
+    supervisor = None
     if mode != "multi":
-        shared_browser = await browser_factory().open()
-        if not await login_once(shared_browser, username, password):
+        supervisor = BrowserSupervisor(browser_factory, login_once, username, password, cb)
+        if not await supervisor.start():
             cb.on_log("error", "Login failed; aborting.")
+            cb.on_alert("error", "Login failed",
+                "WHAT HAPPENED: the portal rejected the login (or the browser could "
+                "not start).\nWHAT TO DO: check credentials in Settings and your "
+                "network, then start the scrape again.")
             await drain_to_failed("(login failed)")
-            await shared_browser.close()
+            await supervisor.close()
             cb.on_finished(stats)
             return stats
 
@@ -146,7 +158,7 @@ async def run_ticket_scrape_async(
                 except Exception:
                     pass
                 raise
-        return None, await shared_browser.new_page()
+        return None, await supervisor.new_page()
 
     async def worker(idx, gate):
         prefix = f"[W{idx + 1}] " if workers > 1 else ""
@@ -154,15 +166,52 @@ async def run_ticket_scrape_async(
             return
         own_browser = None
         page = None
+        portal = None
         rebuilds = 0
         since_recycle = 0
+
+        async def _recover_page():
+            """(Re)acquire this worker's page. LIGHT mode NEVER exits on infrastructure
+            failure (bug-116): if the SHARED browser is the corpse, run single-flight
+            supervisor recovery; if the supervisor has given up, PAUSE the run (the
+            supervisor already emitted ONE alert) and wait for the operator to Resume
+            (then retry) or Stop. Returns False only when the worker must exit
+            (cancel, or the multi-mode rebuild budget is exhausted)."""
+            nonlocal own_browser, page, portal
+            while page is None and not control.cancelled:
+                try:
+                    own_browser, page = await _open_worker_page()
+                    portal = page_portal_factory(page)
+                except Exception:
+                    if supervisor is None:              # multi mode: bounded as before
+                        if rebuilds > MAX_WORKER_REBUILDS:
+                            cb.on_log("error", f"{prefix}rebuild failed — worker exiting.")
+                            return False
+                        return True                     # retry on the next ticket pull
+                    gen = supervisor.generation
+                    if not await supervisor.recover(gen, "worker page rebuild failed"):
+                        if supervisor.give_up:
+                            control.pause()             # alert already emitted (once)
+                            await control.wait_if_paused_async()
+                            if control.cancelled:
+                                return False
+                            supervisor.reset_give_up()  # operator resumed: retry
+                        else:
+                            await asyncio.sleep(_RECOVER_RETRY_DELAY)
+            return not control.cancelled
+
         try:
-            try:
-                own_browser, page = await _open_worker_page()
-            except Exception:
-                cb.on_log("error", f"{prefix}could not start (browser/login) — worker exiting.")
+            if supervisor is None:
+                # multi mode: one attempt, exit on failure (old behavior — the
+                # after-gather leftover branch alerts + drains if ALL workers stop).
+                try:
+                    own_browser, page = await _open_worker_page()
+                    portal = page_portal_factory(page)
+                except Exception:
+                    cb.on_log("error", f"{prefix}could not start (browser/login) — worker exiting.")
+                    return
+            elif not await _recover_page():
                 return
-            portal = page_portal_factory(page)
             while True:
                 await control.wait_if_paused_async()
                 if control.cancelled:
@@ -189,7 +238,17 @@ async def run_ticket_scrape_async(
                     res = await _fetch_ticket(portal, tid, output_dir, cb, parse_fn, parse_resolution_fn)
                     if res is _SESSION_EXPIRED:
                         cb.on_log("warning", f"{prefix}#{tid}: session expired")
-                        raise RuntimeError("session expired")
+                        if supervisor is None:
+                            raise RuntimeError("session expired")   # multi: old behavior
+                        # light mode: single-flight re-auth on the CURRENT browser
+                        # (full recover if that fails); the tid goes back on the queue
+                        # and `ok` stays False so the gate records a failure. If the
+                        # relogin escalated to a full browser swap, this worker's page
+                        # is now stale — the next fetch raises and the except-path
+                        # recovery loop rebuilds it (self-healing).
+                        pending.put_nowait(tid)
+                        await supervisor.relogin()
+                        continue
                     ok = True
                     # A page operation succeeded — reset the CONSECUTIVE-failure budget.
                     # (bug-111: this counter was never reset, so on a large batch a worker
@@ -231,17 +290,10 @@ async def run_ticket_scrape_async(
                         own_browser = None
                     page = None
                     since_recycle = 0
-                    if rebuilds > MAX_WORKER_REBUILDS:
-                        cb.on_log("error", f"{prefix}too many consecutive failures — worker exiting.")
+                    # Rebuild the page; if the SHARED browser is the corpse, run
+                    # single-flight supervisor recovery instead of exiting (bug-116).
+                    if not await _recover_page():
                         broke = True
-                    else:
-                        try:
-                            own_browser, page = await _open_worker_page()
-                            portal = page_portal_factory(page)
-                        except Exception:
-                            cb.on_log("error", f"{prefix}rebuild failed — worker exiting.")
-                            page = None
-                            broke = True
                 finally:
                     await gate.release(ok)
                 if broke:
@@ -254,6 +306,13 @@ async def run_ticket_scrape_async(
                         f"{prefix}⚠ Sustained failures — run PAUSED. Check credentials/"
                         "network/portal; reduce workers or enable Headless in Settings, "
                         "then Resume.")
+                    cb.on_alert("warning", "Scrape paused — sustained failures",
+                        "WHAT HAPPENED: most recent tickets are failing even after "
+                        "throttling down.\nLIKELY CAUSE: portal slowness, network "
+                        "problems, or machine overload.\nWHAT IS PRESERVED: everything "
+                        "scraped so far is saved; remaining tickets are still queued.\n"
+                        "WHAT TO DO: check the portal in a browser, lower Workers, or "
+                        "enable Headless in Settings — then press Resume.")
                     control.pause()
                     continue
                 # Periodic tab recycle: shed accumulated per-tab memory on long runs by
@@ -264,12 +323,15 @@ async def run_ticket_scrape_async(
                         await page.close()
                     except Exception:
                         pass
-                    try:
-                        page = await (own_browser or shared_browser).new_page()
-                        portal = page_portal_factory(page)
-                    except Exception:
-                        cb.on_log("error", f"{prefix}recycle failed — worker exiting.")
-                        page = None
+                    page = None
+                    if own_browser is not None:          # multi mode: old behavior
+                        try:
+                            page = await own_browser.new_page()
+                            portal = page_portal_factory(page)
+                        except Exception:
+                            cb.on_log("error", f"{prefix}recycle failed — worker exiting.")
+                            break
+                    elif not await _recover_page():      # light: recover, never exit
                         break
         finally:
             try:
@@ -292,7 +354,15 @@ async def run_ticket_scrape_async(
             gate = AdaptiveGate(n_workers)
             await asyncio.gather(*(worker(i, gate) for i in range(n_workers)))
             if not control.cancelled:
-                await drain_to_failed("(not processed — all workers stopped)")
+                leftover = pending.qsize()
+                if leftover:
+                    # Workers can only all exit with work left in MULTI mode now.
+                    cb.on_alert("error", "Scrape stopped early",
+                        f"WHAT HAPPENED: all workers stopped with {leftover} tickets "
+                        "unprocessed.\nWHAT IS PRESERVED: everything scraped so far is "
+                        "saved.\nWHAT TO DO: restart the scrape for the remaining "
+                        "tickets (already-scraped ones are skipped automatically).")
+                    await drain_to_failed("(not processed — all workers stopped)")
         async with lock:
             stats["retried"] = sum(1 for c in attempts.values() if c > 1)
         if total and stats["failed"] == total:
@@ -303,7 +373,7 @@ async def run_ticket_scrape_async(
             scraped_state.flush()
         except Exception:
             pass
-        if shared_browser is not None:
-            await shared_browser.close()
+        if supervisor is not None:
+            await supervisor.close()
     cb.on_finished(stats)
     return stats
