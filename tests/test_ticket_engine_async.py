@@ -1,10 +1,23 @@
 import sys, asyncio
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import pytest
 from scraper.control import RunControl
 from scraper import ticket_engine as te          # for callbacks + constants
 from scraper import ticket_engine_async as tea
 from scraper.portal.base_portal import empty_ticket
+from scraper.scrape_state import ScrapedState
+
+
+@pytest.fixture(autouse=True)
+def _isolate_scraped_state(tmp_path, monkeypatch):
+    """The async engine now persists via ScrapedState() (journal + compacted JSON).
+    Point every test's state at tmp_path so the suite never touches the operator's
+    real scraper/state/scraped_tickets.json (v4.0.3 Task 4)."""
+    monkeypatch.setattr(
+        tea, "ScrapedState",
+        lambda *a, **kw: ScrapedState(state_file=tmp_path / "scraped_tickets.json", **kw))
+
 
 class FakeAsyncBrowser:
     def __init__(self): self.pages = 0

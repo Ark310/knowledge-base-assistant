@@ -7,10 +7,11 @@ from pathlib import Path
 
 from scraper.ticket_engine import (
     MAX_TICKET_ATTEMPTS, MAX_WORKER_REBUILDS, TicketEngineCallbacks,
-    _load_scraped, _mark_scraped, _match_paths, TICKETS_DIR,
+    _match_paths, TICKETS_DIR,
 )
 from scraper.parsers.ticket_parser import parse_ticket_detail, parse_resolution
 from scraper.writers.ticket_writer import save_ticket
+from scraper.scrape_state import ScrapedState
 from scraper.throttle import AdaptiveGate
 
 _SESSION_EXPIRED = object()
@@ -74,7 +75,8 @@ async def run_ticket_scrape_async(
     workers = max(1, min(10, int(workers or 1)))
     output_dir = Path(output_dir) if output_dir else TICKETS_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
-    already = _load_scraped()
+    scraped_state = ScrapedState()
+    already = scraped_state.load()
     total = len(ticket_ids)
     stats = {"total": total, "saved": 0, "skipped": 0, "not_found": 0, "failed": 0, "retried": 0}
 
@@ -201,7 +203,7 @@ async def run_ticket_scrape_async(
                     else:
                         save_ticket(res, output_dir)
                         async with state_lock:
-                            _mark_scraped(tid); already.add(tid)
+                            scraped_state.mark(tid); already.add(tid)
                         await terminal(tid, "ok", "saved",
                             meta=(tid, res.get("title", ""), len(res.get("attachments") or [])))
                         cb.on_log("info", f"{prefix}[OK] #{tid}: {res.get('title') or ''}")
@@ -297,6 +299,10 @@ async def run_ticket_scrape_async(
             cb.on_log("error",
                 f"All {total} tickets failed — check credentials/network/portal.")
     finally:
+        try:
+            scraped_state.flush()
+        except Exception:
+            pass
         if shared_browser is not None:
             await shared_browser.close()
     cb.on_finished(stats)
