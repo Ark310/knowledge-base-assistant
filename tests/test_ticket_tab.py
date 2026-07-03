@@ -264,3 +264,48 @@ def test_log_lines_are_buffered_then_flushed():
     text = t.log_pane.toPlainText()
     assert len(text.split("\n")) == 50
     assert "line 0" in text and "line 49" in text
+
+
+def test_live_worker_change_updates_control_target():
+    """Live worker slider (Task 7 wiring): while a scrape is running, moving
+    spn_workers must push the new value onto RunControl.target_workers (no
+    restart) and update the monitor's workers label. Worker-stub pattern
+    mirrors test_shutdown_cancels_and_waits_running_worker's _FakeWorker."""
+    t = TicketTab()
+
+    class _FakeRunningWorker:
+        def isRunning(self):
+            return True
+
+    t._worker = _FakeRunningWorker()
+    t.spn_workers.setValue(2)
+
+    assert t._control.target_workers == 2
+
+
+def test_priority_combo_defaults_and_applies_on_change(tmp_path, monkeypatch):
+    """cmb_priority mirrors app_settings.priority() on init and, when changed,
+    persists the new level + calls procctl.apply_priority."""
+    import scraper.app_settings as s
+    monkeypatch.setattr(s, "_file", lambda: tmp_path / "app_settings.json")
+    import scraper.ticket_tab as tt
+    import scraper.procctl as procctl_mod
+
+    calls = []
+    monkeypatch.setattr(procctl_mod, "apply_priority", lambda level: calls.append(level) or 3)
+
+    t = tt.TicketTab()
+    assert t.cmb_priority.currentText() == "Normal"
+
+    t.cmb_priority.setCurrentText("High")
+
+    assert calls == ["high"]
+    assert s.priority() == "high"
+
+
+def test_worker_spinbox_stays_enabled_while_running():
+    """Live worker slider requires the spinbox to remain editable during a
+    run (bug-fix vs. the old setEnabled(not running))."""
+    t = TicketTab()
+    t._set_running(True)
+    assert t.spn_workers.isEnabled()

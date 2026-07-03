@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -89,8 +90,15 @@ class TicketTab(QWidget):
         self._log_timer.timeout.connect(self._flush_log)
         self._log_timer.start()
 
+        # Reapply process priority periodically while a run is active — Chrome
+        # spawns new child processes over time and each needs the level applied.
+        self._prio_timer = QTimer(self)
+        self._prio_timer.setInterval(5000)
+        self._prio_timer.timeout.connect(self._reapply_priority)
+
         self._build_ui()
         self._refresh_creds_label()
+        self.spn_workers.valueChanged.connect(self._on_workers_changed)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -104,6 +112,17 @@ class TicketTab(QWidget):
         outer.addWidget(self._build_workers_row())
         outer.addWidget(self._build_controls_row())
         outer.addWidget(self._build_progress_row())
+
+        try:
+            from scraper.resmon import ResourceSampler
+            self._sampler = ResourceSampler()
+        except Exception:
+            self._sampler = None
+        from scraper.resource_monitor import ResourceMonitorWidget
+        self.monitor = ResourceMonitorWidget(sampler=self._sampler)
+        outer.addWidget(self.monitor)
+        self.monitor.start()
+
         outer.addWidget(self._build_results_section(), stretch=1)
 
     def _build_creds_status_row(self) -> QWidget:
@@ -169,6 +188,20 @@ class TicketTab(QWidget):
         row.addWidget(lbl)
         row.addWidget(self.spn_workers)
         row.addWidget(lbl_hint)
+
+        row.addSpacing(24)
+        lbl_p = QLabel("Priority:")
+        lbl_p.setStyleSheet("font-weight: bold;")
+        self.cmb_priority = QComboBox()
+        self.cmb_priority.addItems(["Low", "Normal", "High"])
+        self.cmb_priority.setCurrentText(app_settings.priority().title())
+        self.cmb_priority.setToolTip(
+            "Windows process priority for the scraper and its Chrome processes.\n"
+            "High = faster on a busy machine (no more Task Manager).")
+        self.cmb_priority.currentTextChanged.connect(self._on_priority_changed)
+        row.addWidget(lbl_p)
+        row.addWidget(self.cmb_priority)
+
         row.addStretch()
         return w
 
@@ -337,6 +370,7 @@ class TicketTab(QWidget):
                 self._ticket_rows[tid] = row
 
         self._control    = RunControl()
+        self._control.target_workers = None
         force            = self.chk_force.isChecked()
         workers          = self.spn_workers.value()
         output_dir       = app_settings.tickets_dir()
@@ -359,7 +393,12 @@ class TicketTab(QWidget):
 
         self._set_running(True)
         self._emit_log("info", f"--- Starting ticket scrape: {len(ticket_ids)} tickets ---")
+        self.monitor.reset_run()
+        self.monitor.set_workers_info(workers)
         self._worker.start()
+        # Chrome children spawn a moment after the worker starts; the 5s
+        # _prio_timer (started in _set_running) reapplies for those stragglers.
+        self._on_priority_changed(self.cmb_priority.currentText())
 
     def _toggle_pause(self):
         if self._control.paused:
@@ -434,6 +473,7 @@ class TicketTab(QWidget):
         pct = int(current * 100 / total) if total else 0
         self.progress.setValue(pct)
         self.lbl_progress.setText(f"Ticket {current} / {total}")
+        self.monitor.set_progress(current, total)
 
     def _row_for(self, tid: str) -> int:
         """Return the table row for tid, lazily appending one if it doesn't
@@ -493,6 +533,27 @@ class TicketTab(QWidget):
         box.show()
         self._alert_box = box   # keep a ref so it isn't GC'd
 
+    # ── Priority control ──────────────────────────────────────────────────────
+
+    def _on_priority_changed(self, text: str):
+        level = text.strip().lower()
+        app_settings.set_priority(level)
+        from scraper import procctl
+        n = procctl.apply_priority(level)
+        self._emit_log("info", f"Process priority set to {text} ({n} process(es)).")
+
+    def _reapply_priority(self):
+        from scraper import procctl
+        procctl.apply_priority(app_settings.priority())
+
+    # ── Live worker slider ────────────────────────────────────────────────────
+
+    def _on_workers_changed(self, value: int):
+        if self._worker is not None and self._worker.isRunning():
+            self._control.target_workers = value
+            self.monitor.set_workers_info(value)
+            self._emit_log("info", f"Workers target changed to {value} (live).")
+
     # ── UI state helpers ──────────────────────────────────────────────────────
 
     def _set_running(self, running: bool):
@@ -500,9 +561,9 @@ class TicketTab(QWidget):
         self.btn_pause.setEnabled(running)
         self.btn_stop.setEnabled(running)
         self.btn_settings.setEnabled(not running)
-        self.spn_workers.setEnabled(not running)
         self.inp_tickets.setReadOnly(running)
         self.chk_force.setEnabled(not running)
+        self._prio_timer.start() if running else self._prio_timer.stop()
         if not running:
             # Reset pause button label for next run
             self.btn_pause.setText("⏸ Pause")
