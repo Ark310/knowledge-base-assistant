@@ -354,6 +354,30 @@ def test_supervisor_give_up_pauses_and_alerts_instead_of_draining(tmp_path, monk
     assert rec.get("tickets", []) == []                   # no per-ticket emits
 
 
+def test_ok_log_line_includes_comment_and_file_counts(tmp_path):
+    # R1: per-ticket [OK] line reports the main-thread comment count like the
+    # resolution line does (bug-117 operator ask: quick eyeball of how much a
+    # ticket actually captured, no need to open the JSON).
+    factory, _ = make_factory(lambda tid, n: False)
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base):
+        return {**empty_ticket(tid, base), "title": tid,
+                "comments": [{}, {}, {}]}
+    logs = []
+    rec = {}
+    cb = _cb(rec)
+    cb.on_log = lambda lvl, msg: logs.append(msg)
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ["1"], force=True, control=RunControl(), cb=cb,
+        workers=1, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
+    assert dict(rec["tickets"])["1"] == "ok"
+    ok_lines = [m for m in logs if "[OK] #1" in m]
+    assert ok_lines, f"no [OK] line found in logs: {logs}"
+    assert "3 comment(s)/email(s)" in ok_lines[0], ok_lines[0]
+    assert "0 file(s)" in ok_lines[0], ok_lines[0]
+
+
 def test_resolution_parser_is_injectable(tmp_path):
     seen = {}
     class ResPortal:

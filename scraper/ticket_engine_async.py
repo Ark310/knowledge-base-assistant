@@ -271,7 +271,11 @@ async def run_ticket_scrape_async(
                             scraped_state.mark(tid); already.add(tid)
                         await terminal(tid, "ok", "saved",
                             meta=(tid, res.get("title", ""), len(res.get("attachments") or [])))
-                        cb.on_log("info", f"{prefix}[OK] #{tid}: {res.get('title') or ''}")
+                        n_comments = len(res.get("comments") or [])
+                        n_files = len(res.get("attachments") or [])
+                        cb.on_log("info",
+                            f"{prefix}[OK] #{tid}: {res.get('title') or ''} — "
+                            f"{n_comments} comment(s)/email(s), {n_files} file(s)")
                         since_recycle += 1
                 except Exception as exc:
                     if n < MAX_TICKET_ATTEMPTS:
