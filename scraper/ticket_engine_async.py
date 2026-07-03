@@ -29,6 +29,9 @@ _DRAIN_TICKET_CAP = 200
 # Backoff between a light-mode worker's failed shared-browser recovery attempts, so a
 # transient outage (portal blip) isn't hammered. Module-level so tests can shrink it.
 _RECOVER_RETRY_DELAY = 1.0
+# How often the resource tuner task re-applies the live worker ceiling and samples
+# CPU/RAM to nudge concurrency (v4.0.3). Module-level so tests can shrink it.
+_TUNER_INTERVAL = 2.0
 
 async def _fetch_ticket(portal, tid, output_dir, cb, parse_fn, parse_resolution_fn) -> dict | str | object | None:
     html = await portal.open_ticket(tid)
@@ -76,7 +79,10 @@ async def run_ticket_scrape_async(
     force=False, control, cb: TicketEngineCallbacks | None = None,
     workers=4, output_dir=None, browser_factory, page_portal_factory,
     login_once, parse_fn=parse_ticket_detail, parse_resolution_fn=parse_resolution, mode="light",
+    sampler=None,
 ) -> dict:
+    # sampler: a ResourceSampler or None; None disables resource tuning — used by tests
+    # and callers without psutil. Only the tuner task reads it (never a worker).
     cb = cb or TicketEngineCallbacks()
     workers = max(1, min(10, int(workers or 1)))
     output_dir = Path(output_dir) if output_dir else TICKETS_DIR
@@ -222,6 +228,34 @@ async def run_ticket_scrape_async(
                 await control.wait_if_paused_async()
                 if control.cancelled:
                     cb.on_log("warning", f"{prefix}Cancelled."); break
+                # ── Live worker target (park / un-park) ───────────────────────
+                # A lowered live worker-slider parks the surplus workers: they drop
+                # their page (and, in multi mode, their own browser) so they hold NO
+                # browser resource, then poll without pulling work. Worker idx 0 is
+                # always active (effective target >= 1). Parked workers exit cleanly
+                # once the queue is drained so asyncio.gather() can complete; cancel
+                # still exits within one poll. When un-parked they reacquire a page via
+                # the EXISTING _recover_page() path — no second acquisition path.
+                target = control.target_workers or workers
+                if idx >= max(1, min(workers, target)):
+                    if page is not None:
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+                        page = None
+                    if own_browser is not None:
+                        try:
+                            await own_browser.close()
+                        except Exception:
+                            pass
+                        own_browser = None
+                    if pending.empty():
+                        break
+                    await asyncio.sleep(0.5)
+                    continue
+                if page is None and not await _recover_page():
+                    break
                 try:
                     tid = pending.get_nowait()
                 except asyncio.QueueEmpty:
@@ -362,7 +396,34 @@ async def run_ticket_scrape_async(
         if total:
             n_workers = max(1, min(workers, total))
             gate = AdaptiveGate(n_workers)
-            await asyncio.gather(*(worker(i, gate) for i in range(n_workers)))
+
+            async def _tuner():
+                """Every _TUNER_INTERVAL s: re-apply the live worker ceiling (park/unpark
+                lowers/raises how many workers pull; this keeps the gate's concurrency in
+                step) and, if a ResourceSampler was supplied, nudge concurrency from
+                CPU/RAM. Runs alongside the workers; cancelled when they finish."""
+                while True:
+                    await asyncio.sleep(_TUNER_INTERVAL)
+                    if control.cancelled:
+                        return
+                    target = control.target_workers or workers
+                    gate.set_ceiling(max(1, min(workers, target)))
+                    if sampler is not None:
+                        try:
+                            snap = sampler.sample()
+                            gate.tune(snap.cpu_pct, snap.ram_free_mb)
+                        except Exception:
+                            pass
+
+            tuner = asyncio.ensure_future(_tuner())
+            try:
+                await asyncio.gather(*(worker(i, gate) for i in range(n_workers)))
+            finally:
+                tuner.cancel()
+                try:
+                    await tuner
+                except asyncio.CancelledError:
+                    pass
             if not control.cancelled:
                 leftover = pending.qsize()
                 if leftover:

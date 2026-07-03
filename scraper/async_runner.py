@@ -74,13 +74,21 @@ class AsyncTicketWorker(QThread):
             kwargs["parse_fn"] = self._parse
         if self._parse_resolution is not None:
             kwargs["parse_resolution_fn"] = self._parse_resolution
+        # Resource sampler powers the engine's auto-tune + monitor (v4.0.3). Guarded:
+        # if psutil is missing/unavailable, tuning is simply disabled (sampler=None).
+        sampler = None
+        try:
+            from scraper.resmon import ResourceSampler
+            sampler = ResourceSampler()
+        except Exception:
+            sampler = None
         try:
             asyncio.run(run_ticket_scrape_async(
                 self._url, self._user, self._pw, self._ids,
                 force=self._force, control=self.control, cb=cb,
                 workers=self._workers, output_dir=self._out,
                 browser_factory=bf, page_portal_factory=ppf, login_once=login,
-                mode=self._mode, **kwargs))
+                mode=self._mode, sampler=sampler, **kwargs))
         except Exception as exc:
             self.log.emit("error", f"Scrape thread error ({type(exc).__name__}).")
             self.finished_report.emit({"total": len(self._ids), "saved": 0, "skipped": 0,

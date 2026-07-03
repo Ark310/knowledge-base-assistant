@@ -378,6 +378,113 @@ def test_ok_log_line_includes_comment_and_file_counts(tmp_path):
     assert "0 file(s)" in ok_lines[0], ok_lines[0]
 
 
+def test_workers_park_when_target_lowered(tmp_path):
+    # v4.0.3 Task 7: 4 workers over a slow queue; lower control.target_workers to 1 after
+    # the first ticket. The run must still complete ALL 12 tickets, and once the lowered
+    # target settles only worker 0 keeps pulling — max concurrent in-flight AFTER the
+    # change is 1 (surplus workers park: they hold NO page and don't pull work, then exit
+    # cleanly when the queue drains). Concurrency is tracked inside the fake portal.
+    control = RunControl()
+    ids = [str(i) for i in range(1, 13)]
+    state = {"inflight": 0, "max_after": 0, "measure": False, "completed": 0}
+
+    class SlowPortal:
+        base = "https://x"
+        def __init__(self, page): self.page = page
+        def ticket_url(self, t): return f"{self.base}/{t}"
+        def is_login_page(self, h): return False
+        def is_not_found(self, h, t): return False
+        async def login(self, u, p): return True
+        async def open_ticket(self, t):
+            state["inflight"] += 1
+            if state["measure"]:
+                state["max_after"] = max(state["max_after"], state["inflight"])
+            try:
+                await asyncio.sleep(0.03)                  # slow queue
+                return f"<html>{t}</html>"
+            finally:
+                state["inflight"] -= 1
+                state["completed"] += 1
+        async def subview_count(self, label): return 0
+        async def open_subview(self, label, ready_selector=None): return ""
+        async def download_all(self, dest): return []
+
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    rec = {}
+
+    async def main():
+        task = asyncio.create_task(tea.run_ticket_scrape_async(
+            "https://x", "u", "p", ids, force=True, control=control, cb=_cb(rec),
+            workers=4, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+            page_portal_factory=lambda page: SlowPortal(page),
+            login_once=login_once, parse_fn=fake_parse, mode="light"))
+        while state["completed"] < 1:                     # after the first ticket
+            await asyncio.sleep(0.005)
+        control.target_workers = 1
+        while state["inflight"] > 1:                       # let the pre-change batch drain
+            await asyncio.sleep(0.005)
+        state["max_after"] = 0
+        state["measure"] = True                            # now measure post-change load
+        await asyncio.wait_for(task, timeout=15)
+
+    asyncio.run(main())
+    assert {t for t, _ in rec["tickets"]} == set(ids)      # ALL tickets completed
+    assert all(st == "ok" for _, st in rec["tickets"])
+    assert rec["report"]["saved"] == 12
+    assert state["max_after"] == 1, state                  # only 1 worker active after change
+
+
+def test_tuner_lowers_permits_under_cpu_pressure(tmp_path, monkeypatch):
+    # v4.0.3 Task 7: a ResourceSampler reporting cpu=99 must, via the periodic _tuner task,
+    # drive the gate's permits BELOW its max during the run. Shrink _TUNER_INTERVAL so the
+    # tuner fires many times, capture the live gate by patching AdaptiveGate, and probe
+    # gate.permits from inside the fake portal (recording the minimum seen).
+    import scraper.throttle as throttle
+    monkeypatch.setattr(tea, "_TUNER_INTERVAL", 0.01)
+    holder = {}
+    def _make_gate(mp):
+        g = throttle.AdaptiveGate(mp, backoff_base=0.0, backoff_max=0.0)
+        holder["gate"] = g
+        return g
+    monkeypatch.setattr(tea, "AdaptiveGate", _make_gate)
+
+    from scraper.resmon import ResourceSnapshot
+    class FakeSampler:
+        def sample(self): return ResourceSnapshot(cpu_pct=99.0, ram_free_mb=200)
+
+    seen = {"min_permits": 10 ** 9}
+    class ProbePortal:
+        base = "https://x"
+        def __init__(self, page): self.page = page
+        def ticket_url(self, t): return f"{self.base}/{t}"
+        def is_login_page(self, h): return False
+        def is_not_found(self, h, t): return False
+        async def login(self, u, p): return True
+        async def open_ticket(self, t):
+            await asyncio.sleep(0.05)                       # slow enough for the tuner to fire
+            g = holder.get("gate")                          # read AFTER the wait: the tuner
+            if g is not None:                               # has decremented during it, and
+                seen["min_permits"] = min(seen["min_permits"], g.permits)  # release hasn't bumped yet
+            return f"<html>{t}</html>"
+        async def subview_count(self, label): return 0
+        async def open_subview(self, label, ready_selector=None): return ""
+        async def download_all(self, dest): return []
+
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    rec = {}
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", [str(i) for i in range(1, 13)],
+        force=True, control=RunControl(), cb=_cb(rec),
+        workers=3, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=lambda page: ProbePortal(page),
+        login_once=login_once, parse_fn=fake_parse, mode="light", sampler=FakeSampler()))
+    assert rec["report"]["saved"] == 12
+    assert holder["gate"].max_permits == 3                 # ceiling unchanged (target=None)
+    assert seen["min_permits"] < 3, seen                   # cpu=99 tuning throttled permits
+
+
 def test_resolution_parser_is_injectable(tmp_path):
     seen = {}
     class ResPortal:
