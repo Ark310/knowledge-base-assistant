@@ -179,6 +179,13 @@ async def run_ticket_scrape_async(
             (cancel, or the multi-mode rebuild budget is exhausted)."""
             nonlocal own_browser, page, portal
             while page is None and not control.cancelled:
+                # Capture the generation BEFORE the page-acquisition attempt. A
+                # new_page() against a dead browser can hang for a Playwright
+                # timeout while ANOTHER worker completes recovery (gen G->G+1);
+                # reading generation AFTER the failure would let this worker's
+                # stale failure pass the single-flight check against the fresh
+                # replacement browser and needlessly restart it again.
+                gen = supervisor.generation if supervisor is not None else None
                 try:
                     own_browser, page = await _open_worker_page()
                     portal = page_portal_factory(page)
@@ -188,7 +195,6 @@ async def run_ticket_scrape_async(
                             cb.on_log("error", f"{prefix}rebuild failed — worker exiting.")
                             return False
                         return True                     # retry on the next ticket pull
-                    gen = supervisor.generation
                     if not await supervisor.recover(gen, "worker page rebuild failed"):
                         if supervisor.give_up:
                             control.pause()             # alert already emitted (once)
