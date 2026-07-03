@@ -240,19 +240,27 @@ def test_small_batch_still_precreates_rows(tmp_path, monkeypatch):
 def test_log_lines_are_buffered_then_flushed():
     """_emit_log must only buffer — the GUI append is deferred to a timer-driven
     _flush_log (bug-115: per-line QPlainTextEdit appends froze the GUI on a
-    30k-ticket run)."""
+    30k-ticket run). _flush_log itself now issues one appendHtml PER LINE
+    (wrapped in setUpdatesEnabled(False)/True for a single repaint) so that
+    each line gets its own QTextBlock and MAX_LOG_LINES caps LINES, not
+    flushes — assert blockCount grows 1:1 with lines flushed."""
     t = TicketTab()
     start_blocks = t.log_pane.blockCount()
 
     for i in range(50):
         t._emit_log("info", f"line {i}")
 
-    assert t.log_pane.blockCount() <= max(1, start_blocks)
+    assert t.log_pane.blockCount() == start_blocks
     assert len(t._log_buf) == 50
 
     t._flush_log()
 
     assert t._log_buf == []
+    # Verified empirically: a fresh QPlainTextEdit starts with ONE empty
+    # block; appendHtml-ing 50 lines consumes that block for the first line
+    # and adds one new block per subsequent line, landing at exactly 50 —
+    # not 51 — blocks (one per line, not one-plus-the-original-empty-block).
+    assert t.log_pane.blockCount() == 50
     text = t.log_pane.toPlainText()
     assert len(text.split("\n")) == 50
     assert "line 0" in text and "line 49" in text

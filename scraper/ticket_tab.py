@@ -13,6 +13,7 @@ Security:
 """
 from __future__ import annotations
 
+import html as _html
 import logging
 from datetime import datetime
 
@@ -403,16 +404,28 @@ class TicketTab(QWidget):
         if not self._log_buf:
             return
         buf, self._log_buf = self._log_buf, []
-        import html as _html
-        parts = []
-        for ts_str, level, msg in buf:
-            color = self._LOG_COLORS.get(level, "#616161")
-            # HTML collapses whitespace, so plain padding spaces would not keep
-            # the level column aligned — use &nbsp; to preserve it.
-            level_str = f"{level.upper():7s}".replace(" ", "&nbsp;")
-            parts.append(f'<span style="color:{color}">'
-                         f'{ts_str} {level_str} {_html.escape(msg)}</span>')
-        self.log_pane.appendHtml("<br>".join(parts))
+        # One appendHtml call PER LINE — each call opens its own QTextBlock, so
+        # setMaximumBlockCount(MAX_LOG_LINES) trims per LINE as the constant's
+        # name promises. A prior version joined the whole flush with "<br>"
+        # into a SINGLE appendHtml call, which put the entire flush in one
+        # block — MAX_LOG_LINES then capped FLUSHES, not lines. Wrapping the
+        # loop in setUpdatesEnabled(False) batches all of this flush's
+        # document changes into ONE repaint: bug-115's freeze came from
+        # per-line PAINT+SCROLL, not from per-line block insertion, so this
+        # keeps the perf fix while restoring the intended cap semantics.
+        self.log_pane.setUpdatesEnabled(False)
+        try:
+            for ts_str, level, msg in buf:
+                color = self._LOG_COLORS.get(level, "#616161")
+                # HTML collapses whitespace, so plain padding spaces would not keep
+                # the level column aligned — use &nbsp; to preserve it.
+                level_str = f"{level.upper():7s}".replace(" ", "&nbsp;")
+                self.log_pane.appendHtml(
+                    f'<span style="color:{color}">'
+                    f'{ts_str} {level_str} {_html.escape(msg)}</span>'
+                )
+        finally:
+            self.log_pane.setUpdatesEnabled(True)
         self.log_pane.verticalScrollBar().setValue(
             self.log_pane.verticalScrollBar().maximum())
 
