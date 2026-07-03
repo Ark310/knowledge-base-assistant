@@ -16,8 +16,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QGroupBox,
@@ -69,6 +69,7 @@ class TicketTab(QWidget):
     """Tab 3 — Ticket Portal Scraper."""
 
     MAX_LOG_LINES = 3000
+    BIG_BATCH_ROWS = 2000  # batches larger than this skip row pre-creation (bug-115)
 
     def __init__(self, parent=None, *, portal_kind: str = "tradedesk", default_url: str | None = None):
         super().__init__(parent)
@@ -79,6 +80,13 @@ class TicketTab(QWidget):
         self._ticket_rows: dict[str, int] = {}   # ticket_id -> table row
         self._run_name = f"Tickets — {portal_kind}"
         self._alert_box = None
+        self._big_batch = False
+
+        self._log_buf: list[tuple[str, str, str]] = []   # (ts, level, msg)
+        self._log_timer = QTimer(self)
+        self._log_timer.setInterval(250)
+        self._log_timer.timeout.connect(self._flush_log)
+        self._log_timer.start()
 
         self._build_ui()
         self._refresh_creds_label()
@@ -305,19 +313,27 @@ class TicketTab(QWidget):
             run_registry.release(self._run_name)
             return
 
-        # Prepare table rows
+        # Prepare table rows. Pre-creating tens of thousands of QTableWidget rows
+        # froze the UI (bug-115); large batches skip pre-creation and rows are
+        # appended lazily (_row_for) as tickets complete.
         self.table.setRowCount(0)
         self._ticket_rows.clear()
-        for tid in ticket_ids:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(f"#{tid}"))
-            item_status = QTableWidgetItem("Queued")
-            item_status.setForeground(QColor("#616161"))
-            self.table.setItem(row, 1, item_status)
-            self.table.setItem(row, 2, QTableWidgetItem(""))   # Title — filled by meta_sig
-            self.table.setItem(row, 3, QTableWidgetItem(""))   # Files — filled by meta_sig
-            self._ticket_rows[tid] = row
+        self._big_batch = len(ticket_ids) > self.BIG_BATCH_ROWS
+        if self._big_batch:
+            self._emit_log("info",
+                f"Large batch ({len(ticket_ids)} tickets): results table fills as "
+                "tickets complete.")
+        else:
+            for tid in ticket_ids:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                self.table.setItem(row, 0, QTableWidgetItem(f"#{tid}"))
+                item_status = QTableWidgetItem("Queued")
+                item_status.setForeground(QColor("#616161"))
+                self.table.setItem(row, 1, item_status)
+                self.table.setItem(row, 2, QTableWidgetItem(""))   # Title — filled by meta_sig
+                self.table.setItem(row, 3, QTableWidgetItem(""))   # Files — filled by meta_sig
+                self._ticket_rows[tid] = row
 
         self._control    = RunControl()
         force            = self.chk_force.isChecked()
@@ -373,23 +389,32 @@ class TicketTab(QWidget):
 
     # ── Slot handlers ─────────────────────────────────────────────────────────
 
+    _LOG_COLORS = {"error": "#c62828", "warning": "#ef6c00", "info": "#212121"}
+
     @Slot(str, str)
     def _emit_log(self, level: str, msg: str):
-        ts_str = datetime.now().strftime("%H:%M:%S")
-        line   = f"{ts_str} {level.upper():7s} {msg}"
-        cursor = self.log_pane.textCursor()
-        fmt    = QTextCharFormat()
-        color_map = {
-            "error":   "#c62828",
-            "warning": "#ef6c00",
-            "info":    "#212121",
-        }
-        fmt.setForeground(QColor(color_map.get(level, "#616161")))
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(line + "\n", fmt)
-        self.log_pane.setTextCursor(cursor)
-        self.log_pane.ensureCursorVisible()
+        """Buffer only — a 30k-ticket run at 10 workers emits log lines faster
+        than QPlainTextEdit can append+scroll one-by-one (bug-115 UI freeze).
+        A 250ms timer (_flush_log) drains the buffer as ONE insert."""
+        self._log_buf.append((datetime.now().strftime("%H:%M:%S"), level, msg))
         getattr(log, level if level in ("debug", "info", "warning", "error") else "info")(msg)
+
+    def _flush_log(self):
+        if not self._log_buf:
+            return
+        buf, self._log_buf = self._log_buf, []
+        import html as _html
+        parts = []
+        for ts_str, level, msg in buf:
+            color = self._LOG_COLORS.get(level, "#616161")
+            # HTML collapses whitespace, so plain padding spaces would not keep
+            # the level column aligned — use &nbsp; to preserve it.
+            level_str = f"{level.upper():7s}".replace(" ", "&nbsp;")
+            parts.append(f'<span style="color:{color}">'
+                         f'{ts_str} {level_str} {_html.escape(msg)}</span>')
+        self.log_pane.appendHtml("<br>".join(parts))
+        self.log_pane.verticalScrollBar().setValue(
+            self.log_pane.verticalScrollBar().maximum())
 
     @Slot(int, int)
     def _on_progress(self, current: int, total: int):
@@ -397,11 +422,23 @@ class TicketTab(QWidget):
         self.progress.setValue(pct)
         self.lbl_progress.setText(f"Ticket {current} / {total}")
 
-    @Slot(str, str)
-    def _on_ticket_done(self, tid: str, status: str):
+    def _row_for(self, tid: str) -> int:
+        """Return the table row for tid, lazily appending one if it doesn't
+        exist yet (big-batch mode never pre-creates rows — bug-115)."""
         row = self._ticket_rows.get(tid)
         if row is None:
-            return
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(f"#{tid}"))
+            self.table.setItem(row, 1, QTableWidgetItem(""))
+            self.table.setItem(row, 2, QTableWidgetItem(""))
+            self.table.setItem(row, 3, QTableWidgetItem(""))
+            self._ticket_rows[tid] = row
+        return row
+
+    @Slot(str, str)
+    def _on_ticket_done(self, tid: str, status: str):
+        row = self._row_for(tid)
         label = _STATUS_LABELS.get(status, status.title())
         color = _STATUS_COLORS.get(status, "#000")
         item  = QTableWidgetItem(label)
@@ -411,9 +448,7 @@ class TicketTab(QWidget):
     @Slot(str, str, int)
     def _on_ticket_meta(self, tid: str, title: str, files: int):
         """Populate Title (col 2) and Files (col 3) for a completed ticket row."""
-        row = self._ticket_rows.get(tid)
-        if row is None:
-            return
+        row = self._row_for(tid)
         self.table.setItem(row, 2, QTableWidgetItem(title))
         self.table.setItem(row, 3, QTableWidgetItem(str(files)))
 

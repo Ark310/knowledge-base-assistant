@@ -176,3 +176,83 @@ def test_worker_done_releases_registry():
     run_registry.acquire(t._run_name)
     t._worker_thread_done()
     assert run_registry.owner() is None
+
+
+def _stub_worker_env(monkeypatch, tmp_path):
+    """Shared setup: stub AsyncTicketWorker + creds so _start() never touches
+    a real browser/thread (follows the existing worker-stub pattern above)."""
+    import scraper.app_settings as s
+    monkeypatch.setattr(s, "_file", lambda: tmp_path / "app_settings.json")
+    import scraper.ticket_tab as tt
+    import scraper.ticket_settings as ts_mod
+
+    class _NoOp:
+        """Callable no-op that also acts as a signal (has .connect)."""
+        def __call__(self, *a, **k): pass
+        def connect(self, *a, **k): pass
+
+    class _StubWorker:
+        def __init__(self, *a, **k):
+            pass
+        def __getattr__(self, n):
+            return _NoOp()  # signals/.start/isRunning — all no-op
+
+    monkeypatch.setattr(tt, "AsyncTicketWorker", _StubWorker)
+    monkeypatch.setattr(ts_mod, "load", lambda: {"portal_url": "https://x", "username": "u"})
+    monkeypatch.setattr(ts_mod, "load_password", lambda u: "pw")
+    return tt
+
+
+def test_big_batch_skips_row_precreation(tmp_path, monkeypatch):
+    """A batch bigger than BIG_BATCH_ROWS must not pre-create table rows —
+    bug-115 froze the GUI pre-creating 19k QTableWidget rows. Rows appear
+    lazily as tickets complete."""
+    tt = _stub_worker_env(monkeypatch, tmp_path)
+
+    tab = tt.TicketTab()
+    tab.inp_tickets.setText(f"1-{tt.TicketTab.BIG_BATCH_ROWS + 1}")
+    tab._start()
+
+    assert tab.table.rowCount() == 0
+    assert tab._ticket_rows == {}
+    assert tab._big_batch is True
+
+    tab._on_ticket_done("55555", "ok")
+
+    assert tab.table.rowCount() == 1
+    assert tab.table.item(0, 0).text() == "#55555"
+    assert tab.table.item(0, 1).text() == "Saved"
+
+
+def test_small_batch_still_precreates_rows(tmp_path, monkeypatch):
+    """Existing behavior preserved for ordinary-sized batches."""
+    tt = _stub_worker_env(monkeypatch, tmp_path)
+
+    tab = tt.TicketTab()
+    tab.inp_tickets.setText("1,2,3,4,5")
+    tab._start()
+
+    assert tab.table.rowCount() == 5
+    assert tab._big_batch is False
+    assert set(tab._ticket_rows) == {"1", "2", "3", "4", "5"}
+
+
+def test_log_lines_are_buffered_then_flushed():
+    """_emit_log must only buffer — the GUI append is deferred to a timer-driven
+    _flush_log (bug-115: per-line QPlainTextEdit appends froze the GUI on a
+    30k-ticket run)."""
+    t = TicketTab()
+    start_blocks = t.log_pane.blockCount()
+
+    for i in range(50):
+        t._emit_log("info", f"line {i}")
+
+    assert t.log_pane.blockCount() <= max(1, start_blocks)
+    assert len(t._log_buf) == 50
+
+    t._flush_log()
+
+    assert t._log_buf == []
+    text = t.log_pane.toPlainText()
+    assert len(text.split("\n")) == 50
+    assert "line 0" in text and "line 49" in text
