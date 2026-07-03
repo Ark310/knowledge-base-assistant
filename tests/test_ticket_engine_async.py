@@ -509,3 +509,66 @@ def test_resolution_parser_is_injectable(tmp_path):
         login_once=login_ok, parse_fn=my_parse, parse_resolution_fn=my_res, mode="light"))
     assert seen.get("html") == "RESHTML"          # injected resolution parser was used
     assert dict(rec["tickets"])["7"] == "ok"
+
+
+def test_multi_mode_parked_workers_exit_when_active_slots_dead(tmp_path):
+    # v4.0.3 Task 7 review fix: in MULTI mode an ACTIVE worker CAN exit permanently
+    # (rebuild budget exhausted). With target_workers lowered to 1 and a backlog left,
+    # the parked workers used to poll `pending.empty()` forever -> gather never
+    # returned and the after-gather "stopped early" alert + drain never fired (run
+    # hung until Stop). Parked workers must ALSO exit once every active-slot worker
+    # has exited, so the run RETURNS and the backlog is drained to failed.
+    control = RunControl()
+    control.target_workers = 1                     # workers 1 and 2 park from the start
+    ids = [str(i) for i in range(1, 9)]            # 8 tickets, mostly left as backlog
+    rec = {}
+    cb = te.TicketEngineCallbacks(
+        on_log=lambda l, m: None,
+        on_ticket=lambda tid, st: rec.setdefault("tickets", []).append((tid, st)),
+        on_alert=lambda sev, title, body: rec.setdefault("alerts", []).append(title),
+        on_finished=lambda rep: rec.update(report=rep),
+    )
+
+    opens = {"n": 0}
+
+    class FlakyBrowser:
+        """First 3 opens succeed (one per worker at startup); every later open —
+        i.e. worker 0's rebuild attempts — raises, so the active worker exhausts
+        its rebuild budget and exits with tickets still pending."""
+        async def open(self):
+            opens["n"] += 1
+            if opens["n"] > 3:
+                raise RuntimeError("browser pool exhausted")
+            return self
+        async def new_page(self): return object()
+        async def close(self): pass
+
+    class DeadPortal:
+        base = "https://x"
+        def __init__(self, page): self.page = page
+        def ticket_url(self, t): return f"{self.base}/{t}"
+        def is_login_page(self, h): return False
+        def is_not_found(self, h, t): return False
+        async def login(self, u, p): return True
+        async def open_ticket(self, t): raise RuntimeError("portal down")
+        async def subview_count(self, label): return 0
+        async def open_subview(self, label, ready_selector=None): return ""
+        async def download_all(self, dest): return []
+
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+
+    async def main():
+        # Must RETURN (no TimeoutError): parked workers exit when the active slot dies.
+        await asyncio.wait_for(tea.run_ticket_scrape_async(
+            "https://x", "u", "p", ids, force=True, control=control, cb=cb,
+            workers=3, output_dir=tmp_path, browser_factory=lambda: FlakyBrowser(),
+            page_portal_factory=lambda page: DeadPortal(page),
+            login_once=login_once, parse_fn=fake_parse, mode="multi"), timeout=20)
+
+    asyncio.run(main())
+    rep = rec["report"]
+    # Every ticket reaches a terminal status — the backlog is drained, not stranded.
+    assert (rep["saved"] + rep["failed"] + rep["not_found"]
+            + rep["skipped"]) == len(ids), rep
+    assert rec.get("alerts"), rec                  # after-gather "stopped early" alert

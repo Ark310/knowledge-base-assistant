@@ -91,6 +91,12 @@ async def run_ticket_scrape_async(
     already = scraped_state.load()
     total = len(ticket_ids)
     stats = {"total": total, "saved": 0, "skipped": 0, "not_found": 0, "failed": 0, "retried": 0}
+    # Active worker slots — computed BEFORE the worker closures so the park check can
+    # reference it — plus which workers have already exited. Single event loop, and the
+    # park check has no await between reading the set and acting on it, so no lock is
+    # needed. A parked worker must not outlive the active-slot pullers (see park block).
+    n_workers = max(1, min(workers, total))
+    exited_workers: set[int] = set()
 
     pending: asyncio.Queue = asyncio.Queue()
     for t in ticket_ids:
@@ -233,9 +239,10 @@ async def run_ticket_scrape_async(
                 # their page (and, in multi mode, their own browser) so they hold NO
                 # browser resource, then poll without pulling work. Worker idx 0 is
                 # always active (effective target >= 1). Parked workers exit cleanly
-                # once the queue is drained so asyncio.gather() can complete; cancel
-                # still exits within one poll. When un-parked they reacquire a page via
-                # the EXISTING _recover_page() path — no second acquisition path.
+                # once the queue is drained OR every active-slot worker has exited, so
+                # asyncio.gather() can complete; cancel still exits within one poll.
+                # When un-parked they reacquire a page via the EXISTING
+                # _recover_page() path — no second acquisition path.
                 target = control.target_workers or workers
                 if idx >= max(1, min(workers, target)):
                     if page is not None:
@@ -250,7 +257,15 @@ async def run_ticket_scrape_async(
                         except Exception:
                             pass
                         own_browser = None
-                    if pending.empty():
+                    active_n = min(max(1, min(workers, target)), n_workers)
+                    if (pending.empty()
+                            or all(i in exited_workers for i in range(active_n))):
+                        # No queue left, or every active-slot worker has exited —
+                        # a parked worker must not outlive the pullers, else the
+                        # run hangs (gather never returns) instead of reaching the
+                        # after-gather "stopped early" alert + drain. Active-slot
+                        # workers can exit permanently in MULTI mode (rebuild
+                        # budget); light-mode worker 0 only exits on cancel.
                         break
                     await asyncio.sleep(0.5)
                     continue
@@ -378,6 +393,7 @@ async def run_ticket_scrape_async(
                     elif not await _recover_page():      # light: recover, never exit
                         break
         finally:
+            exited_workers.add(idx)   # parked workers watch this (see park block)
             try:
                 if page is not None:
                     await page.close()
@@ -394,8 +410,7 @@ async def run_ticket_scrape_async(
         + (f" ({workers} workers, {mode})" if workers > 1 else "") + " ---")
     try:
         if total:
-            n_workers = max(1, min(workers, total))
-            gate = AdaptiveGate(n_workers)
+            gate = AdaptiveGate(n_workers)   # n_workers computed up top (park check)
 
             async def _tuner():
                 """Every _TUNER_INTERVAL s: re-apply the live worker ceiling (park/unpark
