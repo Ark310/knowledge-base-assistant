@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from PySide6.QtCore import Slot
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 import scraper.app_settings as app_settings
+import scraper.run_registry as run_registry
 import scraper.ticket_settings as ts
 from scraper.async_runner import AsyncTicketWorker
 from scraper.control import RunControl
@@ -76,6 +77,8 @@ class TicketTab(QWidget):
         self._worker: AsyncTicketWorker | None = None
         self._control = RunControl()
         self._ticket_rows: dict[str, int] = {}   # ticket_id -> table row
+        self._run_name = f"Tickets — {portal_kind}"
+        self._alert_box = None
 
         self._build_ui()
         self._refresh_creds_label()
@@ -256,6 +259,13 @@ class TicketTab(QWidget):
     # ── Scrape lifecycle ──────────────────────────────────────────────────────
 
     def _start(self):
+        if not run_registry.acquire(self._run_name):
+            QMessageBox.warning(
+                self, "Another scrape is running",
+                f"A scrape is already running on '{run_registry.owner()}'.\n"
+                "Only one scrape can run at a time — wait for it to finish or stop it.")
+            return
+
         if self._worker and self._worker.isRunning():
             self._emit_log("warning", "A scrape is already running.")
             return
@@ -278,18 +288,21 @@ class TicketTab(QWidget):
             )
             self._open_settings()
             self._refresh_creds_label()
+            run_registry.release(self._run_name)
             return
 
         raw_ids = self.inp_tickets.text().strip()
         if not raw_ids:
             QMessageBox.warning(self, "Missing Field",
                 "Please enter at least one ticket number.")
+            run_registry.release(self._run_name)
             return
 
         ticket_ids = parse_ticket_input(raw_ids)
         if not ticket_ids:
             QMessageBox.warning(self, "No Tickets",
                 "Could not parse any ticket IDs from the input.")
+            run_registry.release(self._run_name)
             return
 
         # Prepare table rows
@@ -325,6 +338,7 @@ class TicketTab(QWidget):
         self._worker.finished_report.connect(self._on_finished)
         self._worker.ticket_meta.connect(self._on_ticket_meta)
         self._worker.finished.connect(self._worker_thread_done)
+        self._worker.alert.connect(self._on_alert)
 
         self._set_running(True)
         self._emit_log("info", f"--- Starting ticket scrape: {len(ticket_ids)} tickets ---")
@@ -416,9 +430,20 @@ class TicketTab(QWidget):
 
     @Slot()
     def _worker_thread_done(self):
+        run_registry.release(self._run_name)
         self._set_running(False)
         self.lbl_progress.setText("Idle")
         self.progress.setValue(0)
+
+    @Slot(str, str, str)
+    def _on_alert(self, severity: str, title: str, body: str):
+        if self._control.paused:
+            self.btn_pause.setText("▶ Resume")
+        icon = QMessageBox.Critical if severity == "error" else QMessageBox.Warning
+        box = QMessageBox(icon, title, body, QMessageBox.Ok, self)
+        box.setWindowModality(Qt.NonModal)
+        box.show()
+        self._alert_box = box   # keep a ref so it isn't GC'd
 
     # ── UI state helpers ──────────────────────────────────────────────────────
 

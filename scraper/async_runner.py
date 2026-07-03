@@ -16,6 +16,7 @@ class AsyncTicketWorker(QThread):
     ticket = Signal(str, str)
     ticket_meta = Signal(str, str, int)
     finished_report = Signal(dict)
+    alert = Signal(str, str, str)
 
     def __init__(self, portal_url, username, password, ticket_ids, *,
                  force=False, workers=4, output_dir=None, control=None, mode="light",
@@ -39,6 +40,7 @@ class AsyncTicketWorker(QThread):
             on_ticket=lambda tid, st: self.ticket.emit(tid, st),
             on_ticket_meta=lambda tid, t, n: self.ticket_meta.emit(tid, t, n),
             on_finished=lambda rep: self.finished_report.emit(rep),
+            on_alert=lambda sev, title, body: self.alert.emit(sev, title, body),
         )
         bf, ppf, login = self._bf, self._ppf, self._login
         if bf is None:   # real wiring: select adapter by portal_kind

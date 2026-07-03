@@ -8,6 +8,17 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QTableWidgetItem
 _app = QApplication.instance() or QApplication([])
 from scraper.ticket_tab import TicketTab
+import scraper.run_registry as run_registry
+
+
+@pytest.fixture(autouse=True)
+def _reset_run_registry():
+    """Keep the module-level single-run registry clean between tests — it is
+    shared global state, so a test that acquires and doesn't release would
+    otherwise leak into unrelated tests run later in the same session."""
+    run_registry.release(run_registry.owner() or "")
+    yield
+    run_registry.release(run_registry.owner() or "")
 
 def test_workers_spinbox_1_to_10_default_4():
     t = TicketTab()
@@ -124,3 +135,44 @@ def test_ticket_tab_contoso_passes_portal_kind(tmp_path, monkeypatch):
     tab.inp_tickets.setText("76511")
     tab._start()
     assert captured.get("portal_kind") == "contoso"
+
+
+def test_start_blocked_while_registry_busy(monkeypatch):
+    """Single-run guard (R7): if another tab already owns the registry, _start()
+    must refuse — no worker created, registry owner unchanged — and warn via
+    QMessageBox (stubbed to a recorder, following this file's dialog-stub pattern)."""
+    import scraper.ticket_tab as tt
+
+    warnings = []
+    monkeypatch.setattr(
+        tt.QMessageBox, "warning",
+        lambda *a, **k: warnings.append(a) or None,
+    )
+
+    run_registry.acquire("other")
+
+    tab = tt.TicketTab()
+    tab.inp_tickets.setText("76511")   # valid-looking input
+    tab._start()
+
+    assert tab._worker is None
+    assert run_registry.owner() == "other"
+    assert len(warnings) == 1
+
+
+def test_alert_slot_shows_nonmodal_box():
+    """_on_alert must build+show a non-modal QMessageBox and keep a reference
+    to it (so it isn't garbage-collected while the engine keeps running)."""
+    t = TicketTab()
+    t._on_alert("error", "T", "B")
+    assert t._alert_box is not None
+    assert t._alert_box.windowTitle() == "T"
+
+
+def test_worker_done_releases_registry():
+    """_worker_thread_done runs for every outcome (including engine crash) and
+    must release the registry so another tab can start a scrape."""
+    t = TicketTab()
+    run_registry.acquire(t._run_name)
+    t._worker_thread_done()
+    assert run_registry.owner() is None

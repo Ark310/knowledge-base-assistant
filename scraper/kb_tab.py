@@ -8,7 +8,7 @@ from PySide6.QtGui import QTextCursor, QFont, QColor, QTextCharFormat
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QProgressBar, QListWidget, QTableWidget,
-    QTableWidgetItem, QSplitter, QLineEdit, QHeaderView,
+    QTableWidgetItem, QSplitter, QLineEdit, QHeaderView, QMessageBox,
 )
 
 import scraper.config as config
@@ -17,6 +17,7 @@ from scraper.kb_engine import KBEngine
 from scraper.engine import Engine, EngineCallbacks, CancellationToken
 from scraper.control import RunControl
 import scraper.app_settings as app_settings
+import scraper.run_registry as run_registry
 
 
 # ── Signal bridge (unchanged pattern) ────────────────────────────────────────
@@ -95,6 +96,7 @@ class KBTab(QWidget):
 
         # Shared pause/cancel token
         self._control: RunControl = RunControl()
+        self._run_name = "Knowledge Base"
 
         # Bridge + callbacks (one set, shared across both engines)
         self._bridge = _SignalBridge()
@@ -278,8 +280,21 @@ class KBTab(QWidget):
         self._kb_engine.cancel = self._control
         self._rn_engine.cancel = self._control
 
+    def _try_acquire_run(self) -> bool:
+        """Single-run guard (R7) — only one scrape across ALL tabs. Shows the same
+        warning dialog TicketTab shows on refusal."""
+        if run_registry.acquire(self._run_name):
+            return True
+        QMessageBox.warning(
+            self, "Another scrape is running",
+            f"A scrape is already running on '{run_registry.owner()}'.\n"
+            "Only one scrape can run at a time — wait for it to finish or stop it.")
+        return False
+
     def _start_kb(self, action: str, kwargs: dict | None = None):
         """Dispatch a KBEngine action."""
+        if not self._try_acquire_run():
+            return
         if self.worker and self.worker.isRunning():
             self._log("warning", "A run is already in progress.")
             return
@@ -292,6 +307,8 @@ class KBTab(QWidget):
 
     def _start_rn(self, action: str, kwargs: dict | None = None):
         """Dispatch a v1 RN Engine action."""
+        if not self._try_acquire_run():
+            return
         if self.worker and self.worker.isRunning():
             self._log("warning", "A run is already in progress.")
             return
@@ -324,6 +341,8 @@ class KBTab(QWidget):
 
     def _scrape_all_action(self):
         """Scrape KB scrape_all then RN scrape_all (chained via two workers)."""
+        if not self._try_acquire_run():
+            return
         if self.worker and self.worker.isRunning():
             self._log("warning", "A run is already in progress.")
             return
@@ -336,6 +355,8 @@ class KBTab(QWidget):
 
     def _force_all_action(self):
         """Force-scrape KB + RN (chained)."""
+        if not self._try_acquire_run():
+            return
         if self.worker and self.worker.isRunning():
             self._log("warning", "A run is already in progress.")
             return
@@ -348,8 +369,17 @@ class KBTab(QWidget):
 
     @Slot()
     def _kb_done_start_rn(self, force: bool = False):
-        """Called when KB scrape_all finishes; starts RN scrape_all next."""
+        """Called when KB scrape_all finishes; starts RN scrape_all next.
+
+        Still the same logical run as _scrape_all_action/_force_all_action (which
+        already hold the registry) — reacquiring here is a same-owner no-op and
+        only guards the (unreachable in practice) case where ownership was lost
+        mid-chain.
+        """
         if self._control.is_cancelled():
+            self._worker_done()
+            return
+        if not self._try_acquire_run():
             self._worker_done()
             return
         self._log("info", "--- KB done — starting Release Notes ---")
@@ -384,6 +414,7 @@ class KBTab(QWidget):
 
     @Slot()
     def _worker_done(self):
+        run_registry.release(self._run_name)
         self._set_running(False)
         self._log("info", "--- Run complete ---")
         self._lbl_progress.setText("Idle")
