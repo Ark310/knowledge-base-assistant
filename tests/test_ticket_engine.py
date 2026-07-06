@@ -3,11 +3,22 @@ import sys
 import threading
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import pytest
 from scraper.control import RunControl
 from scraper import ticket_engine as te
 
 FIX = Path(__file__).parent / "fixtures" / "tradedesk"
 def fx(n): return (FIX / n).read_text(encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_scraped_state(tmp_path, monkeypatch):
+    """bug-117 follow-up: _load_scraped/_mark_scraped read the module-global
+    TICKET_STATE_FILE at call time, so patching the attribute on the module
+    redirects both without touching the real operator ledger
+    (scraper/state/scraped_tickets.json, gitignored). Without this, every
+    full-suite run pollutes that file with fixture ids like "A1"-"A6"."""
+    monkeypatch.setattr(te, "TICKET_STATE_FILE", tmp_path / "scraped_tickets.json")
 
 class FakeBrowser:
     def close(self): pass

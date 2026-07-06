@@ -8,6 +8,21 @@ from PySide6.QtCore import QEventLoop, QTimer
 from scraper.control import RunControl
 from scraper.portal.base_portal import empty_ticket
 from scraper.async_runner import AsyncTicketWorker
+from scraper import ticket_engine_async as tea
+from scraper.scrape_state import ScrapedState
+
+
+@pytest.fixture(autouse=True)
+def _isolate_scraped_state(tmp_path, monkeypatch):
+    """Two tests here (test_contoso_wiring_selected_in_run, test_worker_emits_finished)
+    run AsyncTicketWorker for real on a QThread, which calls the real
+    run_ticket_scrape_async -> ScrapedState() with no args -> the operator's real
+    scraper/state/scraped_tickets.json (gitignored). Same fix as
+    tests/test_ticket_engine_async.py::_isolate_scraped_state — without it this file
+    silently polluted the real ledger with fixture ids "1"/"2" every full-suite run."""
+    monkeypatch.setattr(
+        tea, "ScrapedState",
+        lambda *a, **kw: ScrapedState(state_file=tmp_path / "scraped_tickets.json", **kw))
 
 class _FakeBrowser:
     base = "https://x"

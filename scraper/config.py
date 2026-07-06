@@ -1,10 +1,33 @@
 from pathlib import Path
 import sys
 
-APP_VERSION = "4.0.2"
+APP_VERSION = "4.0.3"
 """
 Changelog
 ─────────
+v4.0.3 2026-07-03  Auto-recovery + operator visibility (no more mass-fail). Fixes:
+                   (a) a big-batch GUI freeze — a 19k-ticket run made the window
+                   go "not responding" from per-line log appends + pre-creating
+                   19k QTableWidget rows; fixed with buffered log flushing +
+                   lazy table rows (bug-144, see also bug-139/bug-142); (b)
+                   BrowserSupervisor (scraper/supervisor.py) gives the shared
+                   light-mode Chrome single-flight restart+relogin recovery — a
+                   30k-ticket run mass-failed 28,620 tickets when the browser
+                   died and no path recovered it (2026-07-02 10:57); the run now
+                   pauses + alerts instead of draining (bug-145, see also
+                   bug-123); (c) speed waste — 213 one-shot download timeouts and
+                   7,485 NOT-FOUND tickets paying the full wait cost, plus a full
+                   ~50KB state-file rewrite per saved ticket; fixed with download
+                   retries, a 250ms-poll NOT-FOUND fast path, and batched
+                   journaled state writes (bug-146); (d) a breaker pause used to
+                   be log-only with no operator-visible explanation; explanatory
+                   popup alerts (WHAT/WHY/PRESERVED/DO) now fire on every
+                   pause/stop (bug-147). Also: resource auto-tune + a live
+                   monitor panel (system/app/Chrome CPU+RAM, pace/ETA), process
+                   priority control (app HIGH, Chrome children capped at
+                   ABOVE_NORMAL so the desktop doesn't starve), a live
+                   worker-count slider (park/unpark mid-run), and a single-run
+                   guard so only one scrape runs at a time across all tabs.
 v4.0.2 2026-06-30  Robust large-batch scraping (bug-111: an 18k-ticket @ 10-worker run
                    collapsed — 0 saved). Fixes: (a) the per-worker failure budget is now
                    CONSECUTIVE (reset on success) — it was a lifetime counter that
