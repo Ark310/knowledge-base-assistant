@@ -13,7 +13,7 @@ def fx(n): return (FIX / n).read_text(encoding="utf-8")
 
 @pytest.fixture(autouse=True)
 def _isolate_scraped_state(tmp_path, monkeypatch):
-    """bug-146 follow-up: _load_scraped/_mark_scraped read the module-global
+    """bug-117 follow-up: _load_scraped/_mark_scraped read the module-global
     TICKET_STATE_FILE at call time, so patching the attribute on the module
     redirects both without touching the real operator ledger
     (scraper/state/scraped_tickets.json, gitignored). Without this, every
