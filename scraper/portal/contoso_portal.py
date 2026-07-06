@@ -81,7 +81,7 @@ def _unique_path(dest_dir: Path, name: str) -> Path:
 
 
 async def _retry_download(fn, attempts: int = 2, base_delay: float = 0.5):
-    """Run an async download op with small-backoff retries (bug-117: 213 one-shot
+    """Run an async download op with small-backoff retries (bug-146: 213 one-shot
     download timeouts in a single v4.0.2 run). Raises the last error."""
     import asyncio
     last = None

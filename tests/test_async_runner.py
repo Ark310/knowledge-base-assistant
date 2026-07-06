@@ -146,3 +146,36 @@ def test_worker_emits_finished(tmp_path):
     QTimer.singleShot(10_000, loop.quit)
     w.start(); loop.exec(); w.wait(2000)
     assert got.get("saved") == 2
+
+
+def test_worker_emits_alert_on_crash(tmp_path, monkeypatch):
+    """Fix 2a (spec 3.2): if the engine coroutine itself raises (an internal crash,
+    not a per-ticket failure), the worker must emit an alert — not just a log line +
+    an all-failed report — so the GUI surfaces it via the alert popup. Exception TYPE
+    only in the alert body (org policy: no exception message/PII)."""
+    app = QApplication.instance() or QApplication([])
+    import scraper.async_runner as ar
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("engine exploded — should never appear in the alert")
+
+    monkeypatch.setattr(ar, "run_ticket_scrape_async", _boom)
+
+    w = AsyncTicketWorker("https://x", "u", "p", ["1", "2"], force=True, workers=2,
+                          output_dir=tmp_path, control=RunControl(),
+                          browser_factory=lambda: _FakeBrowser(),
+                          page_portal_factory=_fake_ppf, login_once=_login_ok, parse_fn=_fake_parse)
+    alerts = []
+    got = {}
+    loop = QEventLoop()
+    w.alert.connect(lambda sev, title, body: alerts.append((sev, title, body)))
+    w.finished_report.connect(lambda rep: (got.update(rep), loop.quit()))
+    QTimer.singleShot(10_000, loop.quit)
+    w.start(); loop.exec(); w.wait(2000)
+    assert got.get("failed") == 2
+    assert len(alerts) == 1, alerts
+    sev, title, body = alerts[0]
+    assert sev == "error"
+    assert title == "Scrape crashed"
+    assert "RuntimeError" in body
+    assert "engine exploded" not in body   # exception TYPE only — no message/PII

@@ -22,7 +22,7 @@ def _unique_path(dest_dir: Path, name: str) -> Path:
     return cand
 
 async def _retry_download(fn, attempts: int = 2, base_delay: float = 0.5):
-    """Run an async download op with small-backoff retries (bug-117: 213 one-shot
+    """Run an async download op with small-backoff retries (bug-146: 213 one-shot
     download timeouts in a single v4.0.2 run). Raises the last error."""
     import asyncio
     last = None
@@ -67,7 +67,7 @@ class AsyncTradeDeskPortal:
         """Fast-path readiness: poll every 250ms for EITHER the fields rendering
         (found) OR the SPA redirecting away (not-found -> /bugs). v4.0.2 burned a
         fixed 1.5s + up to 2×20s selector waits per ticket; 7,485 not-founds in
-        one run paid full price (bug-117)."""
+        one run paid full price (bug-146)."""
         await self.page.goto(self.ticket_url(tid), wait_until="domcontentloaded")
         edit_path = f"/tickets/{tid}/edit"
         ready = False

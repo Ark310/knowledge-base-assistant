@@ -205,7 +205,7 @@ def _stub_worker_env(monkeypatch, tmp_path):
 
 def test_big_batch_skips_row_precreation(tmp_path, monkeypatch):
     """A batch bigger than BIG_BATCH_ROWS must not pre-create table rows —
-    bug-115 froze the GUI pre-creating 19k QTableWidget rows. Rows appear
+    bug-144 froze the GUI pre-creating 19k QTableWidget rows. Rows appear
     lazily as tickets complete."""
     tt = _stub_worker_env(monkeypatch, tmp_path)
 
@@ -239,7 +239,7 @@ def test_small_batch_still_precreates_rows(tmp_path, monkeypatch):
 
 def test_log_lines_are_buffered_then_flushed():
     """_emit_log must only buffer — the GUI append is deferred to a timer-driven
-    _flush_log (bug-115: per-line QPlainTextEdit appends froze the GUI on a
+    _flush_log (bug-144: per-line QPlainTextEdit appends froze the GUI on a
     30k-ticket run). _flush_log itself now issues one appendHtml PER LINE
     (wrapped in setUpdatesEnabled(False)/True for a single repaint) so that
     each line gets its own QTextBlock and MAX_LOG_LINES caps LINES, not
@@ -281,6 +281,31 @@ def test_live_worker_change_updates_control_target():
     t.spn_workers.setValue(2)
 
     assert t._control.target_workers == 2
+
+
+def test_live_worker_raise_above_run_start_is_clamped_with_honest_message():
+    """Final-review Fix 3 (spec 3.5 deviation made honest): parking can only lower/
+    restore workers within the run's STARTING count — raising the slider above that
+    ceiling does nothing until the next run. The log message and the monitor label
+    must reflect the CLAMPED effective value, not the raw slider value, so the
+    operator isn't misled into thinking more workers actually spun up."""
+    t = TicketTab()
+
+    class _FakeRunningWorker:
+        def isRunning(self):
+            return True
+
+    t._worker = _FakeRunningWorker()
+    t._run_workers = 4        # this run started at 4 workers
+
+    t.spn_workers.setValue(9)  # raise above the run's starting count
+
+    assert t.monitor.lbl_workers.text() == "Workers 4"
+    assert t._log_buf[-1][2] == "Workers target changed to 4 (live — max 4 this run)."
+    # target_workers stays the RAW slider value — the engine clamps it anyway
+    # (control.target_workers is compared against `workers` in the engine's park
+    # check), so there's no need to duplicate the clamp on both sides.
+    assert t._control.target_workers == 9
 
 
 def test_priority_combo_defaults_and_applies_on_change(tmp_path, monkeypatch):

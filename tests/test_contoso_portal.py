@@ -11,7 +11,7 @@ def test_is_login_page():
 
 
 def test_download_all_retries_transient_failures(tmp_path):
-    """First GET raises, retry succeeds -> file saved, nothing skipped (bug-117:
+    """First GET raises, retry succeeds -> file saved, nothing skipped (bug-146:
     213 one-shot download timeouts in a single v4.0.2 run)."""
     import asyncio
     from scraper.portal.contoso_portal import AsyncContosoPortal

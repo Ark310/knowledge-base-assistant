@@ -1,4 +1,4 @@
-"""Shared-browser supervisor (v4.0.3, bug-115/bug-116).
+"""Shared-browser supervisor (v4.0.3, bug-144/bug-145).
 
 v4.0.2 light mode had ONE shared Chrome and no recovery path when IT died:
 workers could only rebuild their tab (`shared_browser.new_page()` on a corpse),

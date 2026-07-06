@@ -1,6 +1,6 @@
 """Async ticket engine — light mode (1 shared browser via BrowserSupervisor, 1 login,
 N tabs). Crash-resilient: shared asyncio.Queue, bounded redispatch, single-flight
-shared-browser auto-recovery (a worker NEVER mass-fails on browser death — bug-116),
+shared-browser auto-recovery (a worker NEVER mass-fails on browser death — bug-145),
 an adaptive-gate circuit breaker that PAUSES (never drains) on sustained failure, and
 exactly-once terminal status. Logs exception TYPE only (no PII)."""
 from __future__ import annotations
@@ -138,7 +138,7 @@ async def run_ticket_scrape_async(
     # ── Browser provisioning differs by mode ─────────────────────────────────
     # light : ONE shared browser owned by a BrowserSupervisor + ONE login; each
     #         worker opens a tab (page). If the shared browser DIES, workers run
-    #         single-flight supervisor recovery instead of exiting (bug-116).
+    #         single-flight supervisor recovery instead of exiting (bug-145).
     # multi : each worker opens its OWN browser + logs in (separate windows).
     supervisor = None
     if mode != "multi":
@@ -184,7 +184,7 @@ async def run_ticket_scrape_async(
 
         async def _recover_page():
             """(Re)acquire this worker's page. LIGHT mode NEVER exits on infrastructure
-            failure (bug-116): if the SHARED browser is the corpse, run single-flight
+            failure (bug-145): if the SHARED browser is the corpse, run single-flight
             supervisor recovery; if the supervisor has given up, PAUSE the run (the
             supervisor already emitted ONE alert) and wait for the operator to Resume
             (then retry) or Stop. Returns False only when the worker must exit
@@ -295,6 +295,14 @@ async def run_ticket_scrape_async(
                         cb.on_log("warning", f"{prefix}#{tid}: session expired")
                         if supervisor is None:
                             raise RuntimeError("session expired")   # multi: old behavior
+                        if n >= MAX_TICKET_ATTEMPTS:
+                            # A ticket that PERSISTENTLY renders as a login page (bad
+                            # ticket-level permission wall, or a session relogin never
+                            # actually clears) must not requeue forever — that can wedge
+                            # an unattended run. Bound it like every other failure mode.
+                            cb.on_log("error", f"{prefix}#{tid}: failed after {n} (session expired).")
+                            await terminal(tid, "failed", "failed")
+                            continue
                         # light mode: single-flight re-auth on the CURRENT browser
                         # (full recover if that fails); the tid goes back on the queue
                         # and `ok` stays False so the gate records a failure. If the
@@ -350,7 +358,7 @@ async def run_ticket_scrape_async(
                     page = None
                     since_recycle = 0
                     # Rebuild the page; if the SHARED browser is the corpse, run
-                    # single-flight supervisor recovery instead of exiting (bug-116).
+                    # single-flight supervisor recovery instead of exiting (bug-145).
                     if not await _recover_page():
                         broke = True
                 finally:
@@ -454,6 +462,17 @@ async def run_ticket_scrape_async(
         if total and stats["failed"] == total:
             cb.on_log("error",
                 f"All {total} tickets failed — check credentials/network/portal.")
+        # Spec 3.2: a finished (not cancelled) run with an unusually high failure rate
+        # gets an alert with a retry hint, even when nothing crashed and the breaker
+        # never tripped (e.g. a steady trickle of not-quite-sustained failures). The
+        # startup login-failure path above already returns early with its OWN alert
+        # ("Login failed"), so it can never reach this check — no double-alert risk.
+        if not control.cancelled and stats["failed"] > max(50, total // 10):
+            cb.on_alert("warning", "Scrape finished with many failures",
+                f"WHAT HAPPENED: {stats['failed']} of {total} tickets failed.\n"
+                "LIKELY CAUSE: portal slowness, network problems, or machine "
+                "overload during the run.\nWHAT TO DO: re-run the same range — "
+                "already-scraped tickets are skipped; only failures are retried.")
     finally:
         try:
             scraped_state.flush()

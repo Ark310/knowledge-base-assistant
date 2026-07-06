@@ -71,7 +71,7 @@ class TicketTab(QWidget):
     """Tab 3 — Ticket Portal Scraper."""
 
     MAX_LOG_LINES = 3000
-    BIG_BATCH_ROWS = 2000  # batches larger than this skip row pre-creation (bug-115)
+    BIG_BATCH_ROWS = 2000  # batches larger than this skip row pre-creation (bug-144)
 
     def __init__(self, parent=None, *, portal_kind: str = "tradedesk", default_url: str | None = None):
         super().__init__(parent)
@@ -98,6 +98,11 @@ class TicketTab(QWidget):
 
         self._build_ui()
         self._refresh_creds_label()
+        # Ceiling for the live worker slider (Fix 3): parking can only lower/restore
+        # workers within the run's STARTING count — raising above it is a no-op until
+        # the next run. Defaults to the spinbox's current value so a slider change
+        # BEFORE any run has ever started still clamps sanely.
+        self._run_workers = self.spn_workers.value()
         self.spn_workers.valueChanged.connect(self._on_workers_changed)
 
     # ── UI construction ───────────────────────────────────────────────────────
@@ -179,7 +184,10 @@ class TicketTab(QWidget):
         self.spn_workers.setMinimumWidth(64)
         self.spn_workers.setToolTip(
             "Number of parallel Chrome windows (1–10).\n"
-            "Each worker logs in independently. Use 2–4 for large batches."
+            "Each worker logs in independently. Use 2–4 for large batches.\n"
+            "While a scrape is running, lowering this pauses (parks) the extra "
+            "workers immediately. Raising it above the run's starting count has "
+            "no effect until the next run."
         )
 
         lbl_hint = QLabel("parallel workers")
@@ -348,7 +356,7 @@ class TicketTab(QWidget):
             return
 
         # Prepare table rows. Pre-creating tens of thousands of QTableWidget rows
-        # froze the UI (bug-115); large batches skip pre-creation and rows are
+        # froze the UI (bug-144); large batches skip pre-creation and rows are
         # appended lazily (_row_for) as tickets complete.
         self.table.setRowCount(0)
         self._ticket_rows.clear()
@@ -373,6 +381,7 @@ class TicketTab(QWidget):
         self._control.target_workers = None
         force            = self.chk_force.isChecked()
         workers          = self.spn_workers.value()
+        self._run_workers = workers   # ceiling for the live worker slider this run
         output_dir       = app_settings.tickets_dir()
 
         mode = app_settings.browser_mode()
@@ -434,7 +443,7 @@ class TicketTab(QWidget):
     @Slot(str, str)
     def _emit_log(self, level: str, msg: str):
         """Buffer only — a 30k-ticket run at 10 workers emits log lines faster
-        than QPlainTextEdit can append+scroll one-by-one (bug-115 UI freeze).
+        than QPlainTextEdit can append+scroll one-by-one (bug-144 UI freeze).
         A 250ms timer (_flush_log) drains the buffer as ONE insert."""
         self._log_buf.append((datetime.now().strftime("%H:%M:%S"), level, msg))
         getattr(log, level if level in ("debug", "info", "warning", "error") else "info")(msg)
@@ -449,7 +458,7 @@ class TicketTab(QWidget):
         # into a SINGLE appendHtml call, which put the entire flush in one
         # block — MAX_LOG_LINES then capped FLUSHES, not lines. Wrapping the
         # loop in setUpdatesEnabled(False) batches all of this flush's
-        # document changes into ONE repaint: bug-115's freeze came from
+        # document changes into ONE repaint: bug-144's freeze came from
         # per-line PAINT+SCROLL, not from per-line block insertion, so this
         # keeps the perf fix while restoring the intended cap semantics.
         self.log_pane.setUpdatesEnabled(False)
@@ -477,7 +486,7 @@ class TicketTab(QWidget):
 
     def _row_for(self, tid: str) -> int:
         """Return the table row for tid, lazily appending one if it doesn't
-        exist yet (big-batch mode never pre-creates rows — bug-115)."""
+        exist yet (big-batch mode never pre-creates rows — bug-144)."""
         row = self._ticket_rows.get(tid)
         if row is None:
             row = self.table.rowCount()
@@ -550,9 +559,16 @@ class TicketTab(QWidget):
 
     def _on_workers_changed(self, value: int):
         if self._worker is not None and self._worker.isRunning():
+            # Parking can only lower/restore workers within the run's STARTING count
+            # (self._run_workers) — raising the slider above that ceiling doesn't spawn
+            # new workers mid-run (spawn-on-demand was deferred, see cerebrum Decision
+            # Log). Log and show the operator the EFFECTIVE (clamped) value so the UI
+            # never claims more workers are active than actually are.
+            effective = min(value, self._run_workers)
             self._control.target_workers = value
-            self.monitor.set_workers_info(value)
-            self._emit_log("info", f"Workers target changed to {value} (live).")
+            self.monitor.set_workers_info(effective)
+            suffix = "" if effective == value else f" — max {self._run_workers} this run"
+            self._emit_log("info", f"Workers target changed to {effective} (live{suffix}).")
 
     # ── UI state helpers ──────────────────────────────────────────────────────
 

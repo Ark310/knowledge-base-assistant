@@ -90,7 +90,7 @@ def test_permanent_crash_failed_not_stranded(tmp_path):
 
 def test_persistent_crashes_fail_tickets_not_stranded(tmp_path):
     # v4.0.3: workers no longer die on repeated crashes in light mode (they recover in
-    # place — bug-116); every persistently-crashing ticket still reaches a terminal
+    # place — bug-145); every persistently-crashing ticket still reaches a terminal
     # "failed" via MAX_TICKET_ATTEMPTS, never stranded at "queued".
     rec, _ = run(["1", "2", "3"], 2, lambda tid, n: True, tmp_path)
     assert all(st == "failed" for _, st in rec["tickets"])
@@ -192,7 +192,7 @@ def test_worker_survives_interspersed_failures(tmp_path):
 def test_large_drain_is_capped_no_ui_flood(tmp_path):
     # bug-111: a mass drain with hundreds/thousands of pending tickets must NOT emit
     # one GUI update per ticket (that flooded the Qt queue and hung the app on the 18k
-    # run). Since v4.0.3 an INFRA failure never drains (the run pauses — bug-116), so
+    # run). Since v4.0.3 an INFRA failure never drains (the run pauses — bug-145), so
     # the remaining mass-drain path is startup LOGIN failure: all 300 pending tickets
     # are accounted failed, but per-ticket on_ticket emits stay capped.
     ids = [str(i) for i in range(1, 301)]                 # 300 tickets
@@ -253,7 +253,7 @@ def test_circuit_breaker_pauses_on_sustained_failure(tmp_path, monkeypatch):
 
 
 def test_shared_browser_death_recovers_and_never_mass_fails(tmp_path, monkeypatch):
-    # bug-116 regression (2026-07-02: 28,620 tickets mass-failed): the ONE shared
+    # bug-145 regression (2026-07-02: 28,620 tickets mass-failed): the ONE shared
     # Chrome dies mid-run. The worker's tab rebuild fails on the corpse, which must
     # trigger single-flight BrowserSupervisor recovery (new browser + re-login) —
     # the run then COMPLETES: zero failed, all saved, one recovery log line.
@@ -301,7 +301,7 @@ def test_shared_browser_death_recovers_and_never_mass_fails(tmp_path, monkeypatc
 
 
 def test_supervisor_give_up_pauses_and_alerts_instead_of_draining(tmp_path, monkeypatch):
-    # bug-116: when the browser is UNRECOVERABLE (factory keeps failing), the engine
+    # bug-145: when the browser is UNRECOVERABLE (factory keeps failing), the engine
     # must PAUSE with exactly ONE alert and keep every pending ticket queued (zero
     # drained/failed) — the operator's Stop (cancel) then releases the run cleanly.
     monkeypatch.setattr(tea, "_RECOVER_RETRY_DELAY", 0.01)
@@ -356,7 +356,7 @@ def test_supervisor_give_up_pauses_and_alerts_instead_of_draining(tmp_path, monk
 
 def test_ok_log_line_includes_comment_and_file_counts(tmp_path):
     # R1: per-ticket [OK] line reports the main-thread comment count like the
-    # resolution line does (bug-117 operator ask: quick eyeball of how much a
+    # resolution line does (bug-146 operator ask: quick eyeball of how much a
     # ticket actually captured, no need to open the JSON).
     factory, _ = make_factory(lambda tid, n: False)
     async def login_once(b, u, p): return True
@@ -572,3 +572,88 @@ def test_multi_mode_parked_workers_exit_when_active_slots_dead(tmp_path):
     assert (rep["saved"] + rep["failed"] + rep["not_found"]
             + rep["skipped"]) == len(ids), rep
     assert rec.get("alerts"), rec                  # after-gather "stopped early" alert
+
+
+def test_persistent_session_expired_ticket_bounded_not_infinite(tmp_path, monkeypatch):
+    # Final-review Fix 1: a ticket that ALWAYS renders as a login page (e.g. a
+    # corrupted per-ticket session the portal never clears, or relogin succeeding but
+    # the SAME stale page still showing the login form) used to requeue unconditionally
+    # regardless of attempt count -> an unattended run could spin on it forever. After
+    # MAX_TICKET_ATTEMPTS the ticket must reach a terminal "failed", not loop forever.
+    monkeypatch.setattr(tea, "_RECOVER_RETRY_DELAY", 0.01)
+
+    class LoginWallPortal:
+        base = "https://x"
+        def __init__(self, page): self.page = page
+        def ticket_url(self, t): return f"{self.base}/{t}"
+        def is_login_page(self, html): return True    # ALWAYS looks logged out
+        def is_not_found(self, html, tid): return False
+        async def login(self, u, p): return True
+        async def open_ticket(self, t): return "<html>login page</html>"
+        async def subview_count(self, label): return 0
+        async def open_subview(self, label, ready_selector=None): return ""
+        async def download_all(self, dest): return []
+
+    async def login_once(b, u, p): return True   # relogin "succeeds" but page never changes
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    rec = {}
+
+    async def main():
+        return await asyncio.wait_for(tea.run_ticket_scrape_async(
+            "https://x", "u", "p", ["1"], force=True, control=RunControl(), cb=_cb(rec),
+            workers=1, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+            page_portal_factory=lambda page: LoginWallPortal(page),
+            login_once=login_once, parse_fn=fake_parse, mode="light"), timeout=5)
+
+    stats = asyncio.run(main())
+    assert dict(rec["tickets"]).get("1") == "failed"
+    assert stats["failed"] == 1
+
+
+def test_many_failures_alert_fires_over_threshold(tmp_path, monkeypatch):
+    # Final-review Fix 2b (spec 3.2): a run that finishes with failed > max(50, total//10)
+    # must alert the operator with a retry hint, even though every ticket individually
+    # reached a clean terminal status (no crash, no pause). Disable the breaker/backoff
+    # so 60/100 permanent per-ticket failures don't pause the run or slow the test.
+    import scraper.throttle as throttle
+    monkeypatch.setattr(tea, "AdaptiveGate",
+        lambda mp: throttle.AdaptiveGate(mp, breaker_at=2.0, backoff_base=0.0, backoff_max=0.0))
+    ids = [str(i) for i in range(1, 101)]
+    rec = {}
+    factory, _ = make_factory(lambda tid, n: int(tid) <= 60)   # ids 1..60 always crash
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    alerts = []
+    cb = _cb(rec)
+    cb.on_alert = lambda sev, title, body: alerts.append((sev, title, body))
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ids, force=True, control=RunControl(), cb=cb,
+        workers=4, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
+    assert rec["report"]["failed"] == 60
+    many = [a for a in alerts if a[1] == "Scrape finished with many failures"]
+    assert len(many) == 1, alerts
+    assert many[0][0] == "warning"
+
+
+def test_many_failures_alert_absent_under_threshold(tmp_path, monkeypatch):
+    # Mirror of the above at failed=3/total=100 (well under max(50, total//10)=50):
+    # no alert should fire for an ordinary handful of failures.
+    import scraper.throttle as throttle
+    monkeypatch.setattr(tea, "AdaptiveGate",
+        lambda mp: throttle.AdaptiveGate(mp, breaker_at=2.0, backoff_base=0.0, backoff_max=0.0))
+    ids = [str(i) for i in range(1, 101)]
+    rec = {}
+    factory, _ = make_factory(lambda tid, n: int(tid) <= 3)    # only 3 ids always crash
+    async def login_once(b, u, p): return True
+    def fake_parse(html, tid, base): return {**empty_ticket(tid, base), "title": tid}
+    alerts = []
+    cb = _cb(rec)
+    cb.on_alert = lambda sev, title, body: alerts.append((sev, title, body))
+    asyncio.run(tea.run_ticket_scrape_async(
+        "https://x", "u", "p", ids, force=True, control=RunControl(), cb=cb,
+        workers=4, output_dir=tmp_path, browser_factory=lambda: FakeAsyncBrowser(),
+        page_portal_factory=factory, login_once=login_once, parse_fn=fake_parse, mode="light"))
+    assert rec["report"]["failed"] == 3
+    many = [a for a in alerts if a[1] == "Scrape finished with many failures"]
+    assert many == [], alerts

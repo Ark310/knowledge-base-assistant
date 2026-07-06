@@ -93,6 +93,15 @@ class AsyncTicketWorker(QThread):
                 mode=self._mode, sampler=sampler, **kwargs))
         except Exception as exc:
             self.log.emit("error", f"Scrape thread error ({type(exc).__name__}).")
+            # Spec 3.2: a crash inside the engine itself (not a per-ticket failure) must
+            # surface as an alert popup, not just a log line — the GUI's alert box is
+            # the operator-visible channel. Exception TYPE only (org policy: no message/PII).
+            self.alert.emit("error", "Scrape crashed",
+                "WHAT HAPPENED: the scrape engine hit an internal error "
+                f"({type(exc).__name__}).\nWHAT IS PRESERVED: everything scraped "
+                "before the crash is saved.\nWHAT TO DO: check the log file, then "
+                "restart the scrape — already-scraped tickets are skipped "
+                "automatically.")
             self.finished_report.emit({"total": len(self._ids), "saved": 0, "skipped": 0,
                                        "not_found": 0, "failed": len(self._ids), "retried": 0})
         finally:
