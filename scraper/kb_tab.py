@@ -486,6 +486,7 @@ class KBTab(QWidget):
         worker.status.connect(self._on_status)
         worker.progress.connect(self._on_progress)
         worker.alert.connect(self._on_alert)
+        worker.finished_report.connect(self._on_kb_report)
         if chain_rn:
             worker.finished.connect(lambda: self._kb_done_start_rn(force=force))
         else:
@@ -506,6 +507,17 @@ class KBTab(QWidget):
         # Chrome children spawn a moment after the worker starts; the 5s
         # _prio_timer (started in _set_running) reapplies for those stragglers.
         self._on_priority_changed(self.cmb_priority.currentText())
+
+    @Slot(dict)
+    def _on_kb_report(self, report: dict):
+        """Per-run summary line for async KB runs (parity with TicketTab's
+        _on_finished). Empty report (engine crash) → nothing to summarize."""
+        totals = report.get("totals") or {}
+        if not totals:
+            return
+        self._log("info",
+            f"--- KB run: {totals.get('new', 0)} new, "
+            f"{totals.get('skipped', 0)} skipped, {totals.get('failed', 0)} failed ---")
 
     # ── Retry Failures ────────────────────────────────────────────────────────
 
@@ -572,6 +584,13 @@ class KBTab(QWidget):
 
     @Slot(dict)
     def _on_audit_result(self, result: dict):
+        # A crashed audit carries an "error" (exception type) with zeroed totals —
+        # surface it as an error rather than letting missing==0 read as "all clear".
+        if result.get("error"):
+            self._on_alert("error", "Library audit crashed",
+                f"WHAT HAPPENED: the audit hit an internal error ({result['error']}).\n"
+                "WHAT TO DO: check the log file and try again.")
+            return
         try:
             KB_AUDIT_REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
             KB_AUDIT_REPORT_FILE.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -626,6 +645,13 @@ class KBTab(QWidget):
 
     def _stop(self):
         if self.worker and self.worker.isRunning():
+            if isinstance(self.worker, _AuditWorker):
+                # The audit is a synchronous discovery sweep with no control hook;
+                # be honest rather than claim it will halt after "the current article".
+                self._log("warning",
+                    "Stop requested — the library audit cannot be interrupted; "
+                    "it will finish shortly.")
+                return
             self._log("warning", "Stop requested — finishing current article then halting.")
             self._control.cancel()
 

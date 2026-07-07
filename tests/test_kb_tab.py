@@ -223,3 +223,105 @@ def test_alert_slot_nonmodal():
     t._on_alert("error", "T", "B")
     assert t._alert_box is not None
     assert t._alert_box.windowModality() == Qt.NonModal
+
+
+# ── v4.0.4 Task 7 review fixes ──────────────────────────────────────────────
+
+def test_audit_crash_shows_error_alert_not_all_clear(monkeypatch):
+    """A crashed audit (audit_spaces raises → _AuditWorker emits {error: type,
+    zeroed totals}) must surface an ERROR alert, NOT a false 'all clear', and
+    must not write a report file."""
+    def boom(space_cfgs, output_base):
+        raise RuntimeError("discovery exploded")
+    monkeypatch.setattr(kb_tab, "audit_spaces", boom)
+
+    t = kb_tab.KBTab()
+    alerts = []
+    t._on_alert = lambda sev, title, body: alerts.append((sev, title, body))
+
+    t._start_audit()
+    loop = QEventLoop()
+    t.worker.finished.connect(loop.quit)
+    QTimer.singleShot(5000, loop.quit)
+    loop.exec()
+    t.worker.wait(2000)
+
+    assert alerts and alerts[0][0] == "error"
+    assert "crashed" in alerts[0][1].lower()
+    # crash path must not claim "all clear" and must not write a report
+    assert not any("all clear" in a[1].lower() for a in alerts)
+    assert not kb_tab.KB_AUDIT_REPORT_FILE.exists()
+
+
+def test_scrape_space_dispatches_single_cfg(monkeypatch):
+    """_scrape_space on a KB space dispatches AsyncKBWorker with exactly that
+    one space's full cfg dict and force propagated."""
+    captured = {}
+    monkeypatch.setattr(kb_tab, "AsyncKBWorker", _stub_async_kb_worker(captured))
+
+    t = kb_tab.KBTab()
+    key = "SA"
+    t._scrape_space(key, "kb", force=False)
+
+    assert captured.get("space_cfgs") == [KB_SPACES_BY_KEY[key]]
+    assert captured.get("force") is False
+    assert captured.get("items") is None
+
+
+def test_scrape_all_chains_rn_when_not_cancelled(monkeypatch):
+    """After the KB half finishes uncancelled, _kb_done_start_rn starts the RN
+    sync worker exactly once with the rn engine + scrape_all."""
+    rn_captured = {}
+
+    class _StubRNWorker:
+        def __init__(self, engine, action, kwargs, control):
+            rn_captured["engine"] = engine
+            rn_captured["action"] = action
+        def __getattr__(self, name):
+            return _NoOp()
+    monkeypatch.setattr(kb_tab, "_Worker", _StubRNWorker)
+
+    t = kb_tab.KBTab()
+    run_registry.acquire(t._run_name)          # KB half already holds the run
+    t._fresh_control()
+    t._kb_done_start_rn(force=False)
+
+    assert rn_captured.get("engine") is t._rn_engine
+    assert rn_captured.get("action") == "scrape_all"
+
+
+def test_cancel_mid_kb_skips_rn_and_releases(monkeypatch):
+    """If the run was cancelled during the KB half, _kb_done_start_rn must NOT
+    start the RN worker and must release the registry."""
+    started = {"rn": False}
+
+    class _StubRNWorker:
+        def __init__(self, *a, **k):
+            started["rn"] = True
+        def __getattr__(self, name):
+            return _NoOp()
+    monkeypatch.setattr(kb_tab, "_Worker", _StubRNWorker)
+
+    t = kb_tab.KBTab()
+    run_registry.acquire(t._run_name)
+    t._fresh_control()
+    t._control.cancel()
+    t._kb_done_start_rn(force=False)
+
+    assert started["rn"] is False
+    assert run_registry.owner() is None        # released by _worker_done
+
+
+def test_async_kb_run_summary_line_logged():
+    """finished_report → a '--- KB run: N new, N skipped, N failed ---' summary
+    line; an empty report (engine crash) logs no summary."""
+    t = KBTab()
+    logs = []
+    t._log = lambda level, msg: logs.append((level, msg))
+
+    t._on_kb_report({"totals": {"new": 5, "skipped": 2, "failed": 1}})
+    assert any("KB run: 5 new, 2 skipped, 1 failed" in m for _lvl, m in logs)
+
+    logs.clear()
+    t._on_kb_report({})                         # crash → empty report
+    assert not any("KB run:" in m for _lvl, m in logs)
