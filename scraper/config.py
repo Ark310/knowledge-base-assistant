@@ -1,10 +1,39 @@
 from pathlib import Path
 import sys
 
-APP_VERSION = "4.0.3"
+APP_VERSION = "4.0.4"
 """
 Changelog
 ─────────
+v4.0.4 2026-07-07  KB tab parity with the ticket tabs — parallel async engine, a
+                   hard per-article timeout, and three-layer completeness. Fixes:
+                   (a) a frozen (not crashed) Chrome tab could silently swallow an
+                   in-flight article forever — the old sequential sync engine had
+                   no per-article timeout, and is_alive() is only checked after an
+                   exception a hang never raises; a new async parallel KB engine
+                   (scraper/kb_engine_async.py) wraps each article in a 90s
+                   asyncio.wait_for, backed by BrowserSupervisor auto-recovery, and
+                   never marks a timed-out article as scraped (bug-159, commit
+                   5cb46d7); (b) KB scraping was one-article-at-a-time and the tab's
+                   log never got the bug-144 buffered-log freeze fix ported over —
+                   fixed with N parallel workers (light mode, 1 shared Chrome) and
+                   the same shared LogPane widget the ticket tabs use, so per-line
+                   QPlainTextEdit inserts can no longer repaint-storm the UI
+                   (bug-160, commits 5cb46d7, 1b77510); (c) no way to tell a
+                   partial KB run from a complete one — a discovered-vs-on-disk
+                   completeness audit (scraper/kb_audit.py) now runs after every
+                   scrape and surfaces gaps via "Retry Failures" (re-run only the
+                   missing articles) and an on-demand "Audit Library" button
+                   (aff8c08, b875eaf). Also: journaled KB scraped-state
+                   (scraper/kb_state.py, "{space_key}|{slug}" keys) with a
+                   one-time read-only migration from the legacy on-disk layout
+                   (450d120); async Confluence page ops — navigate/expand/
+                   screenshot (7db3735); AsyncKBWorker Qt bridge (d071ce1); KB tab
+                   gets the same live worker slider, priority control, and
+                   resource monitor panel as the ticket tabs, plus popup alerts on
+                   pause/stop (b875eaf); review-pass fixes for audit-crash
+                   alerting, dispatch coverage, an honest stop, and a run summary
+                   (5bcd08f).
 v4.0.3 2026-07-03  Auto-recovery + operator visibility (no more mass-fail). Fixes:
                    (a) a big-batch GUI freeze — a 19k-ticket run made the window
                    go "not responding" from per-line log appends + pre-creating
