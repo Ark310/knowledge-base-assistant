@@ -1,13 +1,11 @@
 # scraper/kb_tab.py — Option C: families sidebar + per-family detail table
 from __future__ import annotations
 import logging
-from datetime import datetime
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
-from PySide6.QtGui import QTextCursor, QFont, QColor, QTextCharFormat
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QPlainTextEdit, QProgressBar, QListWidget, QTableWidget,
+    QProgressBar, QListWidget, QTableWidget,
     QTableWidgetItem, QSplitter, QLineEdit, QHeaderView, QMessageBox,
 )
 
@@ -16,6 +14,7 @@ from scraper.kb_config import KB_PRODUCT_GROUPS
 from scraper.kb_engine import KBEngine
 from scraper.engine import Engine, EngineCallbacks, CancellationToken
 from scraper.control import RunControl
+from scraper.log_pane import LogPane
 import scraper.app_settings as app_settings
 import scraper.run_registry as run_registry
 
@@ -204,11 +203,11 @@ class KBTab(QWidget):
         outer.addWidget(self._progress)
 
         # ── Log pane ──────────────────────────────────────────────────────────
+        # Buffered/colorized widget shared with TicketTab (bug-144 fix; see
+        # scraper/log_pane.py) — replaces the old per-line insertText path,
+        # which lagged under a fast-emitting run the same way TicketTab's did.
         outer.addWidget(QLabel("<b>Log</b>"))
-        self.log_pane = QPlainTextEdit()
-        self.log_pane.setReadOnly(True)
-        self.log_pane.setMaximumBlockCount(self.MAX_LOG_LINES)
-        self.log_pane.setFont(QFont("Consolas", 9))
+        self.log_pane = LogPane(max_lines=self.MAX_LOG_LINES)
         outer.addWidget(self.log_pane, stretch=1)
 
     def _wire_signals(self):
@@ -437,19 +436,11 @@ class KBTab(QWidget):
 
     @Slot(str, str)
     def _log(self, level: str, msg: str):
-        ts = datetime.now().strftime("%H:%M:%S")
-        line = f"{ts} {level.upper():7s} {msg}"
-        cursor = self.log_pane.textCursor()
-        fmt = QTextCharFormat()
-        if level == "error":     fmt.setForeground(QColor("#c62828"))
-        elif level == "warning": fmt.setForeground(QColor("#ef6c00"))
-        else:                    fmt.setForeground(QColor("#212121"))
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(line + "\n", fmt)
-        self.log_pane.setTextCursor(cursor)
-        self.log_pane.ensureCursorVisible()
-        getattr(logging,
-                level if level in ("debug", "info", "warning", "error", "critical") else "info")(msg)
+        """Delegates to the shared LogPane (bug-144 buffered-flush fix; see
+        scraper/log_pane.py). LogPane owns the logging-forward now — it logs
+        to the "scraper" logger (TicketTab's logger; this tab previously used
+        the root `logging` module directly, now unified)."""
+        self.log_pane.emit_log(level, msg)
 
     @Slot(str, dict)
     def _on_status(self, key: str, stats: dict):
