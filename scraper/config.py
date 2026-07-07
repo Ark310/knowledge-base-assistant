@@ -13,13 +13,13 @@ v4.0.4 2026-07-07  KB tab parity with the ticket tabs — parallel async engine,
                    exception a hang never raises; a new async parallel KB engine
                    (scraper/kb_engine_async.py) wraps each article in a 90s
                    asyncio.wait_for, backed by BrowserSupervisor auto-recovery, and
-                   never marks a timed-out article as scraped (bug-159, commit
+                   never marks a timed-out article as scraped (bug-161, commit
                    5cb46d7); (b) KB scraping was one-article-at-a-time and the tab's
                    log never got the bug-144 buffered-log freeze fix ported over —
                    fixed with N parallel workers (light mode, 1 shared Chrome) and
                    the same shared LogPane widget the ticket tabs use, so per-line
                    QPlainTextEdit inserts can no longer repaint-storm the UI
-                   (bug-160, commits 5cb46d7, 1b77510); (c) no way to tell a
+                   (bug-162, commits 5cb46d7, 1b77510); (c) no way to tell a
                    partial KB run from a complete one — a discovered-vs-on-disk
                    completeness audit (scraper/kb_audit.py) now runs after every
                    scrape and surfaces gaps via "Retry Failures" (re-run only the
