@@ -1,22 +1,30 @@
 # scraper/kb_tab.py — Option C: families sidebar + per-family detail table
 from __future__ import annotations
+import json
 import logging
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot, Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QListWidget, QTableWidget,
+    QProgressBar, QListWidget, QTableWidget, QComboBox, QSpinBox,
     QTableWidgetItem, QSplitter, QLineEdit, QHeaderView, QMessageBox,
 )
 
 import scraper.config as config
-from scraper.kb_config import KB_PRODUCT_GROUPS
-from scraper.kb_engine import KBEngine
+from scraper.config import STATE_DIR
+from scraper.kb_config import KB_PRODUCT_GROUPS, KB_SPACES, KB_SPACES_BY_KEY
+from scraper.kb_engine import KBEngine, KB_REPORT_FILE
+from scraper.kb_audit import audit_spaces
 from scraper.engine import Engine, EngineCallbacks, CancellationToken
 from scraper.control import RunControl
 from scraper.log_pane import LogPane
+from scraper.async_runner import AsyncKBWorker
 import scraper.app_settings as app_settings
 import scraper.run_registry as run_registry
+
+# Standalone Audit Library report (separate from the scrape engine's own
+# KB_REPORT_FILE) — read alongside it when building the Retry Failures set.
+KB_AUDIT_REPORT_FILE = STATE_DIR / "kb_audit_report.json"
 
 
 # ── Signal bridge (unchanged pattern) ────────────────────────────────────────
@@ -55,6 +63,28 @@ class _Worker(QThread):
         except Exception as exc:
             logging.exception("KBWorker %s raised", self.action)
             self.engine.cb.on_log("error", f"{self.action} crashed: {exc}")
+
+
+class _AuditWorker(QThread):
+    """Audit Library — discovery-only completeness check, no browser
+    (v4.0.4 Task 7). Runs on a small QThread so live discovery calls don't
+    block the GUI; registry-guarded the same way scrape actions are."""
+    result_ready = Signal(dict)
+
+    def __init__(self, space_cfgs, output_base):
+        super().__init__()
+        self._space_cfgs = space_cfgs
+        self._output_base = output_base
+
+    def run(self):
+        try:
+            result = audit_spaces(self._space_cfgs, self._output_base)
+        except Exception as exc:
+            logging.exception("KB audit crashed")
+            result = {"spaces": {}, "error": type(exc).__name__,
+                      "totals": {"discovered": 0, "on_disk": 0, "missing": 0,
+                                 "spaces_with_errors": 0}}
+        self.result_ready.emit(result)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -96,6 +126,7 @@ class KBTab(QWidget):
         # Shared pause/cancel token
         self._control: RunControl = RunControl()
         self._run_name = "Knowledge Base"
+        self._alert_box = None
 
         # Bridge + callbacks (one set, shared across both engines)
         self._bridge = _SignalBridge()
@@ -112,7 +143,7 @@ class KBTab(QWidget):
             cancel_token=self._control,
         )
 
-        self.worker: _Worker | None = None
+        self.worker: QThread | None = None
 
         # Family map: label -> [{key, display_name, engine_kind}]
         self._families: dict[str, list[dict]] = _make_family_map()
@@ -120,9 +151,21 @@ class KBTab(QWidget):
         # key -> detail row index (repopulated on each family selection)
         self._key_to_row: dict[str, int] = {}
 
+        # Reapply process priority periodically while a run is active — Chrome
+        # spawns new child processes over time and each needs the level applied
+        # (mirrors TicketTab).
+        self._prio_timer = QTimer(self)
+        self._prio_timer.setInterval(5000)
+        self._prio_timer.timeout.connect(self._reapply_priority)
+
         self._build_ui()
         self._wire_signals()
+        # Ceiling for the live worker slider (mirrors TicketTab Fix 3): parking
+        # can only lower/restore workers within the run's STARTING count —
+        # raising above it is a no-op until the next run.
+        self._run_workers = self.spn_workers.value()
         self._set_running(False)
+        self._refresh_retry_enabled()
         self._log("info", "KB Scraper ready — select a family to begin.")
 
     # ── UI construction ───────────────────────────────────────────────────────
@@ -139,17 +182,29 @@ class KBTab(QWidget):
         self.btn_scrape_all = QPushButton("Scrape All")
         self.btn_scrape_all.setObjectName("PrimaryButton")
         self.btn_force_all  = QPushButton("Force All")
+        self.btn_retry      = QPushButton("Retry Failures")
+        self.btn_retry.setToolTip(
+            "Re-scrape exactly the articles that failed or came up missing in "
+            "an Audit — dedup'd across the last run's report and the last "
+            "library audit.")
+        self.btn_audit      = QPushButton("Audit Library")
+        self.btn_audit.setToolTip(
+            "Discovery-only completeness check: compares what's live against "
+            "what's on disk (no browser, no scraping).")
         self.btn_pause      = QPushButton("Pause")
         self.btn_stop       = QPushButton("Stop")
         self.inp_filter     = QLineEdit()
         self.inp_filter.setPlaceholderText("Filter spaces…")
         self.inp_filter.setMaximumWidth(180)
         for w in (self.btn_validate, self.btn_rebuild, self.btn_scrape_all,
-                  self.btn_force_all, self.btn_pause, self.btn_stop):
+                  self.btn_force_all, self.btn_retry, self.btn_audit,
+                  self.btn_pause, self.btn_stop):
             top.addWidget(w)
         top.addStretch()
         top.addWidget(self.inp_filter)
         outer.addLayout(top)
+
+        outer.addWidget(self._build_workers_row())
 
         # ── Master/detail split ───────────────────────────────────────────────
         splitter = QSplitter(Qt.Horizontal)
@@ -202,6 +257,18 @@ class KBTab(QWidget):
         outer.addWidget(self._lbl_progress)
         outer.addWidget(self._progress)
 
+        # ── Resource monitor (v4.0.4 Task 7) ────────────────────────────────
+        # Mounted between the progress bar and the log, mirroring TicketTab.
+        try:
+            from scraper.resmon import ResourceSampler
+            self._sampler = ResourceSampler()
+        except Exception:
+            self._sampler = None
+        from scraper.resource_monitor import ResourceMonitorWidget
+        self.monitor = ResourceMonitorWidget(sampler=self._sampler)
+        outer.addWidget(self.monitor)
+        self.monitor.start()
+
         # ── Log pane ──────────────────────────────────────────────────────────
         # Buffered/colorized widget shared with TicketTab (bug-144 fix; see
         # scraper/log_pane.py) — replaces the old per-line insertText path,
@@ -209,6 +276,49 @@ class KBTab(QWidget):
         outer.addWidget(QLabel("<b>Log</b>"))
         self.log_pane = LogPane(max_lines=self.MAX_LOG_LINES)
         outer.addWidget(self.log_pane, stretch=1)
+
+    def _build_workers_row(self) -> QWidget:
+        """Workers 1–10 + priority combo — mirrors TicketTab's exact pattern
+        (v4.0.4 Task 7)."""
+        w = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 4, 0, 4)
+
+        lbl = QLabel("Workers (1–10):")
+        lbl.setStyleSheet("font-weight: bold;")
+
+        self.spn_workers = QSpinBox()
+        self.spn_workers.setRange(1, 10)
+        self.spn_workers.setValue(4)
+        self.spn_workers.setMinimumWidth(64)
+        self.spn_workers.setToolTip(
+            "Number of parallel tabs sharing one Chrome window for KB scraping "
+            "(1–10).\nWhile a scrape is running, lowering this pauses (parks) "
+            "the extra workers immediately. Raising it above the run's "
+            "starting count has no effect until the next run.")
+
+        lbl_hint = QLabel("parallel workers")
+        lbl_hint.setStyleSheet("color: #777;")
+
+        row.addWidget(lbl)
+        row.addWidget(self.spn_workers)
+        row.addWidget(lbl_hint)
+
+        row.addSpacing(24)
+        lbl_p = QLabel("Priority:")
+        lbl_p.setStyleSheet("font-weight: bold;")
+        self.cmb_priority = QComboBox()
+        self.cmb_priority.addItems(["Low", "Normal", "High"])
+        self.cmb_priority.setCurrentText(app_settings.priority().title())
+        self.cmb_priority.setToolTip(
+            "Windows process priority for the scraper and its Chrome processes.\n"
+            "High = faster on a busy machine.")
+        self.cmb_priority.currentTextChanged.connect(self._on_priority_changed)
+        row.addWidget(lbl_p)
+        row.addWidget(self.cmb_priority)
+
+        row.addStretch()
+        return w
 
     def _wire_signals(self):
         self._bridge.log_sig.connect(self._log)
@@ -221,11 +331,14 @@ class KBTab(QWidget):
         self.btn_rebuild.clicked.connect(lambda: self._start_kb("rebuild_indexes"))
         self.btn_scrape_all.clicked.connect(self._scrape_all_action)
         self.btn_force_all.clicked.connect(self._force_all_action)
+        self.btn_retry.clicked.connect(self._on_retry_clicked)
+        self.btn_audit.clicked.connect(self._start_audit)
         self.btn_pause.clicked.connect(self._toggle_pause)
         self.btn_stop.clicked.connect(self._stop)
         self._btn_scrape_fam.clicked.connect(lambda: self._scrape_family(force=False))
         self._btn_force_fam.clicked.connect(lambda: self._scrape_family(force=True))
         self.inp_filter.textChanged.connect(self._filter_detail)
+        self.spn_workers.valueChanged.connect(self._on_workers_changed)
 
     # ── Family/detail population ──────────────────────────────────────────────
 
@@ -320,7 +433,10 @@ class KBTab(QWidget):
 
     def _scrape_space(self, key: str, engine_kind: str, force: bool):
         if engine_kind == "kb":
-            self._start_kb("scrape_space", {"space_key": key, "force": force})
+            cfg = KB_SPACES_BY_KEY.get(key)
+            if cfg is None:
+                return
+            self._start_kb_async(space_cfgs=[cfg], force=force)
         else:
             self._start_rn("scrape_product", {"product_key": key, "force": force})
 
@@ -332,39 +448,149 @@ class KBTab(QWidget):
         spaces = self._families.get(label, [])
         if not spaces:
             return
-        # All spaces in a KB family use KBEngine; RN family uses v1 Engine
+        # All spaces in a KB family use AsyncKBWorker; RN family uses v1 Engine.
+        # Use the FULL KB_PRODUCT_GROUPS cfg dicts (product/lib_folder/display_name)
+        # — self._families only carries the rail's slim {key, display_name,
+        # engine_kind} shape, which the engine can't scrape with.
         if spaces[0]["engine_kind"] == "kb":
-            self._start_kb("scrape_family", {"product_label": label, "force": force})
+            self._start_kb_async(space_cfgs=KB_PRODUCT_GROUPS.get(label, []), force=force)
         else:
             self._start_rn("scrape_all", {"force": force})
 
     def _scrape_all_action(self):
-        """Scrape KB scrape_all then RN scrape_all (chained via two workers)."""
-        if not self._try_acquire_run():
-            return
-        if self.worker and self.worker.isRunning():
-            self._log("warning", "A run is already in progress.")
-            return
-        self._log("info", "--- Scrape All: KB + Release Notes ---")
-        self._fresh_control()
-        self.worker = _Worker(self._kb_engine, "scrape_all", {"force": False}, self._control)
-        self.worker.finished.connect(self._kb_done_start_rn)
-        self._set_running(True)
-        self.worker.start()
+        """Scrape KB scrape_all (async) then RN scrape_all (chained)."""
+        self._start_kb_async(space_cfgs=KB_SPACES, force=False, chain_rn=True)
 
     def _force_all_action(self):
-        """Force-scrape KB + RN (chained)."""
+        """Force-scrape KB (async) + RN (chained)."""
+        self._start_kb_async(space_cfgs=KB_SPACES, force=True, chain_rn=True)
+
+    def _start_kb_async(self, *, space_cfgs, force, items=None, chain_rn=False):
+        """Dispatch a KB engine action through AsyncKBWorker (v4.0.4 Task 7) —
+        used for scrape_space/scrape_family/scrape_all's KB half/Retry Failures.
+        Validate and Rebuild Indexes stay on the old synchronous KBEngine path
+        (_start_kb)."""
         if not self._try_acquire_run():
             return
         if self.worker and self.worker.isRunning():
             self._log("warning", "A run is already in progress.")
             return
-        self._log("info", "--- Force All: KB + Release Notes ---")
         self._fresh_control()
-        self.worker = _Worker(self._kb_engine, "scrape_all", {"force": True}, self._control)
-        self.worker.finished.connect(lambda: self._kb_done_start_rn(force=True))
+        workers = self.spn_workers.value()
+        self._run_workers = workers
+        worker = AsyncKBWorker(
+            space_cfgs, force=force, workers=workers,
+            output_base=app_settings.kb_dir(), control=self._control, items=items,
+        )
+        worker.log.connect(self._log)
+        worker.status.connect(self._on_status)
+        worker.progress.connect(self._on_progress)
+        worker.alert.connect(self._on_alert)
+        if chain_rn:
+            worker.finished.connect(lambda: self._kb_done_start_rn(force=force))
+        else:
+            worker.finished.connect(self._worker_done)
+        self.worker = worker
         self._set_running(True)
-        self.worker.start()
+        self.monitor.reset_run()
+        self.monitor.set_workers_info(workers)
+        if items is not None:
+            self._log("info", f"--- Retry Failures: {len(items)} article(s) "
+                       f"({workers} worker(s)) ---")
+        elif chain_rn:
+            self._log("info", f"--- {'Force' if force else 'Scrape'} All: KB "
+                       f"(async, {workers} worker(s)) + Release Notes next ---")
+        else:
+            self._log("info", f"--- KB scrape (async, {workers} worker(s)) ---")
+        worker.start()
+        # Chrome children spawn a moment after the worker starts; the 5s
+        # _prio_timer (started in _set_running) reapplies for those stragglers.
+        self._on_priority_changed(self.cmb_priority.currentText())
+
+    # ── Retry Failures ────────────────────────────────────────────────────────
+
+    def _collect_retry_candidates(self) -> list[dict]:
+        """Union of the last scrape's failed_articles + audit-missing (from
+        BOTH KB_REPORT_FILE's embedded audit and the standalone Audit Library
+        report), deduped by space_key|slug. Missing/corrupt report files are
+        silently treated as empty — never crash the UI."""
+        def _load(path) -> dict:
+            try:
+                if path.exists():
+                    return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            return {}
+
+        seen: dict[str, dict] = {}
+
+        def _add(item: dict):
+            sk, slug = item.get("space_key"), item.get("slug")
+            if sk and slug and sk in KB_SPACES_BY_KEY:
+                seen[f"{sk}|{slug}"] = item
+
+        report = _load(KB_REPORT_FILE)
+        for item in report.get("failed_articles") or []:
+            _add(item)
+        for source in (report.get("audit"), _load(KB_AUDIT_REPORT_FILE)):
+            for entry in ((source or {}).get("spaces") or {}).values():
+                for item in entry.get("missing") or []:
+                    _add(item)
+
+        return list(seen.values())
+
+    def _retry_available(self) -> bool:
+        return bool(self._collect_retry_candidates())
+
+    def _refresh_retry_enabled(self, running: bool | None = None):
+        if running is None:
+            running = bool(self.worker and self.worker.isRunning())
+        self.btn_retry.setEnabled((not running) and self._retry_available())
+
+    def _on_retry_clicked(self):
+        candidates = self._collect_retry_candidates()
+        if not candidates:
+            return
+        items = [(KB_SPACES_BY_KEY[c["space_key"]], c) for c in candidates]
+        self._start_kb_async(space_cfgs=[], force=True, items=items)
+
+    # ── Audit Library ─────────────────────────────────────────────────────────
+
+    def _start_audit(self):
+        if not self._try_acquire_run():
+            return
+        if self.worker and self.worker.isRunning():
+            self._log("warning", "A run is already in progress.")
+            return
+        self._log("info", "--- Starting: Audit Library ---")
+        worker = _AuditWorker(KB_SPACES, app_settings.kb_dir())
+        worker.result_ready.connect(self._on_audit_result)
+        worker.finished.connect(self._worker_done)
+        self.worker = worker
+        self._set_running(True)
+        worker.start()
+
+    @Slot(dict)
+    def _on_audit_result(self, result: dict):
+        try:
+            KB_AUDIT_REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            KB_AUDIT_REPORT_FILE.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        except Exception as exc:
+            self._log("error", f"KB audit report write failed ({type(exc).__name__}).")
+        self._refresh_retry_enabled()
+        totals = result.get("totals") or {}
+        missing = totals.get("missing", 0)
+        errors = totals.get("spaces_with_errors", 0)
+        if missing or errors:
+            self._on_alert("warning", "KB library audit — items need attention",
+                f"WHAT HAPPENED: {missing} article(s) missing on disk"
+                + (f" and {errors} space(s) hit discovery errors" if errors else "")
+                + ".\nWHAT TO DO: click 'Retry Failures' to re-scrape exactly "
+                "those articles.")
+        else:
+            discovered = totals.get("discovered", 0)
+            self._on_alert("info", "KB library audit — all clear",
+                f"All {discovered} discovered article(s) are present on disk.")
 
     @Slot()
     def _kb_done_start_rn(self, force: bool = False):
@@ -422,15 +648,46 @@ class KBTab(QWidget):
 
     def _set_running(self, running: bool):
         for btn in (self.btn_validate, self.btn_rebuild, self.btn_scrape_all,
-                    self.btn_force_all, self._btn_scrape_fam, self._btn_force_fam):
+                    self.btn_force_all, self._btn_scrape_fam, self._btn_force_fam,
+                    self.btn_audit):
             btn.setEnabled(not running)
+        self._refresh_retry_enabled(running)
         self.btn_pause.setEnabled(running)
         self.btn_stop.setEnabled(running)
+        self._prio_timer.start() if running else self._prio_timer.stop()
         # per-space scrape buttons in the detail table
         for row in range(self.detail.rowCount()):
             w = self.detail.cellWidget(row, _COL_BTN)
             if w:
                 w.setEnabled(not running)
+
+    # ── Priority control ─────────────────────────────────────────────────────
+
+    def _on_priority_changed(self, text: str):
+        level = text.strip().lower()
+        app_settings.set_priority(level)
+        from scraper import procctl
+        n = procctl.apply_priority(level)
+        self._log("info", f"Process priority set to {text} ({n} process(es)).")
+
+    def _reapply_priority(self):
+        from scraper import procctl
+        procctl.apply_priority(app_settings.priority())
+
+    # ── Live worker slider ───────────────────────────────────────────────────
+
+    def _on_workers_changed(self, value: int):
+        if isinstance(self.worker, AsyncKBWorker) and self.worker.isRunning():
+            # Parking can only lower/restore workers within the run's STARTING
+            # count (self._run_workers) — raising above that ceiling doesn't
+            # spawn new workers mid-run. Show the operator the EFFECTIVE
+            # (clamped) value so the UI never claims more workers are active
+            # than actually are (mirrors TicketTab final-review Fix 3).
+            effective = min(value, self._run_workers)
+            self._control.target_workers = value
+            self.monitor.set_workers_info(effective)
+            suffix = "" if effective == value else f" — max {self._run_workers} this run"
+            self._log("info", f"Workers target changed to {effective} (live{suffix}).")
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -457,3 +714,14 @@ class KBTab(QWidget):
     def _on_progress(self, key: str, title: str, idx: int, total: int):
         self._lbl_progress.setText(f"Scraping: {key} — {title}  ({idx}/{total})")
         self._progress.setValue(int(idx * 100 / total) if total else 0)
+        self.monitor.set_progress(idx, total)
+
+    @Slot(str, str, str)
+    def _on_alert(self, severity: str, title: str, body: str):
+        if self._control.paused:
+            self.btn_pause.setText("Resume")
+        icon = QMessageBox.Critical if severity == "error" else QMessageBox.Warning
+        box = QMessageBox(icon, title, body, QMessageBox.Ok, self)
+        box.setWindowModality(Qt.NonModal)
+        box.show()
+        self._alert_box = box   # keep a ref so it isn't GC'd
