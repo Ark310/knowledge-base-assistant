@@ -17,6 +17,9 @@ from Dev.kb_chatbot.llm.claude_code_provider import ClaudeCodeNotFoundError
 from Dev.kb_chatbot.prompt import build_system_prompt, build_messages, format_suggestions
 from Dev.kb_chatbot.chat.ticket_redactor import scrub_answer
 from Dev.kb_chatbot.retriever import Retriever, Filters, assemble_ticket
+from Dev.kb_chatbot.chat import classifier as _classifier
+from Dev.kb_chatbot.chat.query_norm import normalize as _normalize
+from Dev.kb_chatbot.chat.answer_cache import AnswerCache, make_key as _cache_make_key
 
 log = logging.getLogger("kb_chatbot.orchestrator")
 
@@ -89,18 +92,10 @@ _FOLLOW_UP_WORD_LIMIT = 5
 
 
 def _extract_single_product(text: str) -> Optional[str]:
-    """Product slug if the text names exactly one product as a whole word, else None.
-    Word boundaries matter: 'rapid' must not match 'api', 'another' must not match 'other'.
-    Synonym-aware: resolves multi-word names (formflow, formflow, saleshub) via config."""
-    low = text.lower()
-    found = set()
-    # all user-typable names/synonyms (incl. "formflow", "td"); single source of truth
-    for name in config.PRODUCT_SYNONYM_NAMES:
-        if re.search(r"\b" + re.escape(name) + r"\b", low):
-            slug = config.resolve_product(name)
-            if slug:
-                found.add(slug)
-    return next(iter(found)) if len(found) == 1 else None
+    """Product slug if the text names exactly one product, else None. Delegates to
+    the deterministic classifier (single source of truth for product detection)."""
+    prods = _classifier.classify(text or "").products
+    return prods[0] if len(prods) == 1 else None
 
 
 def _build_retrieval_query(session: Session, user_msg: str) -> tuple[str, Optional[str]]:
@@ -160,7 +155,7 @@ _ERROR_RE = re.compile(
 
 
 def _looks_like_error(query: str) -> bool:
-    return bool(_ERROR_RE.search(query or ""))
+    return _classifier.classify(query or "").is_error
 
 
 # Explicit ticket references only ("ticket 75919", "bug #75919", "#75919") — pinned
@@ -175,11 +170,7 @@ _FOLLOWUP_HINT = re.compile(
 
 
 def _extract_ticket_ids(text: str) -> list[str]:
-    out: list[str] = []
-    for m in _TICKET_ID_RE.finditer(text):
-        if m.group(1) not in out:
-            out.append(m.group(1))
-    return out
+    return _classifier.classify(text or "").ticket_ids
 
 
 def _is_reference_followup(text: str) -> bool:
@@ -278,11 +269,33 @@ class Deps:
     attachments: list = field(default_factory=list)
     rewriter: Optional[Callable[[str, list], object]] = None
     on_progress: Callable[[str], None] = lambda stage: None
+    answer_cache: Optional[AnswerCache] = None
 
 
 def handle_turn(user_msg: str, session: Session, filters: Filters,
                 default_model: str, *, deps: Deps) -> Turn:
     history = session.history_for_llm(config.MAX_HISTORY_TURNS)
+
+    # Answer cache: for a standalone first-turn question, serve an identical prior
+    # answer (repeat-question determinism) without another LLM call. Only fresh
+    # sessions qualify, so follow-ups (which depend on prior context) are never served.
+    cache = deps.answer_cache
+    cache_key = None
+    if cache is not None and config.ANSWER_CACHE_ENABLED and not session.turns:
+        cache_key = _cache_make_key(_normalize(user_msg), filters.product or "", default_model)
+        cached = cache.get(cache_key)
+        if cached:
+            session.add_user(user_msg)
+            turn = Turn(role="assistant", kind="answer",
+                        content=cached.get("content", ""),
+                        citations=cached.get("citations", []),
+                        retrieved_ids=cached.get("retrieved_ids", []),
+                        model=cached.get("model", ""))
+            session.last_context_ids = cached.get("retrieved_ids", [])
+            session.add(turn)
+            deps.usage_logger(turn)
+            return turn
+
     retrieval_query, extracted_product = _build_retrieval_query(session, user_msg)
     fused = retrieval_query != user_msg
     if extracted_product and not filters.product:
@@ -417,6 +430,13 @@ def handle_turn(user_msg: str, session: Session, filters: Filters,
             latency_ms=resp.latency_ms,
             attachments=[a.filename for a in (deps.attachments or [])],
         )
+        if cache is not None and cache_key is not None:
+            cache.put(cache_key, {
+                "content": answer_text,
+                "citations": turn.citations,
+                "retrieved_ids": turn.retrieved_ids,
+                "model": resp.model,
+            })
         session.last_context_ids = [c.id for c in result.chunks]  # focus for follow-ups
         session.add(turn)
         deps.usage_logger(turn)
