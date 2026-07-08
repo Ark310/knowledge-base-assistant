@@ -17,6 +17,8 @@ def test_system_prompt_locked_text_v23():
     assert "do not ask another clarifying question" in p.lower()
     assert "most recent" in p.lower()
     assert "state the date of the fix" in p.lower()
+    # v3.0.1: explicit always-applied answer-shape contract
+    assert "Answer shape (use the same structure every time)" in p
 
 
 def test_format_context_uses_url_cite_handle():
