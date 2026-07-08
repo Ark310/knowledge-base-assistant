@@ -5,4 +5,5 @@ chromadb>=0.5
 # for multimodal streaming (verified against 0.2.87)
 claude-agent-sdk>=0.2.87,<0.3
 markdown>=3.6
+rank-bm25>=0.2.2
 pytest>=7.4.0

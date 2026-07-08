@@ -133,6 +133,11 @@ MAX_HISTORY_TURNS   = 6
 CHUNK_TARGET_WORDS  = 500
 ANSWER_MAX_TOKENS   = 2048   # full ticket resolutions can exceed 1024; completeness wins (v2.9.1)
 
+# ── Hybrid retrieval (BM25 keyword + vector, fused via RRF) ─────────────────────
+HYBRID_ENABLED = True
+BM25_TOP_K     = 30    # keyword candidates fused with the vector candidates
+RRF_K          = 60    # Reciprocal Rank Fusion damping constant
+
 # ── Cost estimation (USD per million tokens) ──────────────────────────────────
 # Used by llm.base.estimate_cost. Claude Code subprocess doesn't bill per-call,
 # but tokens-in/out are surfaced and estimate_cost provides a rough USD estimate

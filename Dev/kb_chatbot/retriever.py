@@ -11,6 +11,7 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 from Dev.kb_chatbot import config
 from Dev.kb_chatbot.chunker import Chunk
 from Dev.kb_chatbot.ingest import COLLECTION_NAME, open_persistent_client
+from Dev.kb_chatbot.chat.query_norm import tokenize
 
 log = logging.getLogger("kb_chatbot.retriever")
 
@@ -79,6 +80,10 @@ class Retriever:
         self.top_k_retrieve = top_k_retrieve
         self.top_k_rerank = top_k_rerank
         self.confidence_floor = confidence_floor
+        self._bm25 = None                 # lazy BM25Okapi, built from the collection
+        self._bm25_ids: list[str] = []
+        self._bm25_docs: list[str] = []
+        self._bm25_meta: list[dict] = []
 
     def _get_reranker(self) -> CrossEncoder:
         if self._reranker is None:
@@ -106,6 +111,53 @@ class Retriever:
             chunks.append(Chunk(id=cid, text=doc, metadata=dict(meta or {})))
         return chunks
 
+    # ── Hybrid (BM25 keyword) retrieval ──────────────────────────────────────
+    def _ensure_bm25(self) -> None:
+        if self._bm25 is not None or self._bm25_ids:
+            return
+        got = self.collection.get(include=["documents", "metadatas"])
+        self._bm25_ids = got.get("ids", []) or []
+        self._bm25_docs = [d or "" for d in (got.get("documents", []) or [])]
+        self._bm25_meta = [dict(m or {}) for m in (got.get("metadatas", []) or [])]
+        if self._bm25_ids:
+            from rank_bm25 import BM25Okapi
+            self._bm25 = BM25Okapi([tokenize(d) for d in self._bm25_docs])
+
+    def invalidate_bm25(self) -> None:
+        """Drop the cached BM25 index so the next retrieve rebuilds it (call after a reindex)."""
+        self._bm25 = None
+        self._bm25_ids = []
+        self._bm25_docs = []
+        self._bm25_meta = []
+
+    def _bm25_candidates(self, query: str, filters: Filters, n: int) -> list[Chunk]:
+        self._ensure_bm25()
+        if self._bm25 is None:
+            return []
+        scores = self._bm25.get_scores(tokenize(query))
+        order = sorted(range(len(scores)), key=lambda i: (-scores[i], self._bm25_ids[i]))
+        out: list[Chunk] = []
+        for i in order:
+            if scores[i] <= 0:
+                break
+            if filters.product and self._bm25_meta[i].get("product") != filters.product:
+                continue
+            out.append(Chunk(id=self._bm25_ids[i], text=self._bm25_docs[i],
+                             metadata=dict(self._bm25_meta[i])))
+            if len(out) >= n:
+                break
+        return out
+
+    def _rrf_fuse(self, vec_list: list[Chunk], bm25_list: list[Chunk], k: int) -> list[Chunk]:
+        ranked: dict[str, list] = {}   # id -> [chunk, score]
+        for rank, c in enumerate(vec_list):
+            ranked.setdefault(c.id, [c, 0.0])[1] += 1.0 / (k + rank + 1)
+        for rank, c in enumerate(bm25_list):
+            entry = ranked.setdefault(c.id, [c, 0.0])
+            entry[1] += 1.0 / (k + rank + 1)
+        fused = sorted(ranked.values(), key=lambda t: (-t[1], t[0].id))
+        return [c for c, _ in fused]
+
     def _chunks_from_get(self, got: dict) -> list[Chunk]:
         """Build Chunks from a collection.get() result (flat lists, not nested)."""
         ids = got.get("ids", []) or []
@@ -130,13 +182,18 @@ class Retriever:
 
     def retrieve(self, query: str, filters: Filters, top_k_rerank: Optional[int] = None) -> RetrievalResult:
         query_vec = self._embed(query)
-        candidates = self._query_chroma(query_vec, filters, self.top_k_retrieve)
+        vec_c = self._query_chroma(query_vec, filters, self.top_k_retrieve)
+        if config.HYBRID_ENABLED:
+            bm_c = self._bm25_candidates(query, filters, config.BM25_TOP_K)
+            candidates = self._rrf_fuse(vec_c, bm_c, config.RRF_K)
+        else:
+            candidates = vec_c
         if not candidates:
             return RetrievalResult(abstain_reason="no_relevant_kb_match")
 
         pairs = [(query, c.text) for c in candidates]
         scores = self._get_reranker().predict(pairs)
-        scored = sorted(zip(candidates, scores), key=lambda t: t[1], reverse=True)
+        scored = sorted(zip(candidates, scores), key=lambda t: (-float(t[1]), t[0].id))
         k = top_k_rerank or self.top_k_rerank
         top = scored[:k]
         raw_top = float(top[0][1]) if top else -99.0
