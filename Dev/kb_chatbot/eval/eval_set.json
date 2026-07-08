@@ -1,0 +1,20 @@
+[
+  {
+    "question": "TD GetWebDeal did not return any buy amount for a deal. Is there a fix?",
+    "product": "",
+    "expected_sources": [],
+    "expected_keypoints": ["buy amount", "null"]
+  },
+  {
+    "question": "How do I post a deal in TradeDesk?",
+    "product": "",
+    "expected_sources": [],
+    "expected_keypoints": ["postdeal"]
+  },
+  {
+    "question": "drawdown margin duplication on a full drawdown",
+    "product": "",
+    "expected_sources": [],
+    "expected_keypoints": ["margin", "drawdown"]
+  }
+]
