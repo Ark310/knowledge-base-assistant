@@ -2,6 +2,8 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
+import os
+import shutil
 import sys
 
 # Single source of truth for the app version. Surfaced in the window title and
@@ -10,11 +12,17 @@ APP_VERSION = "2.9.2"
 
 # ── Freeze-aware base paths ───────────────────────────────────────────────────
 if getattr(sys, "frozen", False):
-    BASE_DIR = Path(sys.executable).parent              # dist/ at runtime
-    STATE_DIR = BASE_DIR / "chatbot_state"
+    BASE_DIR = Path(sys.executable).parent
 else:
     BASE_DIR = Path(__file__).parent.parent.parent      # Knowledge Base/
-    STATE_DIR = Path(__file__).parent / "state"
+
+# Live state lives OFF OneDrive (cloud-sync corrupts live SQLite / Chroma).
+_LOCALAPPDATA = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+STATE_DIR = Path(_LOCALAPPDATA) / "ContosoKBChatbot"
+
+# Legacy state locations that predate the move (migrated once on startup).
+_LEGACY_STATE = (BASE_DIR / "chatbot_state") if getattr(sys, "frozen", False) \
+    else (Path(__file__).parent / "state")
 
 LIBRARY_DEFAULT = BASE_DIR / "library" / "kb"
 TICKETS_DEFAULT = BASE_DIR / "library" / "tickets"
@@ -23,6 +31,27 @@ CHATS_DIR       = STATE_DIR / "chats"
 LOG_FILE        = STATE_DIR / "run.log"
 USAGE_FILE      = STATE_DIR / "usage.jsonl"
 SETTINGS_FILE   = STATE_DIR / "settings.json"
+
+
+def migrate_state_if_needed(old) -> bool:
+    """One-time copy of a pre-existing legacy state dir into STATE_DIR. Returns
+    True if a copy happened, False if skipped (no legacy dir, or new already set up)."""
+    old = Path(old)
+    if not old.exists():
+        return False
+    if STATE_DIR.exists() and any(STATE_DIR.iterdir()):
+        return False
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    for child in old.iterdir():
+        dest = STATE_DIR / child.name
+        try:
+            if child.is_dir():
+                shutil.copytree(child, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy2(child, dest)
+        except Exception:
+            pass
+    return True
 
 # ── Model defaults ────────────────────────────────────────────────────────────
 EMBED_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
