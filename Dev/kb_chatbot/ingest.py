@@ -26,7 +26,7 @@ COLLECTION_NAME = "kbs"
 BATCH_SIZE = 64
 DELETE_BATCH = 256
 MANIFEST_NAME = "index_manifest.json"
-CHUNK_SCHEMA_VERSION = 4  # bump when ticket/article chunk text or metadata layout changes -> forces a clean re-embed
+CHUNK_SCHEMA_VERSION = 5  # v3.0.1-p2: new tradedesk ticket schema (resolution dict + internal comments) + resolved flag
 
 OnEvent = Callable[[dict], None]
 

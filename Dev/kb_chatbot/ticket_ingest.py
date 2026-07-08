@@ -99,31 +99,24 @@ def _known_terms(data: dict) -> list[str]:
         data.get("assignee", "") or "",
     ]
 
-    for c in data.get("comments", []):
-        body = c.get("body", "") or ""
-        header = c.get("header", "") or ""
-        combined = header + " " + body
+    def _harvest(text: str) -> None:
+        for m in _DISPLAY_EMAIL.findall(text):
+            terms.append(m); terms.extend(m.split())
+        for m in _FROM_NAME.findall(text):
+            terms.append(m); terms.extend(m.split())
+        for m in _GREET_NAME.findall(text):
+            terms.append(m); terms.extend(m.split())
+        for m in _CC_NAME.findall(text):
+            terms.append(m); terms.extend(m.split())
 
-        # Names from From/To lines in headers
-        for m in _FROM_NAME.findall(combined):
-            # Add full name + each individual token
-            terms.append(m)
-            terms.extend(m.split())
-
-        # Display-name<email> patterns — richest source of real names
-        for m in _DISPLAY_EMAIL.findall(combined):
-            terms.append(m)
-            terms.extend(m.split())
-
-        # Greeting/sign-off names in body
-        for m in _GREET_NAME.findall(body):
-            terms.append(m)
-            terms.extend(m.split())
-
-        # cc: Name <...> in header or body
-        for m in _CC_NAME.findall(combined):
-            terms.append(m)
-            terms.extend(m.split())
+    for c in data.get("comments", []) or []:
+        # New schema has no per-comment header; harvest the body (tolerate a legacy header).
+        _harvest((c.get("header", "") or "") + " " + (c.get("body", "") or ""))
+    res = data.get("resolution")
+    if isinstance(res, dict):
+        _harvest(res.get("text", "") or "")
+        for rc in res.get("comments") or []:
+            _harvest(rc.get("body", "") or "")
 
     # De-duplicate, preserve non-empty, case-insensitive uniqueness.
     # Also drop single-token terms that are common stopwords — they must never
@@ -148,11 +141,27 @@ def _known_terms(data: dict) -> list[str]:
     return out
 
 
+def _is_staff_comment(c: dict) -> bool:
+    """New schema: internal=True marks a Contoso-internal (staff) note.
+    Legacy fallback: type == 'comment'."""
+    return bool(c.get("internal")) or c.get("type") == "comment"
+
+
 def _resolution_text(data: dict, known: list[str]) -> str:
-    """Collect and redact all internal staff comment bodies."""
+    """Redacted resolution: the Resolve field text + internal staff comment bodies
+    + resolution-thread comment bodies."""
     parts: list[str] = []
-    for c in data.get("comments", []):
-        if c.get("type") == "comment" and c.get("author"):
+    res = data.get("resolution")
+    if isinstance(res, dict):
+        t = redact(res.get("text", "") or "", known_terms=known)
+        if t:
+            parts.append(t)
+        for rc in res.get("comments") or []:
+            r = redact(rc.get("body", "") or "", known_terms=known)
+            if r:
+                parts.append(r)
+    for c in data.get("comments") or []:
+        if _is_staff_comment(c):
             r = redact(c.get("body", "") or "", known_terms=known)
             if r:
                 parts.append(r)
@@ -160,10 +169,9 @@ def _resolution_text(data: dict, known: list[str]) -> str:
 
 
 def _problem_text(data: dict, known: list[str]) -> str:
-    """Redact the first customer-facing comment as the problem description,
-    falling back to the ticket title."""
-    for c in data.get("comments", []):
-        if c.get("type") != "comment":
+    """First non-staff (customer-facing) comment, redacted; else the ticket title."""
+    for c in data.get("comments") or []:
+        if not _is_staff_comment(c):
             r = redact(c.get("body", "") or "", known_terms=known)
             if r:
                 return r
@@ -185,22 +193,17 @@ def _dedupe_keep_order(values) -> list[str]:
 
 
 def _handled_by(data: dict) -> list[str]:
-    """Internal staff who worked the ticket: comment authors + the 'by <user>'
-    sender on outbound (sent-to) email headers. Excludes created_by, which is
-    often the external requester."""
+    """Internal staff who worked the ticket: staff (internal) comment authors +
+    resolution-thread comment authors. Excludes created_by (often the requester)."""
     names: list[str] = []
-    for c in data.get("comments", []):
-        if c.get("type") == "comment" and c.get("author"):
+    for c in data.get("comments") or []:
+        if _is_staff_comment(c) and c.get("author"):
             names.append(str(c["author"]))
-        header = c.get("header") or ""
-        if "sent to" in header.lower():
-            m = _BY_SENDER.search(header)
-            # The case-sensitive [a-z] lead is intentional (keeps customer
-            # CamelCase display names out); guard against header-noise words so
-            # "...by email"/"...by the" don't surface as a "handled by" resource.
-            if m and m.group(1).lower() not in _STOPWORDS \
-                    and m.group(1).lower() not in {"email", "mail", "fax", "phone", "attachment"}:
-                names.append(m.group(1))
+    res = data.get("resolution")
+    if isinstance(res, dict):
+        for rc in res.get("comments") or []:
+            if rc.get("author"):
+                names.append(str(rc["author"]))
     created_by = (data.get("created_by") or "").strip().lower()
     return [n for n in _dedupe_keep_order(names) if n.lower() != created_by]
 
@@ -240,10 +243,11 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
     indexed, stored, or surfaced."""
     known = _known_terms(data)
     resolution = _resolution_text(data, known)
-    if not resolution:
-        return []
-
     problem = _problem_text(data, known)
+    resolved = bool(resolution)
+    if not resolution and not problem:
+        return []  # genuinely nothing to index
+
     raw_title = data.get("title", "") or f"Ticket {data.get('ticket_id', '')}"
     raw_project = (data.get("product", "") or "").strip()
     product = config.normalize_ticket_product(raw_project)
@@ -254,11 +258,18 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
     safe_title = redact(raw_title, known_terms=known) or f"Ticket {ticket_id}"
     handled = _handled_by(data)
     header = _staff_block(data)
-    has_images = bool(data.get("attachment_images"))
 
-    body = f"Problem: {problem}\n\nResolution: {resolution}"
+    def _has_imgs(comments) -> bool:
+        return any(c.get("images") for c in (comments or []))
+    res = data.get("resolution") if isinstance(data.get("resolution"), dict) else {}
+    has_images = bool(data.get("attachment_images")) or _has_imgs(data.get("comments")) \
+        or _has_imgs(res.get("comments"))
+
+    resolution_block = resolution if resolved else "(no recorded resolution yet — unresolved)"
+    body = f"Problem: {problem}\n\nResolution: {resolution_block}"
     segments = _split_words(body, TICKET_CHUNK_WORDS) or [body]
-    title_line = f"Ticket #{ticket_id} — {safe_title}"
+    marker = "" if resolved else " [UNRESOLVED]"
+    title_line = f"Ticket #{ticket_id} — {safe_title}{marker}"
 
     chunks: list[Chunk] = []
     for idx, seg in enumerate(segments):
@@ -289,6 +300,7 @@ def build_ticket_chunks(data: dict, path) -> list[Chunk]:
                 "assignee": data.get("assignee", "") or "",
                 "handled_by": ", ".join(handled),
                 "has_images": has_images,
+                "resolved": resolved,
                 "chunk_index": idx,
             },
         ))
