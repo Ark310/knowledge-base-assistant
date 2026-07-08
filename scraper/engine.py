@@ -25,6 +25,7 @@ class EngineCallbacks:
     def on_progress(self, product: str, version: str, idx: int, total: int) -> None: pass
     def on_started(self, action: str) -> None: pass
     def on_finished(self, action: str, report: dict) -> None: pass
+    def on_alert(self, severity: str, title: str, body: str) -> None: pass
 
 
 class LoggingCallbacks(EngineCallbacks):

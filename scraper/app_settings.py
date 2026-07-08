@@ -62,6 +62,20 @@ def set_headless(on: bool) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(d, indent=2), encoding="utf-8")
 
+_VALID_PRIORITIES = ("low", "normal", "high")
+
+def priority() -> str:
+    """Process priority while scraping (v4.0.3). Default 'normal'."""
+    v = load().get("priority")
+    return v if v in _VALID_PRIORITIES else "normal"
+
+def set_priority(level: str) -> None:
+    d = load()
+    d["priority"] = level if level in _VALID_PRIORITIES else "normal"
+    p = _file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(d, indent=2), encoding="utf-8")
+
 def tickets_dir() -> Path:
     v = load().get("tickets_dir")
     return Path(v) if v else _default_tickets()

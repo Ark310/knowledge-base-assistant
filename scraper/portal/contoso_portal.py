@@ -80,6 +80,21 @@ def _unique_path(dest_dir: Path, name: str) -> Path:
     return cand
 
 
+async def _retry_download(fn, attempts: int = 2, base_delay: float = 0.5):
+    """Run an async download op with small-backoff retries (bug-146: 213 one-shot
+    download timeouts in a single v4.0.2 run). Raises the last error."""
+    import asyncio
+    last = None
+    for i in range(attempts + 1):
+        try:
+            return await fn()
+        except Exception as exc:
+            last = exc
+            if i < attempts:
+                await asyncio.sleep(base_delay * (2 ** i))
+    raise last
+
+
 def _filename_for(resp, label: str, idx: int) -> str:
     """Prefer Content-Disposition filename, then the link text (if it has an ext),
     then attachment_<idx>.<ext-from-content-type>. (Never trust these for PII — they
@@ -165,18 +180,18 @@ class AsyncContosoPortal:
         saved: list[Path] = []
         log.info("download_all (contoso): %d view_attachment link(s) found", len(urls))
         for i, (url, label) in enumerate(urls):
-            try:
+            async def _one(url=url, label=label, i=i):
                 resp = await self.page.context.request.get(url)
                 if not resp.ok:
-                    log.warning("download_all: attachment %d/%d HTTP %s",
-                                i + 1, len(urls), resp.status)
-                    continue
+                    raise RuntimeError(f"http_{resp.status}")
                 body = await resp.body()
                 target = _unique_path(dest_dir, _filename_for(resp, label, i))
                 target.write_bytes(body)
-                saved.append(target)
+                return target
+            try:
+                saved.append(await _retry_download(_one))
             except Exception as exc:
-                log.warning("download_all: attachment %d/%d failed (%s)",
+                log.warning("download_all: attachment %d/%d failed after retries (%s)",
                             i + 1, len(urls), type(exc).__name__)
         log.info("download_all (contoso): %d attachment(s) saved", len(saved))
         return saved

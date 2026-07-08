@@ -67,3 +67,50 @@ def test_min_permits_never_below_one():
     for _ in range(50):
         g.record(False)
     assert g.permits >= 1           # always at least one worker can proceed (no deadlock)
+
+
+# ── v4.0.3: resource tune + live ceiling ─────────────────────────────────────
+
+def test_tune_steps_down_on_high_cpu():
+    g = AdaptiveGate(8)
+    g.tune(cpu_pct=95.0, ram_free_mb=4000.0)
+    assert g.permits == 7
+
+def test_tune_steps_down_on_low_ram():
+    g = AdaptiveGate(8)
+    g.tune(cpu_pct=10.0, ram_free_mb=500.0)
+    assert g.permits == 7
+
+def test_tune_steps_up_with_headroom_but_never_past_ceiling():
+    g = AdaptiveGate(8)
+    g.permits = 4
+    g.tune(cpu_pct=30.0, ram_free_mb=6000.0)
+    assert g.permits == 5
+    g.permits = 8
+    g.tune(cpu_pct=30.0, ram_free_mb=6000.0)
+    assert g.permits == 8
+
+def test_tune_holds_in_dead_band():
+    g = AdaptiveGate(8)
+    g.permits = 5
+    g.tune(cpu_pct=80.0, ram_free_mb=1000.0)   # between thresholds: no change
+    assert g.permits == 5
+
+def test_tune_respects_min_permits():
+    g = AdaptiveGate(2)
+    g.permits = 1
+    g.tune(cpu_pct=99.0, ram_free_mb=100.0)
+    assert g.permits == 1
+
+def test_set_ceiling_lowers_and_raises_live():
+    g = AdaptiveGate(8)
+    g.set_ceiling(3)
+    assert g.max_permits == 3 and g.permits == 3
+    g.set_ceiling(6)
+    assert g.max_permits == 6
+    assert g.permits == 3          # permits climb back via tune/record, not instantly
+
+def test_set_ceiling_clamps_to_at_least_one():
+    g = AdaptiveGate(8)
+    g.set_ceiling(0)
+    assert g.max_permits == 1 and g.permits == 1

@@ -13,20 +13,17 @@ Security:
 """
 from __future__ import annotations
 
-import logging
-from datetime import datetime
-
-from PySide6.QtCore import Slot
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -37,13 +34,13 @@ from PySide6.QtWidgets import (
 )
 
 import scraper.app_settings as app_settings
+import scraper.run_registry as run_registry
 import scraper.ticket_settings as ts
 from scraper.async_runner import AsyncTicketWorker
 from scraper.control import RunControl
+from scraper.log_pane import LogPane
 from scraper.settings_dialog import SettingsDialog
 from scraper.ticket_engine import parse_ticket_input
-
-log = logging.getLogger("scraper")
 
 _STATUS_COLORS = {
     "ok":        "#2e7d32",
@@ -68,6 +65,7 @@ class TicketTab(QWidget):
     """Tab 3 — Ticket Portal Scraper."""
 
     MAX_LOG_LINES = 3000
+    BIG_BATCH_ROWS = 2000  # batches larger than this skip row pre-creation (bug-144)
 
     def __init__(self, parent=None, *, portal_kind: str = "tradedesk", default_url: str | None = None):
         super().__init__(parent)
@@ -76,9 +74,24 @@ class TicketTab(QWidget):
         self._worker: AsyncTicketWorker | None = None
         self._control = RunControl()
         self._ticket_rows: dict[str, int] = {}   # ticket_id -> table row
+        self._run_name = f"Tickets — {portal_kind}"
+        self._alert_box = None
+        self._big_batch = False
+
+        # Reapply process priority periodically while a run is active — Chrome
+        # spawns new child processes over time and each needs the level applied.
+        self._prio_timer = QTimer(self)
+        self._prio_timer.setInterval(5000)
+        self._prio_timer.timeout.connect(self._reapply_priority)
 
         self._build_ui()
         self._refresh_creds_label()
+        # Ceiling for the live worker slider (Fix 3): parking can only lower/restore
+        # workers within the run's STARTING count — raising above it is a no-op until
+        # the next run. Defaults to the spinbox's current value so a slider change
+        # BEFORE any run has ever started still clamps sanely.
+        self._run_workers = self.spn_workers.value()
+        self.spn_workers.valueChanged.connect(self._on_workers_changed)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -92,6 +105,17 @@ class TicketTab(QWidget):
         outer.addWidget(self._build_workers_row())
         outer.addWidget(self._build_controls_row())
         outer.addWidget(self._build_progress_row())
+
+        try:
+            from scraper.resmon import ResourceSampler
+            self._sampler = ResourceSampler()
+        except Exception:
+            self._sampler = None
+        from scraper.resource_monitor import ResourceMonitorWidget
+        self.monitor = ResourceMonitorWidget(sampler=self._sampler)
+        outer.addWidget(self.monitor)
+        self.monitor.start()
+
         outer.addWidget(self._build_results_section(), stretch=1)
 
     def _build_creds_status_row(self) -> QWidget:
@@ -148,7 +172,10 @@ class TicketTab(QWidget):
         self.spn_workers.setMinimumWidth(64)
         self.spn_workers.setToolTip(
             "Number of parallel Chrome windows (1–10).\n"
-            "Each worker logs in independently. Use 2–4 for large batches."
+            "Each worker logs in independently. Use 2–4 for large batches.\n"
+            "While a scrape is running, lowering this pauses (parks) the extra "
+            "workers immediately. Raising it above the run's starting count has "
+            "no effect until the next run."
         )
 
         lbl_hint = QLabel("parallel workers")
@@ -157,6 +184,20 @@ class TicketTab(QWidget):
         row.addWidget(lbl)
         row.addWidget(self.spn_workers)
         row.addWidget(lbl_hint)
+
+        row.addSpacing(24)
+        lbl_p = QLabel("Priority:")
+        lbl_p.setStyleSheet("font-weight: bold;")
+        self.cmb_priority = QComboBox()
+        self.cmb_priority.addItems(["Low", "Normal", "High"])
+        self.cmb_priority.setCurrentText(app_settings.priority().title())
+        self.cmb_priority.setToolTip(
+            "Windows process priority for the scraper and its Chrome processes.\n"
+            "High = faster on a busy machine (no more Task Manager).")
+        self.cmb_priority.currentTextChanged.connect(self._on_priority_changed)
+        row.addWidget(lbl_p)
+        row.addWidget(self.cmb_priority)
+
         row.addStretch()
         return w
 
@@ -218,12 +259,10 @@ class TicketTab(QWidget):
         self.table.setMaximumHeight(200)
         v.addWidget(self.table)
 
-        # Log pane (bottom half)
+        # Log pane (bottom half) — buffered/colorized widget shared with KBTab
+        # (bug-144 fix; see scraper/log_pane.py).
         v.addWidget(QLabel("<b>Log</b>"))
-        self.log_pane = QPlainTextEdit()
-        self.log_pane.setReadOnly(True)
-        self.log_pane.setMaximumBlockCount(self.MAX_LOG_LINES)
-        self.log_pane.setFont(QFont("Consolas", 9))
+        self.log_pane = LogPane(max_lines=self.MAX_LOG_LINES)
         v.addWidget(self.log_pane, stretch=1)
 
         return w
@@ -256,6 +295,13 @@ class TicketTab(QWidget):
     # ── Scrape lifecycle ──────────────────────────────────────────────────────
 
     def _start(self):
+        if not run_registry.acquire(self._run_name):
+            QMessageBox.warning(
+                self, "Another scrape is running",
+                f"A scrape is already running on '{run_registry.owner()}'.\n"
+                "Only one scrape can run at a time — wait for it to finish or stop it.")
+            return
+
         if self._worker and self._worker.isRunning():
             self._emit_log("warning", "A scrape is already running.")
             return
@@ -278,37 +324,50 @@ class TicketTab(QWidget):
             )
             self._open_settings()
             self._refresh_creds_label()
+            run_registry.release(self._run_name)
             return
 
         raw_ids = self.inp_tickets.text().strip()
         if not raw_ids:
             QMessageBox.warning(self, "Missing Field",
                 "Please enter at least one ticket number.")
+            run_registry.release(self._run_name)
             return
 
         ticket_ids = parse_ticket_input(raw_ids)
         if not ticket_ids:
             QMessageBox.warning(self, "No Tickets",
                 "Could not parse any ticket IDs from the input.")
+            run_registry.release(self._run_name)
             return
 
-        # Prepare table rows
+        # Prepare table rows. Pre-creating tens of thousands of QTableWidget rows
+        # froze the UI (bug-144); large batches skip pre-creation and rows are
+        # appended lazily (_row_for) as tickets complete.
         self.table.setRowCount(0)
         self._ticket_rows.clear()
-        for tid in ticket_ids:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(f"#{tid}"))
-            item_status = QTableWidgetItem("Queued")
-            item_status.setForeground(QColor("#616161"))
-            self.table.setItem(row, 1, item_status)
-            self.table.setItem(row, 2, QTableWidgetItem(""))   # Title — filled by meta_sig
-            self.table.setItem(row, 3, QTableWidgetItem(""))   # Files — filled by meta_sig
-            self._ticket_rows[tid] = row
+        self._big_batch = len(ticket_ids) > self.BIG_BATCH_ROWS
+        if self._big_batch:
+            self._emit_log("info",
+                f"Large batch ({len(ticket_ids)} tickets): results table fills as "
+                "tickets complete.")
+        else:
+            for tid in ticket_ids:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                self.table.setItem(row, 0, QTableWidgetItem(f"#{tid}"))
+                item_status = QTableWidgetItem("Queued")
+                item_status.setForeground(QColor("#616161"))
+                self.table.setItem(row, 1, item_status)
+                self.table.setItem(row, 2, QTableWidgetItem(""))   # Title — filled by meta_sig
+                self.table.setItem(row, 3, QTableWidgetItem(""))   # Files — filled by meta_sig
+                self._ticket_rows[tid] = row
 
         self._control    = RunControl()
+        self._control.target_workers = None
         force            = self.chk_force.isChecked()
         workers          = self.spn_workers.value()
+        self._run_workers = workers   # ceiling for the live worker slider this run
         output_dir       = app_settings.tickets_dir()
 
         mode = app_settings.browser_mode()
@@ -325,10 +384,16 @@ class TicketTab(QWidget):
         self._worker.finished_report.connect(self._on_finished)
         self._worker.ticket_meta.connect(self._on_ticket_meta)
         self._worker.finished.connect(self._worker_thread_done)
+        self._worker.alert.connect(self._on_alert)
 
         self._set_running(True)
         self._emit_log("info", f"--- Starting ticket scrape: {len(ticket_ids)} tickets ---")
+        self.monitor.reset_run()
+        self.monitor.set_workers_info(workers)
         self._worker.start()
+        # Chrome children spawn a moment after the worker starts; the 5s
+        # _prio_timer (started in _set_running) reapplies for those stragglers.
+        self._on_priority_changed(self.cmb_priority.currentText())
 
     def _toggle_pause(self):
         if self._control.paused:
@@ -359,35 +424,46 @@ class TicketTab(QWidget):
 
     # ── Slot handlers ─────────────────────────────────────────────────────────
 
+    @property
+    def _log_buf(self) -> list[tuple[str, str, str]]:
+        """Exposes LogPane's internal buffer under the tab's original attribute
+        name — tests/test_ticket_tab.py asserts against this directly."""
+        return self.log_pane._buf
+
     @Slot(str, str)
     def _emit_log(self, level: str, msg: str):
-        ts_str = datetime.now().strftime("%H:%M:%S")
-        line   = f"{ts_str} {level.upper():7s} {msg}"
-        cursor = self.log_pane.textCursor()
-        fmt    = QTextCharFormat()
-        color_map = {
-            "error":   "#c62828",
-            "warning": "#ef6c00",
-            "info":    "#212121",
-        }
-        fmt.setForeground(QColor(color_map.get(level, "#616161")))
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(line + "\n", fmt)
-        self.log_pane.setTextCursor(cursor)
-        self.log_pane.ensureCursorVisible()
-        getattr(log, level if level in ("debug", "info", "warning", "error") else "info")(msg)
+        """Delegates to the shared LogPane (bug-144 buffered-flush fix; see
+        scraper/log_pane.py). Kept as a thin wrapper so the worker's `log`
+        signal (str, str) still has somewhere to connect."""
+        self.log_pane.emit_log(level, msg)
+
+    def _flush_log(self):
+        self.log_pane.flush()
 
     @Slot(int, int)
     def _on_progress(self, current: int, total: int):
         pct = int(current * 100 / total) if total else 0
         self.progress.setValue(pct)
         self.lbl_progress.setText(f"Ticket {current} / {total}")
+        self.monitor.set_progress(current, total)
+
+    def _row_for(self, tid: str) -> int:
+        """Return the table row for tid, lazily appending one if it doesn't
+        exist yet (big-batch mode never pre-creates rows — bug-144)."""
+        row = self._ticket_rows.get(tid)
+        if row is None:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(f"#{tid}"))
+            self.table.setItem(row, 1, QTableWidgetItem(""))
+            self.table.setItem(row, 2, QTableWidgetItem(""))
+            self.table.setItem(row, 3, QTableWidgetItem(""))
+            self._ticket_rows[tid] = row
+        return row
 
     @Slot(str, str)
     def _on_ticket_done(self, tid: str, status: str):
-        row = self._ticket_rows.get(tid)
-        if row is None:
-            return
+        row = self._row_for(tid)
         label = _STATUS_LABELS.get(status, status.title())
         color = _STATUS_COLORS.get(status, "#000")
         item  = QTableWidgetItem(label)
@@ -397,9 +473,7 @@ class TicketTab(QWidget):
     @Slot(str, str, int)
     def _on_ticket_meta(self, tid: str, title: str, files: int):
         """Populate Title (col 2) and Files (col 3) for a completed ticket row."""
-        row = self._ticket_rows.get(tid)
-        if row is None:
-            return
+        row = self._row_for(tid)
         self.table.setItem(row, 2, QTableWidgetItem(title))
         self.table.setItem(row, 3, QTableWidgetItem(str(files)))
 
@@ -416,9 +490,48 @@ class TicketTab(QWidget):
 
     @Slot()
     def _worker_thread_done(self):
+        run_registry.release(self._run_name)
         self._set_running(False)
         self.lbl_progress.setText("Idle")
         self.progress.setValue(0)
+
+    @Slot(str, str, str)
+    def _on_alert(self, severity: str, title: str, body: str):
+        if self._control.paused:
+            self.btn_pause.setText("▶ Resume")
+        icon = QMessageBox.Critical if severity == "error" else QMessageBox.Warning
+        box = QMessageBox(icon, title, body, QMessageBox.Ok, self)
+        box.setWindowModality(Qt.NonModal)
+        box.show()
+        self._alert_box = box   # keep a ref so it isn't GC'd
+
+    # ── Priority control ──────────────────────────────────────────────────────
+
+    def _on_priority_changed(self, text: str):
+        level = text.strip().lower()
+        app_settings.set_priority(level)
+        from scraper import procctl
+        n = procctl.apply_priority(level)
+        self._emit_log("info", f"Process priority set to {text} ({n} process(es)).")
+
+    def _reapply_priority(self):
+        from scraper import procctl
+        procctl.apply_priority(app_settings.priority())
+
+    # ── Live worker slider ────────────────────────────────────────────────────
+
+    def _on_workers_changed(self, value: int):
+        if self._worker is not None and self._worker.isRunning():
+            # Parking can only lower/restore workers within the run's STARTING count
+            # (self._run_workers) — raising the slider above that ceiling doesn't spawn
+            # new workers mid-run (spawn-on-demand was deferred, see cerebrum Decision
+            # Log). Log and show the operator the EFFECTIVE (clamped) value so the UI
+            # never claims more workers are active than actually are.
+            effective = min(value, self._run_workers)
+            self._control.target_workers = value
+            self.monitor.set_workers_info(effective)
+            suffix = "" if effective == value else f" — max {self._run_workers} this run"
+            self._emit_log("info", f"Workers target changed to {effective} (live{suffix}).")
 
     # ── UI state helpers ──────────────────────────────────────────────────────
 
@@ -427,9 +540,9 @@ class TicketTab(QWidget):
         self.btn_pause.setEnabled(running)
         self.btn_stop.setEnabled(running)
         self.btn_settings.setEnabled(not running)
-        self.spn_workers.setEnabled(not running)
         self.inp_tickets.setReadOnly(running)
         self.chk_force.setEnabled(not running)
+        self._prio_timer.start() if running else self._prio_timer.stop()
         if not running:
             # Reset pause button label for next run
             self.btn_pause.setText("⏸ Pause")

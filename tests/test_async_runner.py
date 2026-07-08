@@ -7,7 +7,22 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QEventLoop, QTimer
 from scraper.control import RunControl
 from scraper.portal.base_portal import empty_ticket
-from scraper.async_runner import AsyncTicketWorker
+from scraper.async_runner import AsyncTicketWorker, AsyncKBWorker
+from scraper import ticket_engine_async as tea
+from scraper.scrape_state import ScrapedState
+
+
+@pytest.fixture(autouse=True)
+def _isolate_scraped_state(tmp_path, monkeypatch):
+    """Two tests here (test_contoso_wiring_selected_in_run, test_worker_emits_finished)
+    run AsyncTicketWorker for real on a QThread, which calls the real
+    run_ticket_scrape_async -> ScrapedState() with no args -> the operator's real
+    scraper/state/scraped_tickets.json (gitignored). Same fix as
+    tests/test_ticket_engine_async.py::_isolate_scraped_state — without it this file
+    silently polluted the real ledger with fixture ids "1"/"2" every full-suite run."""
+    monkeypatch.setattr(
+        tea, "ScrapedState",
+        lambda *a, **kw: ScrapedState(state_file=tmp_path / "scraped_tickets.json", **kw))
 
 class _FakeBrowser:
     base = "https://x"
@@ -131,3 +146,124 @@ def test_worker_emits_finished(tmp_path):
     QTimer.singleShot(10_000, loop.quit)
     w.start(); loop.exec(); w.wait(2000)
     assert got.get("saved") == 2
+
+
+def test_worker_emits_alert_on_crash(tmp_path, monkeypatch):
+    """Fix 2a (spec 3.2): if the engine coroutine itself raises (an internal crash,
+    not a per-ticket failure), the worker must emit an alert — not just a log line +
+    an all-failed report — so the GUI surfaces it via the alert popup. Exception TYPE
+    only in the alert body (org policy: no exception message/PII)."""
+    app = QApplication.instance() or QApplication([])
+    import scraper.async_runner as ar
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("engine exploded — should never appear in the alert")
+
+    monkeypatch.setattr(ar, "run_ticket_scrape_async", _boom)
+
+    w = AsyncTicketWorker("https://x", "u", "p", ["1", "2"], force=True, workers=2,
+                          output_dir=tmp_path, control=RunControl(),
+                          browser_factory=lambda: _FakeBrowser(),
+                          page_portal_factory=_fake_ppf, login_once=_login_ok, parse_fn=_fake_parse)
+    alerts = []
+    got = {}
+    loop = QEventLoop()
+    w.alert.connect(lambda sev, title, body: alerts.append((sev, title, body)))
+    w.finished_report.connect(lambda rep: (got.update(rep), loop.quit()))
+    QTimer.singleShot(10_000, loop.quit)
+    w.start(); loop.exec(); w.wait(2000)
+    assert got.get("failed") == 2
+    assert len(alerts) == 1, alerts
+    sev, title, body = alerts[0]
+    assert sev == "error"
+    assert title == "Scrape crashed"
+    assert "RuntimeError" in body
+    assert "engine exploded" not in body   # exception TYPE only — no message/PII
+
+
+# ── AsyncKBWorker (v4.0.4, Task 5) ───────────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _guard_kb_state(monkeypatch):
+    """bug-149 rule: any real-state seam a worker COULD reach must be isolated even
+    when today's tests don't expect to reach it. Both AsyncKBWorker tests below inject
+    `engine=` (a stub coroutine), so the real run_kb_scrape_async — and therefore
+    load_kb_state()'s read of the operator's real scraper/state/scraped_articles_v2.json
+    — is never called. This fixture documents that invariant and fails loudly (instead
+    of silently touching the real ledger) if a future test regresses it by dropping the
+    engine= injection."""
+    import scraper.kb_state as kb_state_mod
+
+    def _boom(*a, **kw):
+        raise AssertionError(
+            "load_kb_state() was reached — an AsyncKBWorker test must inject engine= "
+            "to stub the real KB engine coroutine, per bug-149 (no real-state seam may "
+            "run during tests).")
+    monkeypatch.setattr(kb_state_mod, "load_kb_state", _boom)
+
+
+def test_kb_worker_forwards_signals(tmp_path):
+    """Stub engine coroutine that fires cb.on_log/on_status/on_alert and returns a
+    report -> all four signals observed, finished_report carries the report."""
+    app = QApplication.instance() or QApplication([])
+
+    fake_report = {"totals": {"discovered": 1, "new": 1, "skipped": 0, "failed": 0}}
+
+    async def _fake_engine(space_cfgs, *, force, control, cb, workers, output_base,
+                            browser_factory, sampler=None, items=None):
+        cb.on_log("info", "starting")
+        cb.on_status("api", {"discovered": 1, "new": 1, "skipped": 0, "failed": 0,
+                              "failed_urls": []})
+        cb.on_progress("api", "Some Article", 1, 1)
+        cb.on_alert("info", "KB scrape complete — library verified", "All good.")
+        return fake_report
+
+    w = AsyncKBWorker([{"space_key": "api"}], workers=2, output_base=tmp_path,
+                       control=RunControl(),
+                       browser_factory=lambda: object(), engine=_fake_engine)
+
+    logs, statuses, progresses, alerts, got = [], [], [], [], {}
+    loop = QEventLoop()
+    w.log.connect(lambda lvl, msg: logs.append((lvl, msg)))
+    w.status.connect(lambda product, stats: statuses.append((product, stats)))
+    w.progress.connect(lambda product, title, idx, total: progresses.append((product, title, idx, total)))
+    w.alert.connect(lambda sev, title, body: alerts.append((sev, title, body)))
+    w.finished_report.connect(lambda rep: (got.update(rep), loop.quit()))
+    QTimer.singleShot(10_000, loop.quit)
+    w.start(); loop.exec(); w.wait(2000)
+
+    assert logs == [("info", "starting")]
+    assert statuses == [("api", {"discovered": 1, "new": 1, "skipped": 0, "failed": 0,
+                                  "failed_urls": []})]
+    assert progresses == [("api", "Some Article", 1, 1)]
+    assert len(alerts) == 1 and alerts[0][0] == "info"
+    assert got == fake_report
+
+
+def test_kb_worker_crash_emits_alert_and_empty_report(tmp_path):
+    """Stub engine that raises RuntimeError -> one alert with 'RuntimeError' in body
+    and the message text NOT present; finished_report emitted (empty dict)."""
+    app = QApplication.instance() or QApplication([])
+
+    async def _boom(space_cfgs, *, force, control, cb, workers, output_base,
+                     browser_factory, sampler=None, items=None):
+        raise RuntimeError("kb engine exploded — should never appear in the alert")
+
+    w = AsyncKBWorker([{"space_key": "api"}], workers=2, output_base=tmp_path,
+                       control=RunControl(),
+                       browser_factory=lambda: object(), engine=_boom)
+
+    alerts = []
+    got = {}
+    loop = QEventLoop()
+    w.alert.connect(lambda sev, title, body: alerts.append((sev, title, body)))
+    w.finished_report.connect(lambda rep: (got.update(rep), loop.quit()))
+    QTimer.singleShot(10_000, loop.quit)
+    w.start(); loop.exec(); w.wait(2000)
+
+    assert got == {}
+    assert len(alerts) == 1, alerts
+    sev, title, body = alerts[0]
+    assert sev == "error"
+    assert title == "KB scrape crashed"
+    assert "RuntimeError" in body
+    assert "kb engine exploded" not in body   # exception TYPE only — no message/PII

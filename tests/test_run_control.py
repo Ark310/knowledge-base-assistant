@@ -61,3 +61,11 @@ def test_wait_if_paused_async_returns_on_cancel():
         await asyncio.wait_for(w, timeout=1.0)
         return w.done()
     assert asyncio.run(scenario()) is True
+
+def test_target_workers_defaults_none_and_is_settable():
+    # v4.0.3 Task 7: the live worker-slider target. None == no override (use `workers`);
+    # a plain int set from the GUI thread (single assignment, safe under the GIL).
+    c = RunControl()
+    assert c.target_workers is None
+    c.target_workers = 3
+    assert c.target_workers == 3

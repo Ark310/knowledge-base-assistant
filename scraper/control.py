@@ -12,6 +12,10 @@ class RunControl:
         self._cancelled = False
         self._resume = threading.Event()
         self._resume.set()  # set == running; cleared == paused
+        # Live worker-slider target (v4.0.3). None == no override (engine uses `workers`);
+        # otherwise the number of workers that should be actively pulling — set from the
+        # GUI thread as a single int assignment (safe under the GIL).
+        self.target_workers: int | None = None
 
     @property
     def cancelled(self) -> bool:
