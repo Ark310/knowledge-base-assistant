@@ -25,6 +25,7 @@ class ChatBridge(QObject):
     answerReady = Signal(str)     # JSON payload (see _answer_payload)
     turnFailed = Signal(str)
     turnProgress = Signal(str)
+    turnStopped = Signal()        # a turn was cancelled — re-enable the composer
     chatsChanged = Signal()       # ask JS to refresh the history list
 
     def __init__(self, window=None) -> None:
@@ -32,6 +33,7 @@ class ChatBridge(QObject):
         self._window = window
         self._worker = None
         self._chat_id = None
+        self._turn_seq = 0        # bumped to invalidate an in-flight turn's late result
 
     # ── settings access ──────────────────────────────────────────────────────
     def _settings(self):
@@ -106,6 +108,12 @@ class ChatBridge(QObject):
 
     @Slot()
     def new_chat(self) -> None:
+        self._turn_seq += 1   # drop any in-flight turn's late result
+        if self._worker is not None:
+            try:
+                self._worker.cancel()
+            except Exception:
+                pass
         if self._window is not None:
             from Dev.kb_chatbot.chat.session import Session
             self._window.session = Session.new()
@@ -181,19 +189,34 @@ class ChatBridge(QObject):
             llm = factory.make_provider(st.default_provider, st)
         except Exception as exc:
             self.turnFailed.emit(f"That provider isn't ready: {type(exc).__name__}. "
-                                 f"Check its login/credentials in Settings.")
+                                 f"Set its login/credentials in Settings.")
             return
+
+        # Persist the chat immediately (with the pending question) so it shows in
+        # history + is referable even if the model never answers or is stopped.
+        try:
+            snapshot = list(getattr(w.session, "turns", []) or []) + \
+                [{"role": "user", "content": text, "kind": "user"}]
+            self._chat_id = _history.save_chat(snapshot, self._chat_id)
+            self.chatsChanged.emit()
+        except Exception:
+            pass
+
+        self._turn_seq += 1
+        token = self._turn_seq
         deps = Deps(retriever=w._retriever, llm=llm,
                     answer_cache=getattr(w, "_answer_cache", None))
         worker = TurnWorker(text, w.session, Filters(product=(product or None)),
                             st.default_model, deps)
-        worker.signals.finished.connect(self._on_done)
-        worker.signals.failed.connect(self.turnFailed.emit)
+        worker.signals.finished.connect(lambda turn, tok=token: self._on_done(turn, tok))
+        worker.signals.failed.connect(lambda msg, tok=token: self._on_failed(msg, tok))
         worker.signals.progress.connect(self.turnProgress.emit)
         self._worker = worker
         worker.start()
 
-    def _on_done(self, turn) -> None:
+    def _on_done(self, turn, token: int) -> None:
+        if token != self._turn_seq:
+            return  # a stopped / superseded turn — drop its late result
         chunks = []
         w = self._window
         try:
@@ -211,10 +234,17 @@ class ChatBridge(QObject):
         self.answerReady.emit(json.dumps(self._answer_payload(turn, chunks, self._chat_id or "")))
         self.chatsChanged.emit()
 
+    def _on_failed(self, msg: str, token: int) -> None:
+        if token != self._turn_seq:
+            return  # stopped / superseded
+        self.turnFailed.emit(msg)
+
     @Slot()
     def stop(self) -> None:
+        self._turn_seq += 1   # invalidate the in-flight turn so its late result is ignored
         if self._worker is not None:
             try:
                 self._worker.cancel()
             except Exception:
                 pass
+        self.turnStopped.emit()

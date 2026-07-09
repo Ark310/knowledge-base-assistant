@@ -20,7 +20,7 @@
       { id: "c3", title: "How do I post a deal in TD?", ts: "2026-07-08T16:00" }
     ];
     var b = {
-      answerReady: sig(), turnFailed: sig(), turnProgress: sig(), chatsChanged: sig(),
+      answerReady: sig(), turnFailed: sig(), turnProgress: sig(), turnStopped: sig(), chatsChanged: sig(), _t: null,
       ping: function () { return Promise.resolve("pong"); },
       config_json: function () {
         var disp = {}, mbp = {}; for (var k in providers) { disp[k] = providers[k].display; mbp[k] = providers[k].models; }
@@ -31,11 +31,17 @@
       list_chats: function () { return Promise.resolve(JSON.stringify(chats)); },
       search_chats: function (q) { q = (q || "").toLowerCase(); return Promise.resolve(JSON.stringify(chats.filter(function (c) { return c.title.toLowerCase().indexOf(q) >= 0; }))); },
       load_chat: function (id) { var c = chats.filter(function (x) { return x.id === id; })[0] || {}; return Promise.resolve(JSON.stringify({ id: id, title: c.title || "Chat", turns: [] })); },
-      new_chat: function () {}, rename_chat: function () {}, delete_chat: function () {},
-      set_provider: function () {}, set_model: function () {}, stop: function () {},
+      new_chat: function () { if (b._t) { clearTimeout(b._t); b._t = null; } },
+      rename_chat: function () {}, delete_chat: function () {},
+      set_provider: function () {}, set_model: function () {},
+      stop: function () { if (b._t) { clearTimeout(b._t); b._t = null; } b.turnStopped.emit(); },
       send_message: function (text) {
+        var num = (text.match(/\d{3,7}/) || [""])[0];
+        var title = /ticket|bug|#/i.test(text) && num ? "Ticket #" + num : text.slice(0, 60);
+        chats.unshift({ id: "m" + (chats.length + 1), title: title, ts: "now" });
+        b.chatsChanged.emit();
         b.turnProgress.emit("searching tickets & KB");
-        setTimeout(function () { b.answerReady.emit(JSON.stringify(mockAnswer(text))); }, 700);
+        b._t = setTimeout(function () { b._t = null; b.answerReady.emit(JSON.stringify(mockAnswer(text))); }, 1600);
       }
     };
     return b;
@@ -235,14 +241,23 @@
       if (t != null && t.trim()) B.rename_chat(c.id, t.trim());
     }
   }
-  function newChat() { B.new_chat(); els.activeChat = null; emptyState(); refreshChats(); $("input").focus(); }
+  function newChat() {
+    B.new_chat();
+    els.activeChat = null; els.thinkingEl = null; setSending(false);
+    emptyState(); refreshChats(); $("input").focus();
+  }
 
+  function setSending(on) {
+    sending = on;
+    $("send").style.display = on ? "none" : "";
+    $("stop").style.display = on ? "" : "none";
+  }
   function send() {
     if (sending) return;
     var text = $("input").value.trim(); if (!text) return;
-    sending = true; $("send").disabled = true;
+    setSending(true);
     addUser(text); $("input").value = ""; $("input").style.height = "auto";
-    els.thinkingEl = showThinking("searching tickets & KB");
+    els.thinkingEl = showThinking("searching tickets & KB, then asking the model");
     B.send_message(text, $("product").value || "");
   }
   function onAnswer(j) {
@@ -250,12 +265,19 @@
     var m = els.thinkingEl || bubble("ai");
     renderAnswer(m, payload); els.thinkingEl = null;
     if (payload.chat_id) els.activeChat = payload.chat_id;
-    sending = false; $("send").disabled = false;
+    setSending(false);
   }
   function onFailed(msg) {
     var m = els.thinkingEl || bubble("ai"); m.classList.add("err");
     m.innerHTML = "<div class='ans'>" + esc(msg || "Something went wrong.") + "</div>";
-    els.thinkingEl = null; sending = false; $("send").disabled = false; scrollBottom();
+    els.thinkingEl = null; setSending(false); scrollBottom();
+  }
+  function onStopped() {
+    if (els.thinkingEl) {
+      els.thinkingEl.innerHTML = "<div class='ans' style='color:var(--ink-faint)'>Stopped. Your question is saved in the chat list.</div>";
+      els.thinkingEl = null;
+    }
+    setSending(false);
   }
   function onProgress(stage) { if (els.thinkingEl) els.thinkingEl.querySelector(".thinking").lastChild.textContent = " " + stage + "…"; }
 
@@ -265,6 +287,7 @@
     B.answerReady.connect(onAnswer);
     B.turnFailed.connect(onFailed);
     B.turnProgress.connect(onProgress);
+    if (B.turnStopped && B.turnStopped.connect) B.turnStopped.connect(onStopped);
     if (B.chatsChanged && B.chatsChanged.connect) B.chatsChanged.connect(refreshChats);
 
     B.config_json().then(function (j) { renderConfig(JSON.parse(j)); });
@@ -284,6 +307,7 @@
     input.addEventListener("input", function () { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; });
     input.addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
     $("send").addEventListener("click", send);
+    $("stop").addEventListener("click", function () { B.stop(); });
     $("newchat").addEventListener("click", newChat);
     $("newtop").addEventListener("click", newChat);
 
