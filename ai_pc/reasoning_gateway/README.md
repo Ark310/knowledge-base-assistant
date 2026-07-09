@@ -17,7 +17,7 @@ notepad .\reasoning.env      # set SERVER_LAN_IP to this PC's LAN IP; leave the 
 .\01_install.ps1             # pulls qwen2.5:7b-instruct, creates the model, fetches Caddy, sets single-model env
 # Restart Ollama so OLLAMA_MAX_LOADED_MODELS=1 takes effect (quit tray + reopen, or restart the service)
 .\02_provision_user.ps1 -Username abdul   # prints URL + username + password ONCE - copy it now
-.\04_firewall.ps1            # opens TCP 11500 on the Private profile only
+.\04_firewall.ps1            # opens TCP 11500 on the NIC's active profile(s) (Domain/Private/Public)
 .\05_start_gateway.ps1       # starts the gateway
 .\06_test.ps1 -Username abdul -Password "<the password printed above>"   # expect ALL GATEWAY TESTS PASSED
 ```
@@ -36,7 +36,7 @@ notepad .\reasoning.env      # set SERVER_LAN_IP to this PC's LAN IP; leave the 
 ## Security & isolation (must stay true)
 - Passwords are shown once and never written to disk/OneDrive/logs; only bcrypt hashes live in `config/users.txt`.
 - `reasoning.env`, `config/users.txt`, `config/Caddyfile`, `bin/`, `logs/` are git-ignored.
-- Firewall is **Private profile only**. Basic-auth-over-HTTP is a **trusted-LAN** posture; HTTPS/VPN is the production upgrade.
+- Firewall opens 11500 on the NIC's **active profile(s)** (a Domain-joined server uses the Domain profile, not Private). Basic-auth-over-HTTP is a **trusted-LAN** posture; HTTPS/VPN is the production upgrade.
 - KYC keeps its own model/prompts/data/route/logs. Our model is exactly `contoso-reasoning-qwen25-7b`.
 - Switching to KYC: `ollama stop contoso-reasoning-qwen25-7b` first (single-model GPU).
 
