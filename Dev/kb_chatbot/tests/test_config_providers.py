@@ -57,12 +57,15 @@ def test_gui_settings_dialog_persists_provider():
     assert "default_provider=" in src
 
 
-def test_gui_has_provider_factory_and_dropdown():
-    import inspect
-    from Dev.kb_chatbot import gui
-    assert hasattr(gui, "build_provider")
-    src = inspect.getsource(gui.MainWindow._build_ui)
-    assert "AI Provider" in src
+def test_provider_selection_via_factory_and_web_config():
+    # v3.0.1: provider construction goes through the factory; provider/model
+    # selection lives in the web config bar (bridge), not an old Qt dropdown.
+    from Dev.kb_chatbot.llm import factory
+    from Dev.kb_chatbot.bridge import ChatBridge, webui_dir
+    assert hasattr(factory, "make_provider")
+    assert hasattr(ChatBridge, "set_provider") and hasattr(ChatBridge, "config_json")
+    html = (webui_dir() / "index.html").read_text(encoding="utf-8")
+    assert 'id="provider"' in html and 'id="model"' in html
 
 
 def test_token_usage_dialog_uses_shared_display_map():

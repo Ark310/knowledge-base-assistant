@@ -26,7 +26,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from PySide6.QtCore import QEvent, QObject, QThread, QTimer, Signal, Slot, Qt
+from PySide6.QtCore import QEvent, QObject, QThread, QTimer, Signal, Slot, Qt, QUrl
 from PySide6.QtGui import (
     QTextCursor, QAction, QFont, QColor, QTextCharFormat, QKeySequence,
     QPixmap,
@@ -39,8 +39,12 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QCheckBox, QFrame, QSplashScreen,
     QSizePolicy,
 )
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebEngineCore import QWebEnginePage
+from PySide6.QtWebChannel import QWebChannel
 
 from Dev.kb_chatbot import config, settings as settings_mod
+from Dev.kb_chatbot.bridge import ChatBridge, webui_dir
 from Dev.kb_chatbot.chat.session import Session, Turn
 # NOTE: retriever / ingest / chat.orchestrator / chat.query_rewriter / llm providers
 # pull in torch + transformers + sentence_transformers + chromadb + the Claude SDK —
@@ -781,6 +785,20 @@ class AboutDialog(QDialog):
         layout.addWidget(bb)
 
 
+class _ChatPage(QWebEnginePage):
+    """Open http(s) links in the system browser; keep local (file/qrc) nav in-app."""
+    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+        try:
+            scheme = url.scheme()
+        except Exception:
+            scheme = ""
+        if scheme in ("http", "https"):
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(url)
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -802,14 +820,7 @@ class MainWindow(QMainWindow):
         self._last_assistant_turn: Optional[Turn] = None
         self._welcome_showing = True   # chat starts on the welcome/empty state
         self._build_ui()
-        # Window shows immediately; models + LLM warm-up load in background
-        self._set_chat_enabled(False)
-        self._init_thinking = ThinkingIndicator()
-        # Permanent (right side) so the temporary "Log: …" status message never
-        # contends with / overlaps the loading indicator while the app warms up.
-        self.statusBar().addPermanentWidget(self._init_thinking)
-        self._init_thinking.start(INIT_WORDS)
-        self.input.setPlaceholderText("Getting ready — one moment…")
+        # Window shows immediately; the retriever + LLM warm-up load in background.
         self._start_init_worker()
 
     def _build_ui(self):
@@ -825,134 +836,28 @@ class MainWindow(QMainWindow):
         tb = QToolBar(); tb.setMovable(False); self.addToolBar(tb)
         self._act_reindex = QAction("Reindex", self); tb.addAction(self._act_reindex)
         self._act_reindex.setToolTip("Run after adding new articles to the knowledge base")
-        self._act_settings = QAction("Settings", self); tb.addAction(self._act_settings)
-        self._act_clear = QAction("Clear chat", self); tb.addAction(self._act_clear)
+        self._act_logs = QAction("Open state folder", self); tb.addAction(self._act_logs)
         tb.addSeparator()
-        self._act_stop = QAction("⏹ STOP", self); tb.addAction(self._act_stop)
-        self._act_logs = QAction("View logs", self); tb.addAction(self._act_logs)
-        tb.addSeparator()
-        self._act_learn = QAction("Learn Mode", self)
-        tb.addAction(self._act_learn)
-        self._act_exit_learn = QAction("Exit Learn Mode", self)
-        self._act_exit_learn.setVisible(False)
-        tb.addAction(self._act_exit_learn)
-        tb.addSeparator()
-        self._act_about = QAction("About", self)
-        tb.addAction(self._act_about)
+        self._act_about = QAction("About", self); tb.addAction(self._act_about)
+        # Provider/model/product selection, new chat, clear, learn mode + settings
+        # now live in the web UI (top config bar + modals), driven by ChatBridge.
 
-        # Controls bar — Product / AI Provider / Model grouped into a tidy card.
-        controls = QFrame()
-        controls.setObjectName("ControlsBar")
-        controls.setStyleSheet(
-            f"#ControlsBar {{ background:{PALETTE['surface']}; "
-            f"border:1px solid {PALETTE['border']}; border-radius:8px; }}")
-        filter_row = QHBoxLayout(controls)
-        filter_row.setContentsMargins(10, 6, 10, 6)
-        filter_row.setSpacing(8)
-        filter_row.addWidget(QLabel("Product:"))
-        self.product_box = QComboBox()
-        self.product_box.addItem("Any", "")
-        for p in config.PRODUCTS:
-            self.product_box.addItem(config.PRODUCT_DISPLAY.get(p, p), p)
-        filter_row.addWidget(self.product_box)
-        filter_row.addSpacing(8)
-        filter_row.addWidget(QLabel("AI Provider:"))
-        self.provider_box = QComboBox()
-        for pid, prov in config.PROVIDERS.items():
-            self.provider_box.addItem(prov["display"], pid)
-        pidx = self.provider_box.findData(self.settings.default_provider)
-        if pidx >= 0:
-            self.provider_box.setCurrentIndex(pidx)
-        filter_row.addWidget(self.provider_box)
-        filter_row.addSpacing(8)
-        filter_row.addWidget(QLabel("Model:"))
-        self.model_box = QComboBox()
-        self._populate_model_box(self.settings.default_provider, self.settings.default_model)
-        filter_row.addWidget(self.model_box)
-        filter_row.addStretch()
-        outer.addWidget(controls)
-
-        self.chat_view = QTextBrowser()
-        self.chat_view.setFont(QFont("Segoe UI", 10))
-        self.chat_view.setOpenExternalLinks(True)
-        self.chat_view.setReadOnly(True)
-        self.chat_view.setHtml(_welcome_html())   # welcome / empty state
-        outer.addWidget(self.chat_view, stretch=1)
-
-        self._thinking = ThinkingIndicator()
-        outer.addWidget(self._thinking)
-
-        self.progress = QProgressBar(); self.progress.setVisible(False)
-        outer.addWidget(self.progress)
-
-        # Learn Mode feedback bar — appears under answers while Learn Mode is on
-        self._feedback_bar = QWidget()
-        fb_layout = QHBoxLayout(self._feedback_bar)
-        fb_layout.setContentsMargins(4, 4, 4, 4)
-        self._btn_mark_correct = QPushButton("✓ Mark as Correct")
-        self._btn_mark_correct.setStyleSheet(
-            f"background:{PALETTE['ok_bg']}; color:{PALETTE['ok_text']}; "
-            f"border:1px solid {PALETTE['ok_text']}; border-radius:6px; padding:6px 14px;")
-        self._btn_correct_add = QPushButton("✎ Correct / Add to KB")
-        self._btn_correct_add.setStyleSheet(
-            f"background:{PALETTE['secondary_tint']}; color:{PALETTE['clarify_text']}; "
-            f"border:1px solid {PALETTE['secondary']}; border-radius:6px; padding:6px 14px;")
-        fb_layout.addWidget(self._btn_mark_correct)
-        fb_layout.addWidget(self._btn_correct_add)
-        fb_layout.addStretch()
-        self._feedback_bar.setVisible(False)
-        outer.addWidget(self._feedback_bar)
-        self._btn_mark_correct.clicked.connect(self._on_mark_correct)
-        self._btn_correct_add.clicked.connect(self._on_open_correction_editor)
-
-        # Inline correction editor — hidden panel
-        self._correction_panel = self._build_correction_panel()
-        self._correction_panel.setVisible(False)
-        outer.addWidget(self._correction_panel)
-
-        # Attachment bar — hidden until files are attached
-        self._attach_bar = QWidget()
-        attach_layout = QHBoxLayout(self._attach_bar)
-        attach_layout.setContentsMargins(4, 2, 4, 2)
-        attach_layout.setSpacing(6)
-        self._attach_bar.setVisible(False)
-        outer.addWidget(self._attach_bar)
-
-        input_row = QHBoxLayout()
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("Ask a question about the Contoso KB… (drag & drop files or Ctrl+V to attach)")
-        self.input.returnPressed.connect(self._send)
-        # Catch Ctrl+V on the input box itself — QLineEdit consumes Paste before
-        # MainWindow.keyPressEvent would ever see it (the common typing-focus case)
-        self.input.installEventFilter(self)
-        self._clip_btn = QPushButton("📎")
-        self._clip_btn.setFixedWidth(36)
-        self._clip_btn.setToolTip("Attach file (image or text)")
-        self._clip_btn.clicked.connect(self._open_file_picker)
-        self.send_btn = QPushButton("Send")
-        self.send_btn.setObjectName("PrimaryButton")
-        self.send_btn.clicked.connect(self._send)
-        input_row.addWidget(self.input)
-        input_row.addWidget(self._clip_btn)
-        input_row.addWidget(self.send_btn)
-        outer.addLayout(input_row)
-
-        self.setAcceptDrops(True)
+        # Web UI surface (chat, config bar, history, sources) — driven by ChatBridge.
+        self.bridge = ChatBridge(self)
+        self._channel = QWebChannel()
+        self._channel.registerObject("bridge", self.bridge)
+        self.chat_view = QWebEngineView()
+        self.chat_view.setPage(_ChatPage(self.chat_view))
+        self.chat_view.page().setWebChannel(self._channel)
+        self.chat_view.setUrl(QUrl.fromLocalFile(str(webui_dir() / "index.html")))
+        self.setCentralWidget(self.chat_view)
 
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage(f"Log: {config.LOG_FILE}")
+        self.statusBar().showMessage("Loading knowledge base…")
 
         self._act_reindex.triggered.connect(self._reindex)
-        self._act_settings.triggered.connect(self._open_settings)
-        self._act_clear.triggered.connect(self._clear_chat)
-        self._act_stop.triggered.connect(self._stop)
         self._act_logs.triggered.connect(self._open_logs)
-        self._act_learn.triggered.connect(self._enter_learn_mode)
-        self._act_exit_learn.triggered.connect(self._exit_learn_mode)
         self._act_about.triggered.connect(self._show_about)
-        self.provider_box.currentIndexChanged.connect(self._on_provider_changed)
-        self.model_box.currentIndexChanged.connect(self._on_model_changed)
-        self._set_inputs_enabled(True)
 
     def _build_header(self) -> QWidget:
         """Top brand bar: logo + 'KB Assistant' title + right-aligned version,
@@ -1160,34 +1065,18 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_init_status(self, msg: str):
-        if "warming up" in msg.lower():
-            self._init_thinking.pin(msg.split("—", 1)[-1].strip().rstrip("…"))
+        self.statusBar().showMessage(msg)
 
     @Slot(object)
     def _on_init_ready(self, retriever):
-        self._init_thinking.stop()
-        self.statusBar().removeWidget(self._init_thinking)
-        self.input.setPlaceholderText(
-            "Ask a question about the Contoso KB… (drag & drop files or Ctrl+V to attach)")
+        # The web UI's composer already guards on this; once set, send_message works.
         self._retriever = retriever
-        self.send_btn.setText("Send")
-        self._set_chat_enabled(True)
         self.statusBar().showMessage("Ready")
-        self._append("system", "Ready. Type a question below.", "#1b5e20", "SYSTEM:")
-        if self._model_migrated:
-            self._append("system",
-                "Default model upgraded to Sonnet for better accuracy — "
-                "change it back anytime in the dropdown.", "#1b5e20", "SYSTEM:")
-            self._model_migrated = False
 
     @Slot(str)
     def _on_init_failed(self, err):
-        self._init_thinking.stop()
-        self.statusBar().showMessage(f"Init failed: {err}")
-        self._append("system", f"Initialisation failed: {err}", "#c62828", "ERROR:")
-        # Repurpose Send as a retry button so the user isn't locked out forever
-        self.send_btn.setText("Retry init")
-        self.send_btn.setEnabled(True)
+        self.statusBar().showMessage(f"Knowledge base failed to load: {err}")
+        log.error("InitWorker failed: %s", err)
 
     def _set_chat_enabled(self, enabled: bool):
         self.input.setEnabled(enabled)
@@ -1405,32 +1294,8 @@ class MainWindow(QMainWindow):
             self._refresh_attach_bar()
 
     # ── Drag and Drop ────────────────────────────────────────────────────────
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event):
-        for url in event.mimeData().urls():
-            local = url.toLocalFile()
-            if local:
-                self._add_attachment_path(Path(local))
-        event.acceptProposedAction()
-
-    # ── Clipboard paste (Ctrl+V) ─────────────────────────────────────────────
-    def eventFilter(self, obj, event):
-        # QLineEdit consumes Ctrl+V before MainWindow.keyPressEvent fires, so an
-        # event filter on the input box is needed for the focused-while-typing case.
-        if (obj is self.input and event.type() == QEvent.KeyPress
-                and event.matches(QKeySequence.Paste)):
-            if self._try_paste_clipboard_image():
-                return True  # consumed — don't let QLineEdit also paste
-        return super().eventFilter(obj, event)
-
-    def keyPressEvent(self, event):
-        # Fallback for paste when focus is elsewhere in the window
-        if event.matches(QKeySequence.Paste) and self._try_paste_clipboard_image():
-            return
-        super().keyPressEvent(event)
+    # (v3.0.1) Drag/drop + clipboard-paste handling belonged to the old Qt input
+    # row; the embedded web UI now owns input, so those Qt event overrides are gone.
 
     def _try_paste_clipboard_image(self) -> bool:
         """Attach the clipboard image if there is one. Returns True if attached."""
@@ -1517,12 +1382,16 @@ class MainWindow(QMainWindow):
         dlg = IndexingDialog(self, self.settings.library_path, config.CHROMA_DIR,
                              embedder, collection)
         dlg.exec()
+        if self._retriever is not None:
+            try:
+                self._retriever.invalidate_bm25()   # rebuild the keyword index off the new corpus
+            except Exception:
+                pass
         if dlg.report is not None:
-            self._append("system",
+            self.statusBar().showMessage(
                 f"Reindex: +{dlg.report.chunks_embedded} embedded, "
                 f"{dlg.report.total_chunks} total ({dlg.report.articles_seen} articles, "
-                f"{dlg.report.tickets_seen} tickets) in {dlg.report.duration_s:.1f}s",
-                "#1b5e20", "SYSTEM:")
+                f"{dlg.report.tickets_seen} tickets) in {dlg.report.duration_s:.1f}s")
 
     def _set_inputs_enabled(self, enabled: bool):
         if self._retriever is not None:  # chat stays locked until init completes
@@ -1561,6 +1430,8 @@ class MainWindow(QMainWindow):
 
 
 def _preflight_provider(provider_id: str) -> Optional[str]:
+    if provider_id == "local":
+        return None   # LAN gateway readiness is handled in-app (Settings / onboarding)
     if provider_id == "openai":
         from Dev.kb_chatbot.llm.codex_provider import codex_login_ok
         if codex_login_ok():
@@ -1603,9 +1474,15 @@ def _make_splash() -> Optional[QSplashScreen]:
 
 
 def main():
+    # QtWebEngine requires this attribute set BEFORE the QApplication is created.
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     app.setApplicationName(f"Contoso KB Chatbot v{config.APP_VERSION}")
     app.setStyleSheet(_app_stylesheet())
+    try:
+        config.migrate_state_if_needed(getattr(config, "_LEGACY_STATE", config.STATE_DIR))
+    except Exception:
+        log.exception("State migration check failed (non-fatal)")
     splash = _make_splash()
     if splash is not None:
         splash.show()
