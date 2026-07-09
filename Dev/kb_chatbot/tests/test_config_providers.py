@@ -2,7 +2,7 @@ from Dev.kb_chatbot import config
 
 
 def test_providers_have_claude_and_openai():
-    assert set(config.PROVIDERS) == {"claude", "openai"}
+    assert set(config.PROVIDERS) == {"claude", "openai", "local"}
 
 
 def test_default_provider_is_claude():

@@ -56,6 +56,7 @@ def migrate_state_if_needed(old) -> bool:
 # ── Model defaults ────────────────────────────────────────────────────────────
 EMBED_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+LOCAL_MODEL    = "contoso-reasoning-qwen25-7b"   # on-prem model served via the AI-PC gateway
 
 DEFAULT_PROVIDER = "claude"
 
@@ -80,6 +81,13 @@ PROVIDERS = {
             "GPT-5.4-mini (fast / cheap)": "gpt-5.4-mini",
         },
     },
+    "local": {
+        "display": "Local (on-prem)",
+        "default_model": "contoso-reasoning-qwen25-7b",
+        "models": {
+            "Contoso Reasoning (Qwen2.5-7B)": "contoso-reasoning-qwen25-7b",
+        },
+    },
 }
 
 # Backward-compatible aliases (Claude provider) so existing imports keep working
@@ -92,6 +100,7 @@ MODEL_DISPLAY = {
     "gpt-5.5":                   "GPT-5.5",
     "gpt-5.4":                   "GPT-5.4",
     "gpt-5.4-mini":              "GPT-5.4-mini",
+    "contoso-reasoning-qwen25-7b": "Contoso Reasoning",
 }
 
 
@@ -185,4 +194,5 @@ COST_TABLE: dict[str, dict[str, float]] = {
     "gpt-5.5":                   {"in": 5.00, "out": 30.00},
     "gpt-5.4":                   {"in": 2.50, "out": 15.00},
     "gpt-5.4-mini":              {"in": 0.75, "out": 4.50},
+    "contoso-reasoning-qwen25-7b": {"in": 0.0, "out": 0.0},   # on-prem, no per-token cost
 }

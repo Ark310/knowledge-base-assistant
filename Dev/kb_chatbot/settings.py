@@ -24,6 +24,8 @@ class Settings:
     learn_mode_hash: str = field(default_factory=lambda: DEFAULT_LEARN_MODE_HASH)
     model_explicitly_set: bool = False
     default_provider: str = "claude"
+    reasoning_base_url: str = ""
+    reasoning_username: str = ""
 
 
 _PBKDF2_ITERS = 200_000
@@ -73,6 +75,8 @@ def load_settings(path: Path = config.SETTINGS_FILE) -> Settings:
         learn_mode_hash=data.get("learn_mode_hash", DEFAULT_LEARN_MODE_HASH),
         model_explicitly_set=bool(data.get("model_explicitly_set", False)),
         default_provider=data.get("default_provider", config.DEFAULT_PROVIDER),
+        reasoning_base_url=data.get("reasoning_base_url", ""),
+        reasoning_username=data.get("reasoning_username", ""),
     )
     # Guard against a corrupt/hand-edited model/provider mismatch.
     if config.provider_of_model(s.default_model) != s.default_provider:
