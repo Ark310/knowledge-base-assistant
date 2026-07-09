@@ -23,7 +23,10 @@ function Write-Caddyfile {
         $userLines += ("        {0} {1}" -f $t.Substring(0,$idx).Trim(), $t.Substring($idx+1).Trim())
     }
     if ($userLines.Count -eq 0) { throw "users.txt has no valid entries." }
-    $site = "http://{0}:{1}" -f $Cfg.SERVER_LAN_IP, $Cfg.REASONING_GATEWAY_PORT
+    # Bind all interfaces (":port"), not a single IP, so the gateway is reachable
+    # regardless of which NIC/IP the client uses (the AI PC has several adapters).
+    # SERVER_LAN_IP stays the address the client/app targets; Basic auth is the guard.
+    $site = ":{0}" -f $Cfg.REASONING_GATEWAY_PORT
     $joined = [string]::Join([Environment]::NewLine, $userLines)
     $body = @"
 $site {
