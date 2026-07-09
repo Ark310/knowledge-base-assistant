@@ -2,10 +2,9 @@
 
 One ChatBridge is registered on the channel as `bridge`. JS calls @Slot methods
 (JSON in/out) and listens to Signals. A turn runs OFF the GUI thread by reusing
-gui.TurnWorker; the result comes back on the answerReady signal.
-
-Only PySide6.QtCore is imported here (light) so the bridge + its pure helpers are
-unit-testable without a QApplication or QtWebEngine."""
+gui.TurnWorker; the result comes back on the answerReady signal. History is
+persisted via chat.history. Only PySide6.QtCore is imported here (light) so the
+bridge + its pure helpers are unit-testable without a QApplication."""
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -13,6 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from Dev.kb_chatbot import config
+from Dev.kb_chatbot.chat import history as _history
 
 
 def webui_dir() -> Path:
@@ -22,14 +22,31 @@ def webui_dir() -> Path:
 
 class ChatBridge(QObject):
     # Python -> JS
-    answerReady = Signal(str)     # JSON: see _answer_payload
+    answerReady = Signal(str)     # JSON payload (see _answer_payload)
     turnFailed = Signal(str)
     turnProgress = Signal(str)
+    chatsChanged = Signal()       # ask JS to refresh the history list
 
     def __init__(self, window=None) -> None:
         super().__init__()
         self._window = window
         self._worker = None
+        self._chat_id = None
+
+    # ── settings access ──────────────────────────────────────────────────────
+    def _settings(self):
+        w = self._window
+        if w is not None and getattr(w, "settings", None) is not None:
+            return w.settings
+        from Dev.kb_chatbot import settings as S
+        return S.load_settings()
+
+    def _save(self, st) -> None:
+        try:
+            from Dev.kb_chatbot import settings as S
+            S.save_settings(st)
+        except Exception:
+            pass
 
     # ── health / static data ────────────────────────────────────────────────
     @Slot(result=str)
@@ -38,8 +55,84 @@ class ChatBridge(QObject):
 
     @Slot(result=str)
     def providers(self) -> str:
-        """The provider registry for the top-bar selector."""
         return json.dumps(config.PROVIDERS)
+
+    @Slot(result=str)
+    def config_json(self) -> str:
+        st = self._settings()
+        return json.dumps({
+            "default_provider": getattr(st, "default_provider", config.DEFAULT_PROVIDER),
+            "default_model": getattr(st, "default_model", config.DEFAULT_MODEL),
+            "products": config.PRODUCT_DISPLAY,
+            "provider_display": {k: v["display"] for k, v in config.PROVIDERS.items()},
+            "models_by_provider": {k: v["models"] for k, v in config.PROVIDERS.items()},
+        })
+
+    # ── provider / model selection ────────────────────────────────────────────
+    @Slot(str)
+    def set_provider(self, provider_id: str) -> None:
+        st = self._settings()
+        if provider_id in config.PROVIDERS:
+            st.default_provider = provider_id
+            st.default_model = config.default_model_for(provider_id)
+            self._save(st)
+
+    @Slot(str)
+    def set_model(self, model_id: str) -> None:
+        st = self._settings()
+        st.default_model = model_id
+        self._save(st)
+
+    # ── chat history ──────────────────────────────────────────────────────────
+    @Slot(result=str)
+    def list_chats(self) -> str:
+        return json.dumps(_history.list_chats())
+
+    @Slot(str, result=str)
+    def search_chats(self, query: str) -> str:
+        return json.dumps(_history.search_chats(query))
+
+    @Slot(str, result=str)
+    def load_chat(self, chat_id: str) -> str:
+        c = _history.load_chat(chat_id)
+        if c and self._window is not None:
+            from Dev.kb_chatbot.chat.session import Session
+            s = Session.new()
+            s.turns = c.get("turns", []) or []
+            self._window.session = s
+            self._chat_id = chat_id
+            self._reset_conversation()
+        return json.dumps(c or {})
+
+    @Slot()
+    def new_chat(self) -> None:
+        if self._window is not None:
+            from Dev.kb_chatbot.chat.session import Session
+            self._window.session = Session.new()
+        self._chat_id = None
+        self._reset_conversation()
+
+    @Slot(str, str)
+    def rename_chat(self, chat_id: str, title: str) -> None:
+        _history.rename_chat(chat_id, title)
+        self.chatsChanged.emit()
+
+    @Slot(str)
+    def delete_chat(self, chat_id: str) -> None:
+        _history.delete_chat(chat_id)
+        if chat_id == self._chat_id:
+            self.new_chat()
+        self.chatsChanged.emit()
+
+    def _reset_conversation(self) -> None:
+        # A loaded/new chat must not carry a persistent Claude conversation.
+        import sys
+        m = sys.modules.get("Dev.kb_chatbot.llm.claude_code_provider")
+        if m is not None:
+            try:
+                m.ClaudeCodeProvider.reset_conversation()
+            except Exception:
+                pass
 
     # ── answer payload (pure; unit-tested) ───────────────────────────────────
     @staticmethod
@@ -76,19 +169,19 @@ class ChatBridge(QObject):
     def send_message(self, text: str, product: str) -> None:
         w = self._window
         if w is None or getattr(w, "_retriever", None) is None:
-            self.turnFailed.emit("Engine not ready yet.")
+            self.turnFailed.emit("The knowledge base is still loading. Try again in a moment.")
             return
-        # Lazy imports avoid a circular import (gui imports bridge).
         from Dev.kb_chatbot.gui import TurnWorker
         from Dev.kb_chatbot.chat.orchestrator import Deps
         from Dev.kb_chatbot.retriever import Filters
         from Dev.kb_chatbot.llm import factory
 
-        st = w.settings
+        st = self._settings()
         try:
             llm = factory.make_provider(st.default_provider, st)
         except Exception as exc:
-            self.turnFailed.emit(f"Provider unavailable: {type(exc).__name__}")
+            self.turnFailed.emit(f"That provider isn't ready: {type(exc).__name__}. "
+                                 f"Check its login/credentials in Settings.")
             return
         deps = Deps(retriever=w._retriever, llm=llm,
                     answer_cache=getattr(w, "_answer_cache", None))
@@ -109,7 +202,14 @@ class ChatBridge(QObject):
                 chunks = w._retriever.get_by_ids(ids)
         except Exception:
             chunks = []
-        self.answerReady.emit(json.dumps(self._answer_payload(turn, chunks)))
+        try:
+            if w is not None:
+                turns = list(getattr(w.session, "turns", []) or [])
+                self._chat_id = _history.save_chat(turns, self._chat_id)
+        except Exception:
+            pass
+        self.answerReady.emit(json.dumps(self._answer_payload(turn, chunks, self._chat_id or "")))
+        self.chatsChanged.emit()
 
     @Slot()
     def stop(self) -> None:

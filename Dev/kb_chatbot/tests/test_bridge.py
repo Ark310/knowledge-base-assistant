@@ -43,3 +43,11 @@ def test_answer_payload_no_context():
 def test_webui_dir_points_at_package_webui():
     d = webui_dir()
     assert d.name == "webui" and d.parent.name == "kb_chatbot"
+
+
+def test_config_json_shape():
+    import json as _j
+    d = _j.loads(ChatBridge().config_json())
+    assert d["default_provider"] in ("claude", "openai", "local")
+    assert "formflow" in d["products"] and d["products"]["formflow"] == "FormFlow"
+    assert "local" in d["provider_display"] and "local" in d["models_by_provider"]
