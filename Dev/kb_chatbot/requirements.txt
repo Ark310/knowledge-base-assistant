@@ -6,4 +6,5 @@ chromadb>=0.5
 claude-agent-sdk>=0.2.87,<0.3
 markdown>=3.6
 rank-bm25>=0.2.2
+keyring>=24
 pytest>=7.4.0
