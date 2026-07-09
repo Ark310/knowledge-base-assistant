@@ -233,6 +233,6 @@ def test_chunk_schema_change_forces_rebuild(tmp_path):
     assert r2.chunks_embedded == r1.chunks_embedded       # all re-embedded
 
 
-def test_chunk_schema_version_is_4():
+def test_chunk_schema_version_is_5():
     from Dev.kb_chatbot.ingest import CHUNK_SCHEMA_VERSION
-    assert CHUNK_SCHEMA_VERSION == 4
+    assert CHUNK_SCHEMA_VERSION == 5
