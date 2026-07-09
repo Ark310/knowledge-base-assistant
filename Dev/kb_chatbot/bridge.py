@@ -32,6 +32,7 @@ class ChatBridge(QObject):
         super().__init__()
         self._window = window
         self._worker = None
+        self._workers = []        # keep running QThreads referenced so they aren't GC'd mid-run
         self._chat_id = None
         self._turn_seq = 0        # bumped to invalidate an in-flight turn's late result
 
@@ -211,6 +212,13 @@ class ChatBridge(QObject):
         worker.signals.finished.connect(lambda turn, tok=token: self._on_done(turn, tok))
         worker.signals.failed.connect(lambda msg, tok=token: self._on_failed(msg, tok))
         worker.signals.progress.connect(self.turnProgress.emit)
+        # Retain the thread until it truly finishes. cancel() only sets a flag checked
+        # AFTER handle_turn returns, so a stopped/superseded worker (e.g. a hung local
+        # call) keeps running up to the provider timeout. Overwriting self._worker would
+        # drop the only reference and let Python GC a live QThread -> PySide crash
+        # ("QThread: Destroyed while thread is still running"). Retire it on finish.
+        self._workers.append(worker)
+        worker.finished.connect(lambda w=worker: self._retire_worker(w))
         self._worker = worker
         worker.start()
 
@@ -238,6 +246,19 @@ class ChatBridge(QObject):
         if token != self._turn_seq:
             return  # stopped / superseded
         self.turnFailed.emit(msg)
+
+    def _retire_worker(self, worker) -> None:
+        """A worker's run() has returned — safe to drop the retain-reference + delete."""
+        try:
+            self._workers.remove(worker)
+        except ValueError:
+            pass
+        if worker is self._worker:
+            self._worker = None
+        try:
+            worker.deleteLater()
+        except Exception:
+            pass
 
     @Slot()
     def stop(self) -> None:
