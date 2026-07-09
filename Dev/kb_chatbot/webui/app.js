@@ -143,10 +143,24 @@
   function scrollBottom() { var th = $("thread"); th.scrollTop = th.scrollHeight; }
 
   function addUser(text) { var m = bubble("user"); m.textContent = text; scrollBottom(); }
-  function showThinking(msg) {
+  function showThinking(msg, subnote) {
     var m = bubble("ai"); m.dataset.thinking = "1";
-    m.innerHTML = "<div class='thinking'><span class='d'></span><span class='d'></span><span class='d'></span> " + esc(msg || "thinking") + "…</div>";
+    var html = "<div class='thinking'><span class='d'></span><span class='d'></span><span class='d'></span> " + esc(msg || "thinking") + "…</div>";
+    if (subnote) html += "<div class='subnote'>" + esc(subnote) + "</div>";
+    m.innerHTML = html;
     scrollBottom(); return m;
+  }
+  // The on-prem model loads on demand (cold start can take ~a minute on the AI PC).
+  // Show — and escalate — a note so the wait reads as "loading", not "frozen".
+  function setSubnote(text) {
+    if (!els.thinkingEl) return;
+    var s = els.thinkingEl.querySelector(".subnote");
+    if (!s) { s = document.createElement("div"); s.className = "subnote"; els.thinkingEl.appendChild(s); }
+    s.textContent = text;
+  }
+  function clearWakeTimers() {
+    (els.wakeTimers || []).forEach(function (t) { clearTimeout(t); });
+    els.wakeTimers = [];
   }
   function renderAnswer(m, payload) {
     if (payload.kind === "abstain" || payload.kind === "clarification") {
@@ -243,6 +257,7 @@
   }
   function newChat() {
     B.new_chat();
+    clearWakeTimers();
     els.activeChat = null; els.thinkingEl = null; setSending(false);
     emptyState(); refreshChats(); $("input").focus();
   }
@@ -257,10 +272,22 @@
     var text = $("input").value.trim(); if (!text) return;
     setSending(true);
     addUser(text); $("input").value = ""; $("input").style.height = "auto";
-    els.thinkingEl = showThinking("searching tickets & KB, then asking the model");
+    var isLocal = ($("provider").value === "local");
+    var msg = isLocal ? "waking the on-prem model & searching KB"
+                      : "searching tickets & KB, then asking the model";
+    var note = isLocal ? "The on-prem model loads on demand — the first answer can take up to a minute. You can Stop anytime." : "";
+    els.thinkingEl = showThinking(msg, note);
+    clearWakeTimers();
+    if (isLocal) {
+      els.wakeTimers = [
+        setTimeout(function () { setSubnote("Still waking the on-prem model on the AI PC — hang tight. You can Stop anytime."); }, 15000),
+        setTimeout(function () { setSubnote("The on-prem model is taking longer than usual to wake. You can keep waiting or Stop and try again."); }, 45000),
+      ];
+    }
     B.send_message(text, $("product").value || "");
   }
   function onAnswer(j) {
+    clearWakeTimers();
     var payload = JSON.parse(j || "{}");
     var m = els.thinkingEl || bubble("ai");
     renderAnswer(m, payload); els.thinkingEl = null;
@@ -268,11 +295,13 @@
     setSending(false);
   }
   function onFailed(msg) {
+    clearWakeTimers();
     var m = els.thinkingEl || bubble("ai"); m.classList.add("err");
     m.innerHTML = "<div class='ans'>" + esc(msg || "Something went wrong.") + "</div>";
     els.thinkingEl = null; setSending(false); scrollBottom();
   }
   function onStopped() {
+    clearWakeTimers();
     if (els.thinkingEl) {
       els.thinkingEl.innerHTML = "<div class='ans' style='color:var(--ink-faint)'>Stopped. Your question is saved in the chat list.</div>";
       els.thinkingEl = null;
