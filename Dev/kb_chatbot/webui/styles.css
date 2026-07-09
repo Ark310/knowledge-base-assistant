@@ -1,0 +1,10 @@
+/* Contoso KB Assistant - base styles. Real Anthropic-inspired layout lands in
+   Task 3 via the frontend-design skill. This is the scaffold reset only. */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 14px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: #1f2430;
+  background: #f6f7fb;
+}
+#boot { padding: 2rem; color: #51639e; }
