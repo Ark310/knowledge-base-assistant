@@ -15,6 +15,12 @@ from Dev.kb_chatbot.chat.query_norm import tokenize
 
 log = logging.getLogger("kb_chatbot.retriever")
 
+# ChromaDB binds one SQLite variable per row/id in a get(). Modern SQLite caps
+# bound variables at 32766, so any get() that returns (or filters on) more rows
+# than that raises "too many SQL variables". Page every such call well under the
+# cap. 2000 is comfortably safe and keeps per-batch latency small.
+_GET_BATCH = 2000
+
 
 def _sigmoid(x: float) -> float:
     """Map a CrossEncoder logit to a 0-1 probability for a stable abstain floor."""
@@ -111,11 +117,33 @@ class Retriever:
             chunks.append(Chunk(id=cid, text=doc, metadata=dict(meta or {})))
         return chunks
 
+    def _get_all(self) -> dict:
+        """Fetch the whole collection in pages so a large corpus doesn't blow
+        SQLite's 'too many SQL variables' limit (see _GET_BATCH). Returns the
+        same flat-list shape as a single collection.get()."""
+        ids: list[str] = []
+        docs: list = []
+        metas: list = []
+        offset = 0
+        while True:
+            got = self.collection.get(include=["documents", "metadatas"],
+                                      limit=_GET_BATCH, offset=offset)
+            batch_ids = got.get("ids", []) or []
+            if not batch_ids:
+                break
+            ids.extend(batch_ids)
+            docs.extend(got.get("documents", []) or [])
+            metas.extend(got.get("metadatas", []) or [])
+            if len(batch_ids) < _GET_BATCH:
+                break
+            offset += _GET_BATCH
+        return {"ids": ids, "documents": docs, "metadatas": metas}
+
     # ── Hybrid (BM25 keyword) retrieval ──────────────────────────────────────
     def _ensure_bm25(self) -> None:
         if self._bm25 is not None or self._bm25_ids:
             return
-        got = self.collection.get(include=["documents", "metadatas"])
+        got = self._get_all()
         self._bm25_ids = got.get("ids", []) or []
         self._bm25_docs = [d or "" for d in (got.get("documents", []) or [])]
         self._bm25_meta = [dict(m or {}) for m in (got.get("metadatas", []) or [])]
@@ -167,18 +195,29 @@ class Retriever:
                 for cid, doc, meta in zip(ids, docs, metas)]
 
     def get_by_ids(self, ids: list[str]) -> list[Chunk]:
-        """Fetch chunks by their chunk-id (used to carry a prior turn's context)."""
+        """Fetch chunks by their chunk-id (used to carry a prior turn's context).
+        Batched so a large id list can't exceed SQLite's bound-variable limit."""
+        ids = list(ids or [])
         if not ids:
             return []
-        return self._chunks_from_get(self.collection.get(ids=list(ids)))
+        out: list[Chunk] = []
+        for i in range(0, len(ids), _GET_BATCH):
+            out.extend(self._chunks_from_get(
+                self.collection.get(ids=ids[i:i + _GET_BATCH])))
+        return out
 
     def get_by_ticket_ids(self, ticket_ids: list[str]) -> list[Chunk]:
-        """Fetch ticket chunks by ticket_id metadata (explicit 'ticket #N' lookup)."""
+        """Fetch ticket chunks by ticket_id metadata (explicit 'ticket #N' lookup).
+        Batched so a large $in list can't exceed SQLite's bound-variable limit."""
         wanted = [str(t) for t in ticket_ids if str(t)]
         if not wanted:
             return []
-        where = {"ticket_id": wanted[0]} if len(wanted) == 1 else {"ticket_id": {"$in": wanted}}
-        return self._chunks_from_get(self.collection.get(where=where))
+        out: list[Chunk] = []
+        for i in range(0, len(wanted), _GET_BATCH):
+            batch = wanted[i:i + _GET_BATCH]
+            where = {"ticket_id": batch[0]} if len(batch) == 1 else {"ticket_id": {"$in": batch}}
+            out.extend(self._chunks_from_get(self.collection.get(where=where)))
+        return out
 
     def retrieve(self, query: str, filters: Filters, top_k_rerank: Optional[int] = None) -> RetrievalResult:
         query_vec = self._embed(query)
