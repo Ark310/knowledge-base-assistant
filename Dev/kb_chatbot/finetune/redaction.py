@@ -9,8 +9,11 @@ class LeakError(RuntimeError):
 
 # Real email (not a bare '[redacted]' token).
 _EMAIL  = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
-# Phone: 10+ digits with separators; avoids ISO dates (which have no leading +/() and are 8 digits).
-_PHONE  = re.compile(r"(?<!\d)(?:\+?\d[\s().\-]?){10,}\d(?!\d)")
+# NANP phone shapes with separators (416-555-0134, (416) 555-0134, 416.555.0134,
+# +1 416 555 0134). Deliberately NOT bare 10-digit runs (avoids flagging IDs), and
+# not ISO dates (2024-08-22 has a 4-2-2 shape that never matches area+prefix+line).
+_PHONE = re.compile(
+    r"(?<!\d)(?:\+?\d{1,2}[\s.\-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.\-])\d{3}[\s.\-]\d{4}(?!\d)")
 # Common secret-key shapes (Anthropic, OpenAI, AWS, generic bearer).
 _SECRET = re.compile(r"\b(?:sk-[A-Za-z0-9\-]{16,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9\-]{10,}|gh[pousr]_[A-Za-z0-9]{20,})\b")
 _PASSWORD = re.compile(r"(?i)\bpassword\s*[:=]\s*(?!\[redacted\])\S+")

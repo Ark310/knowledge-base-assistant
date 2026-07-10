@@ -48,7 +48,9 @@ def main(argv=None) -> None:
     if args.dry_run:
         ds = ds.select(range(min(16, len(ds))))
     ds = ds.map(lambda e: format_for_trainer(e, tok), remove_columns=ds.column_names)
+    _before = len(ds)
     ds = ds.filter(lambda e: len(e["input_ids"]) <= args.seq_len)
+    print(f"kept {len(ds)}/{_before} examples within seq_len={args.seq_len}")
 
     targs = TrainingArguments(
         output_dir=str(fc.ADAPTER_DIR), per_device_train_batch_size=fc.MICRO_BATCH,

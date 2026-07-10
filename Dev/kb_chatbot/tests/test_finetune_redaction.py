@@ -26,3 +26,11 @@ def test_password_with_a_real_value_is_flagged():
 
 def test_redacted_password_placeholder_is_not_flagged():
     assert "password" not in find_leaks("Password: [redacted]")
+
+def test_detects_standard_10_digit_phone_formats():
+    assert "phone" in find_leaks("call 416-555-0134")
+    assert "phone" in find_leaks("reach us at (416) 555-0134")
+    assert "phone" in find_leaks("fax 416.555.0134")
+
+def test_does_not_flag_iso_date_or_ticket_id_as_phone():
+    assert "phone" not in find_leaks("released on 2024-08-22 for ticket #54000")

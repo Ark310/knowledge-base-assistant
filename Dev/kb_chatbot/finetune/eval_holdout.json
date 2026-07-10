@@ -1,0 +1,10 @@
+[
+  {"question": "TD GetWebDeal returned a null buy amount for a deal - how is it fixed?", "product": "", "expected_sources": [], "expected_keypoints": ["buy amount", "null"]},
+  {"question": "How do I post a deal in TradeDesk?", "product": "", "expected_sources": [], "expected_keypoints": ["deal"]},
+  {"question": "What causes drawdown margin duplication on a full drawdown?", "product": "", "expected_sources": [], "expected_keypoints": ["margin", "drawdown"]},
+  {"question": "How does FormFlow validate an IBAN?", "product": "formflow", "expected_sources": [], "expected_keypoints": ["iban"]},
+  {"question": "How do I configure recurring payments in Web2?", "product": "web2", "expected_sources": [], "expected_keypoints": ["payment"]},
+  {"question": "How do I book a deal in the Web4 portal?", "product": "web4", "expected_sources": [], "expected_keypoints": ["deal"]},
+  {"question": "What does the REST API return when a deal id is not found?", "product": "api", "expected_sources": [], "expected_keypoints": ["api"]},
+  {"question": "How do I manage forms in SalesHub?", "product": "saleshub", "expected_sources": [], "expected_keypoints": ["form"]}
+]

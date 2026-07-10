@@ -36,3 +36,7 @@ def test_run_is_resumable(monkeypatch, tmp_path):
     n2 = distill.run(["q1","q2","q3"], _StubRetriever(), object(), "m", out)  # q1,q2 already done
     assert n1 == 2 and n2 == 1
     assert len(out.read_text(encoding="utf-8").strip().splitlines()) == 3
+
+def test_distill_has_cli():
+    from Dev.kb_chatbot.finetune import distill
+    assert hasattr(distill, "main")
