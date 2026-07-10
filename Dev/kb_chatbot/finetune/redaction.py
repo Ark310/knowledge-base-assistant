@@ -13,7 +13,7 @@ _EMAIL  = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _PHONE  = re.compile(r"(?<!\d)(?:\+?\d[\s().\-]?){10,}\d(?!\d)")
 # Common secret-key shapes (Anthropic, OpenAI, AWS, generic bearer).
 _SECRET = re.compile(r"\b(?:sk-[A-Za-z0-9\-]{16,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9\-]{10,}|gh[pousr]_[A-Za-z0-9]{20,})\b")
-_PASSWORD = re.compile(r"(?i)\bpassword\s*[:=]\s*\S+")
+_PASSWORD = re.compile(r"(?i)\bpassword\s*[:=]\s*(?!\[redacted\])\S+")
 
 _CATS = (("email", _EMAIL), ("phone", _PHONE), ("secret", _SECRET), ("password", _PASSWORD))
 

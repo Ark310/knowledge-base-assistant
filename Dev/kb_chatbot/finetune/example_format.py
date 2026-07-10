@@ -7,7 +7,7 @@ from Dev.kb_chatbot.prompt import build_system_prompt, build_messages
 
 def make_example(chunks, question: str, answer: str) -> dict:
     # build_messages([], user_msg) -> [user_turn]; reuse it for serving parity.
-    user_turn = build_messages(context_chunks=chunks, history=[], user_msg=question)[0]
+    user_turn = build_messages(context_chunks=chunks, history=[], user_msg=question)[-1]
     return {"messages": [
         {"role": "system", "content": build_system_prompt()},
         user_turn,

@@ -20,3 +20,9 @@ def test_assert_clean_raises_on_planted_pii():
 def test_assert_clean_passes_when_clean():
     recs = [{"messages":[{"role":"assistant","content":"do Y. Sources: [Ticket #1](u)"}]}]
     assert_clean(recs)  # no raise
+
+def test_password_with_a_real_value_is_flagged():
+    assert "password" in find_leaks("password: hunter2")
+
+def test_redacted_password_placeholder_is_not_flagged():
+    assert "password" not in find_leaks("Password: [redacted]")
