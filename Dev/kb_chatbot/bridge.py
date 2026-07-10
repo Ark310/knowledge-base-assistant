@@ -16,7 +16,13 @@ from Dev.kb_chatbot.chat import history as _history
 
 
 def webui_dir() -> Path:
-    """Folder holding the bundled web UI (index.html, app.js, styles.css, vendor/)."""
+    """Folder holding the bundled web UI (index.html, app.js, styles.css, vendor/).
+    Frozen: PyInstaller places the datas under sys._MEIPASS (the _internal/ dir),
+    NOT next to bridge.py (which lives in the PYZ archive) — resolve there."""
+    import sys
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", str(Path(sys.executable).parent))
+        return Path(base) / "webui"
     return Path(__file__).parent / "webui"
 
 

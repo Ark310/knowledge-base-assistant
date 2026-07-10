@@ -8,7 +8,7 @@ import sys
 
 # Single source of truth for the app version. Surfaced in the window title and
 # the exe filename (read by ContosoKBChatbot.spec). Bump here only.
-APP_VERSION = "2.9.2"
+APP_VERSION = "3.0.1"
 
 # ── Freeze-aware base paths ───────────────────────────────────────────────────
 if getattr(sys, "frozen", False):
@@ -182,7 +182,7 @@ ANSWER_CACHE_FILE    = STATE_DIR / "answer_cache.json"
 ANSWER_CACHE_MAX     = 2000
 # Cache auto-invalidates when the corpus/embedder version changes. Bump the prefix
 # if the corpus is rebuilt with new chunking.
-INDEX_VERSION        = f"v4:{EMBED_MODEL}"
+INDEX_VERSION        = f"v5:{EMBED_MODEL}"
 
 # ── Cost estimation (USD per million tokens) ──────────────────────────────────
 # Used by llm.base.estimate_cost. Claude Code subprocess doesn't bill per-call,

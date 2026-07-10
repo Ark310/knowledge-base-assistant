@@ -21,9 +21,23 @@ for _png in ("contoso_logo.png", "contoso_logo_lg.png"):
     if _os2.path.isfile(_ap):
         datas.append((_ap, "assets"))
 
+# Bundle the build-free web UI (index.html, app.js, styles.css, vendor/) so the
+# QtWebEngine view can load it at <_MEIPASS>/webui (see bridge.webui_dir()).
+_webui = _os2.path.join("Dev", "kb_chatbot", "webui")
+for _root, _dirs, _files in _os2.walk(_webui):
+    for _f in _files:
+        _full = _os2.path.join(_root, _f)
+        _rel = _os2.path.relpath(_full, _webui)        # e.g. vendor/marked.min.js
+        datas.append((_full, _os2.path.join("webui", _os2.path.dirname(_rel))))
+
 hiddenimports += [
     "torch", "transformers", "tokenizers",
     "sklearn.utils._cython_blas",
+    # QtWebEngine (web UI) is built on Qt Quick/QML — pull the wrappers in and do
+    # NOT exclude QtQml/QtQuick below, or the embedded page never renders.
+    "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineCore", "PySide6.QtWebChannel",
+    "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtQuickWidgets",
+    "PySide6.QtNetwork", "PySide6.QtPositioning",
 ]
 
 # Bundle ONLY the two HF models this app uses so it works offline.
@@ -60,7 +74,8 @@ a = Analysis(
         # unconditionally on line 25). Only torchvision/torchaudio are safe to
         # exclude because they are separate packages, not torch submodules.
         "torchvision", "torchaudio",
-        "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets",
+        # NOTE: QtQml/QtQuick/QtQuickWidgets are REQUIRED by QtWebEngine — do not
+        # exclude them or the embedded web UI renders blank.
         "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DInput",
         "PySide6.Qt3DLogic", "PySide6.Qt3DExtras", "PySide6.Qt3DAnimation",
     ],
