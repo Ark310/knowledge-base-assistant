@@ -144,19 +144,18 @@ ai_pc\reasoning_gateway\07_activate_tuned.ps1
 
 ## Step 7: Eval gate (quality + safety check)
 
-Run eval on the held-out set and unsupported questions to verify the tuned model does not regress:
+Run eval on the held-out set + unsupported questions to confirm the tuned model does not regress. The tuned model must already be served (Step 6) so both `--tuned-model` (default `contoso-reasoning-qwen25-7b`, the served tag) and `--base-model` (default `qwen2.5:7b-instruct`) are reachable through the gateway. Ships with a starter held-out set + unsupported list you can expand:
 
 ```bash
-python -m Dev.kb_chatbot.finetune.eval_compare
+python -m Dev.kb_chatbot.finetune.eval_compare --chroma "%LOCALAPPDATA%\ContosoKBChatbot\chroma" --eval-set Dev/kb_chatbot/finetune/eval_holdout.json --unsupported Dev/kb_chatbot/finetune/unsupported_questions.txt
 ```
 
-**Expected output:** A table comparing tuned vs base vs Claude on accuracy, answer stability, and abstain safety. The gate passes if:
+**Expected output:** the `BASE` and `TUNED` scores (`accuracy` + `abstain_safety`) and a `GATE: PASS/FAIL` verdict. The gate PASSES only if:
 - `tuned accuracy >= base accuracy` AND
 - `tuned abstain_safety >= base abstain_safety`
 
-**If the gate fails:** The tuned model either lost quality or broke abstain safety. Review the scores and decide:
-- If acceptable: manually approve with `--force` (not recommended).
-- If unacceptable: rollback (Step 8) and retrain with different hyperparameters.
+**If PASS:** spot-check ~10-15 tuned-vs-base answers; the tuned model is already the served tag (Step 6 published it), so nothing more to flip.
+**If FAIL:** the tuned model lost quality or broke abstain safety — run Step 8 (rollback) to restore the base, then retrain with different data/hyperparameters. The base is always retained for instant rollback.
 
 ---
 
