@@ -239,3 +239,54 @@ button{font-family:inherit;cursor:pointer;}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
 :focus-visible{outline:2px solid var(--brand);outline-offset:2px;}
+
+/* ── Modals (Settings / Onboarding / Learn) ─────────────────────────────── */
+.overlay{position:fixed;inset:0;z-index:40;display:grid;place-items:center;padding:24px;
+  background:color-mix(in srgb,#0b0f1c 55%,transparent);backdrop-filter:blur(2px);}
+.overlay[hidden]{display:none;}
+.modal{width:min(600px,100%);max-height:calc(100dvh - 48px);display:flex;flex-direction:column;
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
+  box-shadow:var(--shadow-md);overflow:hidden;}
+.modal-head{display:flex;align-items:center;gap:8px;padding:15px 18px;border-bottom:1px solid var(--line);}
+.modal-head h2{margin:0;font-size:16px;font-weight:800;letter-spacing:-.2px;}
+.modal-x{margin-left:auto;font-size:14px;color:var(--ink-faint);}
+.modal-body{padding:16px 18px;overflow-y:auto;display:flex;flex-direction:column;gap:18px;}
+.modal-foot{display:flex;align-items:center;gap:9px;padding:13px 18px;border-top:1px solid var(--line);
+  background:var(--panel-2);}
+.grow{flex:1;}
+
+.fset{display:flex;flex-direction:column;gap:9px;}
+.fset h3{margin:0;font-size:10.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--brand-strong);
+  font-weight:800;}
+.f{display:flex;flex-direction:column;gap:4px;}
+.f>span{font-size:11px;font-weight:600;color:var(--ink-soft);display:flex;align-items:center;gap:8px;}
+.f input[type=text],.f input[type=password],.f textarea{font-family:inherit;font-size:13px;color:var(--ink);
+  background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:8px 10px;width:100%;}
+.f textarea{resize:vertical;line-height:1.5;}
+.f input:focus-visible,.f textarea:focus-visible{outline:2px solid var(--brand);outline-offset:1px;}
+.f input[type=range]{width:100%;accent-color:var(--brand);}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.frow{display:flex;gap:9px;flex-wrap:wrap;}
+.fhint{margin:0;font-size:11.5px;line-height:1.5;color:var(--ink-faint);}
+.fhint code,.fhint b{color:var(--ink-soft);}
+.pwrow{display:flex;gap:8px;}
+.pwrow input{flex:1;}
+.pwstate{font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;}
+.pwstate.on{color:var(--good);} .pwstate.off{color:var(--ink-faint);}
+.modal-links{display:flex;gap:16px;padding-top:2px;border-top:1px dashed var(--line);margin-top:2px;padding-top:14px;}
+.linkbtn{border:none;background:transparent;color:var(--brand);font-weight:600;font-size:12.5px;padding:2px;}
+.linkbtn:hover{color:var(--brand-strong);text-decoration:underline;}
+.savemsg{font-size:12px;color:var(--ink-faint);}
+.savemsg.ok{color:var(--good);} .savemsg.err{color:var(--warn);}
+
+/* onboarding provider rows */
+.ob-row{display:flex;align-items:center;gap:12px;padding:12px 13px;border:1px solid var(--line);
+  border-radius:var(--r);background:var(--panel-2);margin-bottom:9px;}
+.ob-row .ob-main{flex:1;min-width:0;}
+.ob-row .ob-name{font-weight:700;font-size:13.5px;display:flex;align-items:center;gap:8px;}
+.ob-row .ob-status{font-size:11.5px;color:var(--ink-faint);margin-top:2px;}
+.ob-row .ob-acts{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;}
+.ob-row .btn{padding:6px 10px;font-size:12px;}
+.ob-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--ink-faint);}
+.ob-dot.ready{background:var(--good);box-shadow:0 0 0 3px var(--good-wash);}
+.ob-dot.part{background:var(--warn);box-shadow:0 0 0 3px var(--warn-wash);}

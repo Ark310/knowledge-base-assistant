@@ -20,6 +20,10 @@ def webui_dir() -> Path:
     return Path(__file__).parent / "webui"
 
 
+# config.PROVIDERS uses "openai"; the onboarding module speaks "codex" (Node CLI).
+_ONBOARD_ID = {"openai": "codex"}
+
+
 class ChatBridge(QObject):
     # Python -> JS
     answerReady = Signal(str)     # JSON payload (see _answer_payload)
@@ -269,3 +273,154 @@ class ChatBridge(QObject):
             except Exception:
                 pass
         self.turnStopped.emit()
+
+    # ── settings (web modal) ─────────────────────────────────────────────────
+    @Slot(result=str)
+    def get_settings(self) -> str:
+        """Settings for the web modal. SECURITY: never returns the gateway
+        password — only whether one is stored (has_gateway_password)."""
+        st = self._settings()
+        user = (getattr(st, "reasoning_username", "") or "").strip()
+        has_pw = False
+        if user:
+            try:
+                from Dev.kb_chatbot.llm import local_creds
+                has_pw = bool(local_creds.get_password(user))
+            except Exception:
+                has_pw = False
+        return json.dumps({
+            "library_path": str(getattr(st, "library_path", "")),
+            "default_provider": getattr(st, "default_provider", config.DEFAULT_PROVIDER),
+            "default_model": getattr(st, "default_model", config.DEFAULT_MODEL),
+            "confidence_floor": float(getattr(st, "confidence_floor", config.CONFIDENCE_FLOOR)),
+            "reasoning_base_url": getattr(st, "reasoning_base_url", "") or "",
+            "reasoning_username": user,
+            "has_gateway_password": has_pw,
+        })
+
+    @Slot(str, result=str)
+    def save_settings(self, payload_json: str) -> str:
+        try:
+            data = json.loads(payload_json or "{}")
+        except Exception:
+            return json.dumps({"ok": False, "error": "bad payload"})
+        st = self._settings()
+        if data.get("library_path"):
+            st.library_path = Path(str(data["library_path"]))
+        if data.get("default_provider") in config.PROVIDERS:
+            st.default_provider = data["default_provider"]
+        if data.get("default_model"):
+            st.default_model = data["default_model"]
+            st.model_explicitly_set = True
+        if "confidence_floor" in data:
+            try:
+                st.confidence_floor = float(data["confidence_floor"])
+            except (TypeError, ValueError):
+                pass
+        if "reasoning_base_url" in data:
+            st.reasoning_base_url = str(data.get("reasoning_base_url") or "").strip()
+        if "reasoning_username" in data:
+            st.reasoning_username = str(data.get("reasoning_username") or "").strip()
+        # Keep provider/model consistent (mirror settings.load_settings guard).
+        if config.provider_of_model(st.default_model) != st.default_provider:
+            st.default_model = config.default_model_for(st.default_provider)
+        self._save(st)
+        return json.dumps({"ok": True})
+
+    @Slot(str, result=str)
+    def set_gateway_password(self, password: str) -> str:
+        """Store the on-prem gateway password in the OS keyring only — never on
+        disk, in settings.json, or in logs (org policy + local_creds contract)."""
+        st = self._settings()
+        user = (getattr(st, "reasoning_username", "") or "").strip()
+        if not user:
+            return json.dumps({"ok": False, "error": "Set the gateway username first."})
+        if not password:
+            return json.dumps({"ok": False, "error": "Password is empty."})
+        try:
+            from Dev.kb_chatbot.llm import local_creds
+            local_creds.set_password(user, password)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": type(exc).__name__})
+        return json.dumps({"ok": True})
+
+    # ── onboarding wizard (Claude / Codex install+login, Local gateway) ───────
+    @Slot(str, result=str)
+    def onboarding_check(self, provider: str) -> str:
+        from Dev.kb_chatbot.onboarding import providers as ob
+        r = ob.check(_ONBOARD_ID.get(provider, provider), self._settings())
+        return json.dumps({"provider": provider, "installed": r.installed,
+                           "logged_in": r.logged_in, "ready": r.ready,
+                           "needs": list(r.needs)})
+
+    @Slot(str, result=str)
+    def onboarding_install(self, provider: str) -> str:
+        from Dev.kb_chatbot.onboarding import providers as ob
+        cmds = ob.install_commands(_ONBOARD_ID.get(provider, provider))
+        for argv in cmds:
+            ob.run_visible(argv)
+        return json.dumps({"ok": True, "launched": len(cmds)})
+
+    @Slot(str, result=str)
+    def onboarding_login(self, provider: str) -> str:
+        from Dev.kb_chatbot.onboarding import providers as ob
+        cmd = ob.login_command(_ONBOARD_ID.get(provider, provider))
+        if not cmd:
+            return json.dumps({"ok": False, "error": "This provider has no login step."})
+        ob.run_visible(cmd)
+        return json.dumps({"ok": True})
+
+    # ── native Qt dialogs still owned by the window ──────────────────────────
+    @Slot()
+    def open_reindex(self) -> None:
+        w = self._window
+        if w is not None and hasattr(w, "_reindex"):
+            try:
+                w._reindex()
+            except Exception:
+                pass
+
+    @Slot()
+    def open_usage(self) -> None:
+        w = self._window
+        if w is None:
+            return
+        try:
+            from Dev.kb_chatbot.gui import TokenUsageDialog
+            TokenUsageDialog(w, getattr(w, "_session_start_ts", "")).exec()
+        except Exception:
+            pass
+
+    # ── Learn Mode (password-gated KB contributions) ─────────────────────────
+    @Slot(str, result=str)
+    def learn_unlock(self, password: str) -> str:
+        from Dev.kb_chatbot.settings import check_learn_password
+        st = self._settings()
+        ok = check_learn_password(password, getattr(st, "learn_mode_hash", "") or "")
+        return json.dumps({"ok": bool(ok)})
+
+    @Slot(str, result=str)
+    def learn_submit(self, payload_json: str) -> str:
+        try:
+            data = json.loads(payload_json or "{}")
+        except Exception:
+            return json.dumps({"ok": False, "error": "bad payload"})
+        body = (data.get("body_md") or "").strip()
+        title = (data.get("title") or "").strip()
+        if not title or not body:
+            return json.dumps({"ok": False, "error": "Title and body are both required."})
+        from Dev.kb_chatbot.chat.learn_writer import write_learned_entry
+        st = self._settings()
+        try:
+            write_learned_entry(
+                library_path=Path(str(getattr(st, "library_path", "."))),
+                product=(data.get("product") or "other"),
+                topic=(data.get("topic") or "verified"),
+                title=title,
+                body_md=body,
+                url=(data.get("url") or ""),
+                original_question=(data.get("original_question") or ""),
+            )
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": type(exc).__name__})
+        return json.dumps({"ok": True})

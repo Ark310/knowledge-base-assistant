@@ -33,6 +33,9 @@
           <div class="select"><select id="model"></select></div>
         </div>
         <button class="btn primary" id="newtop" title="Start a new chat">+ New chat</button>
+        <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Open settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
         <button class="icon-btn src-toggle on" id="srcToggle" title="Show or hide sources" aria-label="Toggle sources panel">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
         </button>
@@ -74,6 +77,122 @@
           <dl class="kv" id="hoodkv"></dl>
         </details>
       </aside>
+    </div>
+  </div>
+
+  <!-- ── Settings modal ─────────────────────────────────────────────────── -->
+  <div class="overlay" id="settingsModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+      <div class="modal-head">
+        <h2 id="setTitle">Settings</h2>
+        <button class="icon-btn modal-x" data-close="settingsModal" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <section class="fset">
+          <h3>Knowledge base</h3>
+          <label class="f"><span>KB source folder</span>
+            <input id="setLib" type="text" placeholder="…\Knowledge Base\library"/></label>
+          <p class="fhint">Answers use the shipped index until you Reindex. Reindex reads from this folder (its <code>kb/</code> and <code>tickets/</code>).</p>
+          <div class="frow">
+            <button class="btn" id="btnReindex" type="button">Reindex…</button>
+            <button class="btn" id="btnUsage" type="button">Token usage…</button>
+          </div>
+        </section>
+        <section class="fset">
+          <h3>Reasoning</h3>
+          <div class="fgrid">
+            <label class="f"><span>Default provider</span>
+              <div class="select"><select id="setProvider"></select></div></label>
+            <label class="f"><span>Default model</span>
+              <div class="select"><select id="setModel"></select></div></label>
+          </div>
+          <label class="f"><span>Confidence floor <em id="setConfVal"></em></span>
+            <input id="setConf" type="range" min="0" max="0.9" step="0.05"/></label>
+          <p class="fhint">How sure the retriever must be before answering. Higher = abstains more often.</p>
+        </section>
+        <section class="fset">
+          <h3>On-prem model — AI PC gateway</h3>
+          <div class="fgrid">
+            <label class="f"><span>Gateway URL</span>
+              <input id="setUrl" type="text" placeholder="http://AI-PC:11500/v1"/></label>
+            <label class="f"><span>Username</span>
+              <input id="setUser" type="text" placeholder="your gateway user"/></label>
+          </div>
+          <label class="f"><span>Password <em id="setPwState" class="pwstate"></em></span>
+            <span class="pwrow"><input id="setPw" type="password" placeholder="enter to set / change"/>
+            <button class="btn" id="setPwBtn" type="button">Save password</button></span></label>
+          <p class="fhint">The password is stored in your OS keyring only — never in settings or logs. Save the URL &amp; username with <b>Save</b> below; save the password with its own button.</p>
+        </section>
+        <div class="modal-links">
+          <button class="linkbtn" id="btnWizard" type="button">Run setup wizard</button>
+          <button class="linkbtn" id="btnLearn" type="button">Learn mode</button>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span class="savemsg" id="setMsg"></span>
+        <span class="grow"></span>
+        <button class="btn" data-close="settingsModal" type="button">Cancel</button>
+        <button class="btn primary" id="setSave" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Onboarding wizard ──────────────────────────────────────────────── -->
+  <div class="overlay" id="onboardModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="obTitle">
+      <div class="modal-head">
+        <h2 id="obTitle">Set up reasoning</h2>
+        <button class="icon-btn modal-x" data-close="onboardModal" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="fhint">KB Guru can answer using Anthropic Claude, ChatGPT (Codex), or your on-prem model. Set up whichever you'll use — you can switch anytime from the top bar.</p>
+        <div id="obList"></div>
+      </div>
+      <div class="modal-foot">
+        <span class="grow"></span>
+        <button class="btn" data-close="onboardModal" type="button">Recheck on close</button>
+        <button class="btn primary" data-close="onboardModal" type="button">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Learn mode ─────────────────────────────────────────────────────── -->
+  <div class="overlay" id="learnModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="lnTitle2">
+      <div class="modal-head">
+        <h2 id="lnTitle2">Learn mode</h2>
+        <button class="icon-btn modal-x" data-close="learnModal" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="learnLocked">
+          <p class="fhint">Learn mode lets you add verified answers to the knowledge base. Enter the Learn-mode password to continue.</p>
+          <label class="f"><span>Password</span>
+            <span class="pwrow"><input id="learnPw" type="password" placeholder="Learn-mode password"/>
+            <button class="btn primary" id="learnUnlock" type="button">Unlock</button></span></label>
+          <p class="savemsg" id="learnErr"></p>
+        </div>
+        <div id="learnForm" hidden>
+          <label class="f"><span>Title</span>
+            <input id="lnTitle" type="text" placeholder="e.g. How to reverse a posted deal"/></label>
+          <div class="fgrid">
+            <label class="f"><span>Product</span>
+              <div class="select"><select id="lnProduct"></select></div></label>
+            <label class="f"><span>Topic</span>
+              <input id="lnTopic" type="text" placeholder="e.g. Dealing, Finance"/></label>
+          </div>
+          <label class="f"><span>Reference URL (optional)</span>
+            <input id="lnUrl" type="text" placeholder="https://help.contoso.example/display/…"/></label>
+          <label class="f"><span>Answer / article body (markdown)</span>
+            <textarea id="lnBody" rows="7" placeholder="The verified answer…"></textarea></label>
+          <p class="fhint">Saved to the Learn KB. Run <b>Reindex</b> to make it searchable.</p>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span class="savemsg" id="learnMsg"></span>
+        <span class="grow"></span>
+        <button class="btn" data-close="learnModal" type="button">Close</button>
+        <button class="btn primary" id="learnSave" type="button" hidden>Save to KB</button>
+      </div>
     </div>
   </div>
 

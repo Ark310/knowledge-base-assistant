@@ -42,7 +42,30 @@
         b.chatsChanged.emit();
         b.turnProgress.emit("searching tickets & KB");
         b._t = setTimeout(function () { b._t = null; b.answerReady.emit(JSON.stringify(mockAnswer(text))); }, 1600);
-      }
+      },
+      // Task 6 slots (mock)
+      _settings: { library_path: "C:\\Users\\you\\Knowledge Base\\library", default_provider: "local",
+        default_model: "contoso-reasoning-qwen25-7b", confidence_floor: 0.35,
+        reasoning_base_url: "", reasoning_username: "", has_gateway_password: false },
+      get_settings: function () { return Promise.resolve(JSON.stringify(b._settings)); },
+      save_settings: function (j) { try { var d = JSON.parse(j); for (var k in d) b._settings[k] = d[k]; } catch (e) {} return Promise.resolve(JSON.stringify({ ok: true })); },
+      set_gateway_password: function (pw) { if (!b._settings.reasoning_username) return Promise.resolve(JSON.stringify({ ok: false, error: "Set the gateway username first." })); b._settings.has_gateway_password = !!pw; return Promise.resolve(JSON.stringify({ ok: !!pw, error: pw ? "" : "Password is empty." })); },
+      onboarding_check: function (p) {
+        var m = { claude: { installed: true, logged_in: false, ready: false, needs: ["login"] },
+          openai: { installed: false, logged_in: false, ready: false, needs: ["install"] },
+          local: { installed: true, logged_in: b._settings.has_gateway_password && !!b._settings.reasoning_base_url,
+            ready: b._settings.has_gateway_password && !!b._settings.reasoning_base_url && !!b._settings.reasoning_username,
+            needs: [] } };
+        var r = m[p] || { installed: false, logged_in: false, ready: false, needs: [] };
+        if (p === "local" && !r.ready) r.needs = ["gateway-url-and-username", "credentials"];
+        r.provider = p; return Promise.resolve(JSON.stringify(r));
+      },
+      onboarding_install: function () { return Promise.resolve(JSON.stringify({ ok: true, launched: 1 })); },
+      onboarding_login: function () { return Promise.resolve(JSON.stringify({ ok: true })); },
+      open_reindex: function () { return Promise.resolve(); },
+      open_usage: function () { return Promise.resolve(); },
+      learn_unlock: function (pw) { return Promise.resolve(JSON.stringify({ ok: pw === "YOUR_LEARN_PASSWORD_HERE" })); },
+      learn_submit: function () { return Promise.resolve(JSON.stringify({ ok: true })); }
     };
     return b;
   }
@@ -82,6 +105,7 @@
       var o = document.createElement("option"); o.value = slug; o.textContent = cfg.products[slug]; product.appendChild(o);
     });
     els.modelsByProvider = cfg.models_by_provider;
+    els.cfg = cfg;
     fillModels(cfg.default_provider, cfg.default_model);
     setDot(cfg.default_provider);
   }
@@ -310,6 +334,162 @@
   }
   function onProgress(stage) { if (els.thinkingEl) els.thinkingEl.querySelector(".thinking").lastChild.textContent = " " + stage + "…"; }
 
+  // ---------------- modals: settings / onboarding / learn ----------------
+  function openModal(id) { var o = $(id); if (o) o.hidden = false; }
+  function closeModal(id) { var o = $(id); if (o) o.hidden = true; }
+  function fillSelect(sel, map, selected) {
+    sel.innerHTML = "";
+    Object.keys(map || {}).forEach(function (label) {
+      var o = document.createElement("option"); o.value = map[label]; o.textContent = label;
+      if (map[label] === selected) o.selected = true; sel.appendChild(o);
+    });
+  }
+  function setMsg(id, text, kind) { var m = $(id); m.textContent = text || ""; m.className = "savemsg" + (kind ? " " + kind : ""); }
+
+  function openSettings() {
+    B.get_settings().then(function (j) {
+      var s = JSON.parse(j || "{}"), cfg = els.cfg || {};
+      var ps = $("setProvider"); ps.innerHTML = "";
+      Object.keys(cfg.provider_display || {}).forEach(function (pid) {
+        var o = document.createElement("option"); o.value = pid; o.textContent = cfg.provider_display[pid];
+        if (pid === s.default_provider) o.selected = true; ps.appendChild(o);
+      });
+      fillSelect($("setModel"), (cfg.models_by_provider || {})[s.default_provider] || {}, s.default_model);
+      ps.onchange = function () { fillSelect($("setModel"), (cfg.models_by_provider || {})[ps.value] || {}, ""); };
+      $("setLib").value = s.library_path || "";
+      $("setConf").value = s.confidence_floor != null ? s.confidence_floor : 0.35;
+      $("setConfVal").textContent = Number($("setConf").value).toFixed(2);
+      $("setUrl").value = s.reasoning_base_url || "";
+      $("setUser").value = s.reasoning_username || "";
+      $("setPw").value = "";
+      setPwState(s.has_gateway_password);
+      setMsg("setMsg", "");
+      openModal("settingsModal");
+    });
+  }
+  function setPwState(has) {
+    var el = $("setPwState");
+    el.textContent = has ? "• a password is stored" : "• no password set";
+    el.className = "pwstate " + (has ? "on" : "off");
+  }
+  function saveSettings() {
+    var payload = {
+      library_path: $("setLib").value.trim(),
+      default_provider: $("setProvider").value,
+      default_model: $("setModel").value,
+      confidence_floor: Number($("setConf").value),
+      reasoning_base_url: $("setUrl").value.trim(),
+      reasoning_username: $("setUser").value.trim()
+    };
+    B.save_settings(JSON.stringify(payload)).then(function (j) {
+      var r = JSON.parse(j || "{}");
+      if (r.ok) {
+        setMsg("setMsg", "Saved. Reindex if you changed the KB folder.", "ok");
+        B.config_json().then(function (cj) { renderConfig(JSON.parse(cj)); });
+      } else { setMsg("setMsg", r.error || "Save failed.", "err"); }
+    });
+  }
+  function saveGatewayPw() {
+    var pw = $("setPw").value;
+    if (!pw) { setMsg("setMsg", "Enter a password first.", "err"); return; }
+    B.set_gateway_password(pw).then(function (j) {
+      var r = JSON.parse(j || "{}");
+      if (r.ok) { $("setPw").value = ""; setPwState(true); setMsg("setMsg", "Password saved to your OS keyring.", "ok"); }
+      else { setMsg("setMsg", r.error || "Could not save password.", "err"); }
+    });
+  }
+
+  var OB_PROVIDERS = [["claude", "Claude (Anthropic)"], ["openai", "ChatGPT (Codex)"], ["local", "On-prem model (AI PC)"]];
+  function openOnboarding() {
+    var box = $("obList"); box.innerHTML = "";
+    OB_PROVIDERS.forEach(function (pv) {
+      var row = document.createElement("div"); row.className = "ob-row";
+      row.innerHTML = "<div class='ob-main'><div class='ob-name'><span class='ob-dot' data-dot></span><span class='ob-lbl'></span></div>"
+        + "<div class='ob-status'>Checking…</div></div><div class='ob-acts'></div>";
+      row.querySelector(".ob-lbl").textContent = pv[1];
+      box.appendChild(row);
+      refreshObRow(pv[0], row);
+    });
+    openModal("onboardModal");
+  }
+  function refreshObRow(pid, row) {
+    B.onboarding_check(pid).then(function (j) {
+      var r = JSON.parse(j || "{}");
+      row.querySelector("[data-dot]").className = "ob-dot " + (r.ready ? "ready" : ((r.installed || r.logged_in) ? "part" : ""));
+      var st = row.querySelector(".ob-status"), acts = row.querySelector(".ob-acts");
+      acts.innerHTML = "";
+      if (r.ready) { st.textContent = "Ready to use."; acts.appendChild(mkBtn("Re-check", function () { refreshObRow(pid, row); })); return; }
+      var needs = r.needs || [];
+      if (pid === "local") {
+        st.textContent = "Set the gateway URL, username & password in Settings.";
+        acts.appendChild(mkBtn("Open Settings", function () { closeModal("onboardModal"); openSettings(); }, true));
+      } else if (needs.indexOf("install") >= 0) {
+        st.textContent = "Not installed.";
+        acts.appendChild(mkBtn("Install", function () { B.onboarding_install(pid); st.textContent = "Installer launched in a new window — re-check when it finishes."; }, true));
+      } else if (needs.indexOf("login") >= 0) {
+        st.textContent = "Installed — needs sign-in.";
+        acts.appendChild(mkBtn("Log in", function () { B.onboarding_login(pid); st.textContent = "Sign-in opened in a new window — re-check when done."; }, true));
+      } else { st.textContent = "Not ready."; }
+      acts.appendChild(mkBtn("Re-check", function () { refreshObRow(pid, row); }));
+    });
+  }
+  function mkBtn(label, fn, primary) {
+    var b = document.createElement("button"); b.className = "btn" + (primary ? " primary" : "");
+    b.type = "button"; b.textContent = label; b.addEventListener("click", fn); return b;
+  }
+
+  function openLearn() {
+    $("learnLocked").hidden = false; $("learnForm").hidden = true; $("learnSave").hidden = true;
+    $("learnPw").value = ""; setMsg("learnErr", ""); setMsg("learnMsg", "");
+    openModal("learnModal");
+  }
+  function learnUnlock() {
+    B.learn_unlock($("learnPw").value).then(function (j) {
+      var r = JSON.parse(j || "{}");
+      if (!r.ok) { setMsg("learnErr", "Incorrect password.", "err"); return; }
+      $("learnLocked").hidden = true; $("learnForm").hidden = false; $("learnSave").hidden = false;
+      var cfg = els.cfg || {}, sel = $("lnProduct"); sel.innerHTML = "";
+      Object.keys(cfg.products || { other: "Other" }).forEach(function (slug) {
+        var o = document.createElement("option"); o.value = slug; o.textContent = cfg.products[slug]; sel.appendChild(o);
+      });
+    });
+  }
+  function learnSave() {
+    var payload = {
+      title: $("lnTitle").value.trim(), product: $("lnProduct").value,
+      topic: $("lnTopic").value.trim() || "verified", url: $("lnUrl").value.trim(),
+      body_md: $("lnBody").value.trim()
+    };
+    B.learn_submit(JSON.stringify(payload)).then(function (j) {
+      var r = JSON.parse(j || "{}");
+      if (r.ok) {
+        setMsg("learnMsg", "Saved to Learn KB. Run Reindex to make it searchable.", "ok");
+        $("lnTitle").value = ""; $("lnBody").value = ""; $("lnUrl").value = ""; $("lnTopic").value = "";
+      } else { setMsg("learnMsg", r.error || "Save failed.", "err"); }
+    });
+  }
+  function wireModals() {
+    document.querySelectorAll("[data-close]").forEach(function (b) {
+      b.addEventListener("click", function () { closeModal(b.getAttribute("data-close")); });
+    });
+    document.querySelectorAll(".overlay").forEach(function (o) {
+      o.addEventListener("click", function (e) { if (e.target === o) o.hidden = true; });
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") document.querySelectorAll(".overlay:not([hidden])").forEach(function (o) { o.hidden = true; });
+    });
+    $("settingsBtn").addEventListener("click", openSettings);
+    $("setSave").addEventListener("click", saveSettings);
+    $("setPwBtn").addEventListener("click", saveGatewayPw);
+    $("setConf").addEventListener("input", function () { $("setConfVal").textContent = Number($("setConf").value).toFixed(2); });
+    $("btnReindex").addEventListener("click", function () { closeModal("settingsModal"); if (B.open_reindex) B.open_reindex(); });
+    $("btnUsage").addEventListener("click", function () { if (B.open_usage) B.open_usage(); });
+    $("btnWizard").addEventListener("click", function () { closeModal("settingsModal"); openOnboarding(); });
+    $("btnLearn").addEventListener("click", function () { closeModal("settingsModal"); openLearn(); });
+    $("learnUnlock").addEventListener("click", learnUnlock);
+    $("learnSave").addEventListener("click", learnSave);
+  }
+
   // ---------------- boot ----------------
   function boot(bridge) {
     B = bridge; els.activeChat = null;
@@ -319,9 +499,19 @@
     if (B.turnStopped && B.turnStopped.connect) B.turnStopped.connect(onStopped);
     if (B.chatsChanged && B.chatsChanged.connect) B.chatsChanged.connect(refreshChats);
 
-    B.config_json().then(function (j) { renderConfig(JSON.parse(j)); });
+    B.config_json().then(function (j) {
+      var cfg = JSON.parse(j); renderConfig(cfg);
+      // First-run nudge: if the default provider isn't ready, open the setup wizard once.
+      if (B.onboarding_check) {
+        B.onboarding_check(cfg.default_provider).then(function (r) {
+          var st = JSON.parse(r || "{}");
+          if (!st.ready) openOnboarding();
+        });
+      }
+    });
     refreshChats();
     emptyState();
+    wireModals();
 
     // rails
     var body = $("body");
