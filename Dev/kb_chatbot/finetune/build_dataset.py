@@ -58,3 +58,47 @@ def abstain_examples(retriever, questions: list[str]) -> Iterator[dict]:
         ctx = retriever.retrieve(q, Filters(), top_k_rerank=None).chunks
         # Teach refusal even when a few weak chunks came back: target is the refusal.
         yield make_example(ctx, q, ABSTAIN_TEXT)
+
+
+# --- append to Dev/kb_chatbot/finetune/build_dataset.py ---
+import random
+
+def assemble(ticket_recs, abstain_recs, distill_recs, holdout: int, rng_seed: int = 42):
+    records = list(ticket_recs) + list(abstain_recs) + list(distill_recs)
+    assert_clean(records)                      # HARD GATE — raises LeakError on any PII/secret
+    rng = random.Random(rng_seed)
+    rng.shuffle(records)
+    eval_recs = records[:holdout]
+    train_recs = records[holdout:]
+    return train_recs, eval_recs
+
+def _write(path: Path, recs: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for r in recs:
+            f.write(dumps(r) + "\n")
+
+def main(argv=None) -> None:
+    import argparse
+    from Dev.kb_chatbot import config
+    from Dev.kb_chatbot.retriever import Retriever
+    ap = argparse.ArgumentParser(description="Build the fine-tuning dataset (redaction-gated).")
+    ap.add_argument("--tickets", default=str(config.TICKETS_DEFAULT))
+    ap.add_argument("--chroma", default=str(config.CHROMA_DIR))
+    ap.add_argument("--abstain-questions", default="", help="optional newline file of out-of-scope questions")
+    args = ap.parse_args(argv)
+
+    retriever = Retriever(Path(args.chroma), confidence_floor=0.0)
+    tickets = list(ticket_examples(retriever, Path(args.tickets), fc.MAX_TICKET_EXAMPLES))
+    ab_qs = (Path(args.abstain_questions).read_text(encoding="utf-8").splitlines()
+             if args.abstain_questions else [])[:fc.ABSTAIN_EXAMPLES]
+    abstain = list(abstain_examples(retriever, ab_qs))
+    distill = [loads(l) for l in fc.DISTILL_JSONL.read_text(encoding="utf-8").splitlines()] \
+        if fc.DISTILL_JSONL.exists() else []
+    train, ev = assemble(tickets, abstain, distill, holdout=fc.EVAL_HOLDOUT)
+    _write(fc.TRAIN_JSONL, train)
+    _write(fc.EVAL_JSONL, ev)
+    print(f"train={len(train)} eval={len(ev)}  ({len(tickets)} ticket, {len(abstain)} abstain, {len(distill)} distilled)")
+
+if __name__ == "__main__":
+    main()
