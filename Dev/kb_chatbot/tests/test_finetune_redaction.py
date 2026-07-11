@@ -21,6 +21,21 @@ def test_assert_clean_passes_when_clean():
     recs = [{"messages":[{"role":"assistant","content":"do Y. Sources: [Ticket #1](u)"}]}]
     assert_clean(recs)  # no raise
 
+
+def test_scrub_neutralizes_pii():
+    from Dev.kb_chatbot.finetune.redaction import scrub
+    out = scrub("mail bob@acme.com or call 416-555-0134")
+    assert "bob@acme.com" not in out
+    assert "416-555-0134" not in out
+    assert "[redacted]" in out
+
+
+def test_scrub_records_cleans_message_content():
+    from Dev.kb_chatbot.finetune.redaction import scrub_records, scan_records
+    recs = [{"messages":[{"role":"user","content":"reach jane@acme.com"}]}]
+    scrub_records(recs)
+    assert scan_records(recs) == []  # nothing PII-shaped remains after scrub
+
 def test_password_with_a_real_value_is_flagged():
     assert "password" in find_leaks("password: hunter2")
 

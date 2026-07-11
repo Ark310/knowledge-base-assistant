@@ -1,8 +1,7 @@
-import sys, pytest
+import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from Dev.kb_chatbot.finetune.build_dataset import assemble
-from Dev.kb_chatbot.finetune.redaction import LeakError
 
 def _rec(ans):
     return {"messages":[{"role":"system","content":"s"},
@@ -16,6 +15,7 @@ def test_assemble_splits_holdout_and_is_deterministic():
     assert len(ev1) == 5 and len(tr1) == 15
     assert [m["messages"][2]["content"] for m in ev1] == [m["messages"][2]["content"] for m in ev2]
 
-def test_assemble_enforces_redaction_gate():
-    with pytest.raises(LeakError):
-        assemble([_rec("mail me at bob@acme.com")], [], [], holdout=0)
+def test_assemble_scrubs_pii_from_output():
+    train, ev = assemble([_rec("mail me at bob@acme.com")], [], [], holdout=0)
+    out = train[0]["messages"][2]["content"]
+    assert "bob@acme.com" not in out and "[redacted]" in out

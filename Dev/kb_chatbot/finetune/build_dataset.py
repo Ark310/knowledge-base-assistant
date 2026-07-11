@@ -9,7 +9,7 @@ from typing import Iterator
 
 from Dev.kb_chatbot.finetune import finetune_config as fc
 from Dev.kb_chatbot.finetune.example_format import make_example, dumps, loads
-from Dev.kb_chatbot.finetune.redaction import assert_clean
+from Dev.kb_chatbot.finetune.redaction import assert_clean, scrub_records
 import logging
 from Dev.kb_chatbot.ticket_ingest import _known_terms, _problem_text, _resolution_text
 log = logging.getLogger("kb_chatbot.finetune.build_dataset")
@@ -64,7 +64,8 @@ import random
 
 def assemble(ticket_recs, abstain_recs, distill_recs, holdout: int, rng_seed: int = 42):
     records = list(ticket_recs) + list(abstain_recs) + list(distill_recs)
-    assert_clean(records)                      # HARD GATE — raises LeakError on any PII/secret
+    scrub_records(records)                      # neutralize benign business emails / any PII in context
+    assert_clean(records)                       # backstop: raises if anything PII-shaped survived
     rng = random.Random(rng_seed)
     rng.shuffle(records)
     eval_recs = records[:holdout]
