@@ -4,6 +4,7 @@ in the dedicated GPU window. `--dry-run` trains 2 steps on <=16 examples to
 validate the path + VRAM before the full run."""
 from __future__ import annotations
 import argparse
+import time
 from Dev.kb_chatbot.finetune import finetune_config as fc
 
 def build_lora_config():
@@ -29,7 +30,7 @@ def main(argv=None) -> None:
     from datasets import load_dataset
     from transformers import (AutoTokenizer, AutoModelForCausalLM,
                               BitsAndBytesConfig, Trainer, TrainingArguments,
-                              DataCollatorForSeq2Seq)
+                              DataCollatorForSeq2Seq, TrainerCallback)
     from peft import get_peft_model, prepare_model_for_kbit_training
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -56,10 +57,33 @@ def main(argv=None) -> None:
         output_dir=str(fc.ADAPTER_DIR), per_device_train_batch_size=fc.MICRO_BATCH,
         gradient_accumulation_steps=fc.GRAD_ACCUM, num_train_epochs=(1 if args.dry_run else fc.EPOCHS),
         max_steps=(2 if args.dry_run else -1), learning_rate=fc.LR, lr_scheduler_type="cosine",
-        warmup_ratio=0.03, bf16=True, gradient_checkpointing=True, logging_steps=10,
+        warmup_ratio=0.03, bf16=True, gradient_checkpointing=True, logging_steps=5,
         save_strategy="epoch", report_to=[])
+
+    # Live progress so a long run visibly advances (step/total, %, loss, elapsed, ETA).
+    class _Progress(TrainerCallback):
+        def on_train_begin(self, a, state, control, **kw):
+            self._t0 = time.time()
+            print(f"[train] start: {state.max_steps} optimizer steps "
+                  f"(epochs={a.num_train_epochs}, grad-accum={a.gradient_accumulation_steps})", flush=True)
+        def on_step_end(self, a, state, control, **kw):
+            step, total = state.global_step, max(1, state.max_steps)
+            if step != 1 and step % 5 != 0 and step != total:
+                return
+            el = time.time() - self._t0
+            frac = step / total
+            eta = (el / frac - el) if frac > 0 else 0.0
+            loss = next((h["loss"] for h in reversed(state.log_history) if "loss" in h), None)
+            print(f"[train] step {step}/{total} ({frac*100:4.0f}%)  "
+                  f"loss={loss if loss is not None else '--'}  "
+                  f"elapsed={el/60:5.1f}m  eta={eta/60:5.1f}m", flush=True)
+        def on_train_end(self, a, state, control, **kw):
+            print(f"[train] done: {state.global_step} steps in "
+                  f"{(time.time()-self._t0)/60:.1f}m", flush=True)
+
     collator = DataCollatorForSeq2Seq(tok, label_pad_token_id=-100, padding=True)
-    Trainer(model=model, args=targs, train_dataset=ds, data_collator=collator).train()
+    Trainer(model=model, args=targs, train_dataset=ds, data_collator=collator,
+            callbacks=[_Progress()]).train()
     model.save_pretrained(str(fc.ADAPTER_DIR)); tok.save_pretrained(str(fc.ADAPTER_DIR))
     print(f"adapter saved -> {fc.ADAPTER_DIR}")
 
