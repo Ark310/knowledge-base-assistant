@@ -3,6 +3,7 @@ abstain/safety examples, and (merged in main) the distilled style slice. Every
 example is redaction-gated before it is written."""
 from __future__ import annotations
 import json
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -32,9 +33,15 @@ def _iter_ticket_json(tickets_dir: Path) -> Iterator[dict]:
 
 def ticket_examples(retriever, tickets_dir: Path, limit: int) -> Iterator[dict]:
     n = 0
+    scanned = 0
+    t0 = time.time()
     for data, fp in _iter_ticket_json(Path(tickets_dir)):
         if n >= limit:
             break
+        scanned += 1
+        if scanned % 500 == 0:   # liveness: many tickets get skipped (no resolution)
+            print(f"[dataset]   scanned {scanned} tickets -> {n} examples "
+                  f"({(time.time() - t0) / 60:.1f}m)", flush=True)
         known = _known_terms(data)
         problem = _problem_text(data, known)
         resolution = _resolution_text(data, known)
@@ -53,7 +60,6 @@ def abstain_examples(retriever, questions: list[str]) -> Iterator[dict]:
         yield make_example(ctx, q, ABSTAIN_TEXT)
 
 
-# --- append to Dev/kb_chatbot/finetune/build_dataset.py ---
 import random
 
 def assemble(ticket_recs, abstain_recs, distill_recs, holdout: int, rng_seed: int = 42):
@@ -81,17 +87,30 @@ def main(argv=None) -> None:
     ap.add_argument("--abstain-questions", default="", help="optional newline file of out-of-scope questions")
     args = ap.parse_args(argv)
 
+    print(f"[dataset] loading retriever from {args.chroma} ...", flush=True)
     retriever = Retriever(Path(args.chroma), confidence_floor=0.0)
+    print(f"[dataset] building ticket examples from {args.tickets} "
+          f"(cap {fc.MAX_TICKET_EXAMPLES}) ...", flush=True)
     tickets = list(ticket_examples(retriever, Path(args.tickets), fc.MAX_TICKET_EXAMPLES))
+    print(f"[dataset] ticket examples: {len(tickets)}", flush=True)
+
     ab_qs = (Path(args.abstain_questions).read_text(encoding="utf-8").splitlines()
              if args.abstain_questions else [])[:fc.ABSTAIN_EXAMPLES]
     abstain = list(abstain_examples(retriever, ab_qs))
+    print(f"[dataset] abstain examples: {len(abstain)}", flush=True)
+
     distill = [loads(l) for l in fc.DISTILL_JSONL.read_text(encoding="utf-8").splitlines()] \
         if fc.DISTILL_JSONL.exists() else []
+    print(f"[dataset] distilled examples loaded: {len(distill)}", flush=True)
+
+    print("[dataset] running PII/secret redaction gate on all records ...", flush=True)
     train, ev = assemble(tickets, abstain, distill, holdout=fc.EVAL_HOLDOUT)
+    print("[dataset] redaction gate PASSED.", flush=True)
     _write(fc.TRAIN_JSONL, train)
     _write(fc.EVAL_JSONL, ev)
-    print(f"train={len(train)} eval={len(ev)}  ({len(tickets)} ticket, {len(abstain)} abstain, {len(distill)} distilled)")
+    print(f"[dataset] DONE  train={len(train)} eval={len(ev)}  "
+          f"({len(tickets)} ticket, {len(abstain)} abstain, {len(distill)} distilled)", flush=True)
+    print(f"[dataset] wrote {fc.TRAIN_JSONL}", flush=True)
 
 if __name__ == "__main__":
     main()
