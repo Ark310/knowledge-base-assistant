@@ -15,26 +15,25 @@ def build_lora_config():
         target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"],
     )
 
-def _ids(rendered) -> list:
-    """apply_chat_template(tokenize=True) returns a plain list on older transformers
-    but a dict/BatchEncoding ({input_ids, attention_mask}) on newer ones, and can nest
-    one level (list-of-lists) for a single conversation. Normalize to a flat id list."""
-    if isinstance(rendered, dict):
-        rendered = rendered["input_ids"]
-    if rendered and isinstance(rendered[0], list):
-        rendered = rendered[0]
-    return list(rendered)
+def _encode(tokenizer, msgs, add_generation_prompt: bool) -> list:
+    """Render the chat template to TEXT (tokenize=False), then tokenize explicitly to
+    a flat list of int ids. This avoids apply_chat_template(tokenize=True), whose return
+    shape differs across transformers versions (list vs dict vs -- here -- a plain string,
+    which list() turned into single-character strings and broke torch.tensor)."""
+    text = tokenizer.apply_chat_template(msgs, tokenize=False,
+                                         add_generation_prompt=add_generation_prompt)
+    return tokenizer(text, add_special_tokens=False)["input_ids"]
 
 
 def format_for_trainer(example: dict, tokenizer) -> dict:
     """Qwen chat template; supervise ONLY the assistant turn (mask the rest to -100)."""
     msgs = example["messages"]
-    full = _ids(tokenizer.apply_chat_template(msgs, tokenize=True, add_generation_prompt=False))
-    prompt_only = _ids(tokenizer.apply_chat_template(msgs[:-1], tokenize=True, add_generation_prompt=True))
+    full = _encode(tokenizer, msgs, add_generation_prompt=False)
+    prompt_only = _encode(tokenizer, msgs[:-1], add_generation_prompt=True)
     labels = list(full)
     for i in range(min(len(prompt_only), len(labels))):
         labels[i] = -100
-    return {"input_ids": full, "attention_mask": [1] * len(full), "labels": labels}
+    return {"input_ids": list(full), "attention_mask": [1] * len(full), "labels": labels}
 
 def main(argv=None) -> None:
     import torch

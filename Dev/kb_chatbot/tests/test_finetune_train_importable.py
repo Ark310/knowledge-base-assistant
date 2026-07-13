@@ -22,21 +22,23 @@ def test_format_masks_prompt(monkeypatch):
     assert any(l != -100 for l in out["labels"])   # assistant tokens kept
 
 
-def test_format_normalizes_dict_chat_template():
-    # Newer transformers' apply_chat_template(tokenize=True) returns a DICT, not a list.
-    # format_for_trainer must normalize it to a flat id list and still mask the prompt.
-    # (Runs without the GPU libs — format_for_trainer takes the tokenizer as an arg.)
+def test_format_encodes_via_text_and_masks_prompt():
+    # format_for_trainer must render the template to TEXT (tokenize=False) then tokenize,
+    # producing INT ids (never char strings), and mask the prompt portion.
+    # Runs without the GPU libs — the tokenizer is passed in.
     from Dev.kb_chatbot.finetune.train_qlora import format_for_trainer
 
     class _FakeTok:
-        def apply_chat_template(self, msgs, tokenize=True, add_generation_prompt=False):
-            n = 5 if add_generation_prompt else 8   # prompt_only(5) shorter than full(8)
-            return {"input_ids": list(range(n)), "attention_mask": [1] * n}
+        def apply_chat_template(self, msgs, tokenize=False, add_generation_prompt=False):
+            # rendered TEXT; the assistant answer is only present in the full render
+            return "PROMPT" if add_generation_prompt else "PROMPTANSWER"
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": [ord(c) for c in text]}   # crude char-level ids (ints)
 
     out = format_for_trainer(
         {"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]},
         _FakeTok())
-    assert out["input_ids"] == [0, 1, 2, 3, 4, 5, 6, 7]
-    assert out["labels"][:5] == [-100] * 5   # prompt tokens masked
-    assert out["labels"][5:] == [5, 6, 7]    # assistant tokens supervised
-    assert len(out["attention_mask"]) == 8
+    assert out["input_ids"] == [ord(c) for c in "PROMPTANSWER"]
+    assert all(isinstance(x, int) for x in out["input_ids"])   # ints, NOT char strings
+    assert out["labels"][:6] == [-100] * 6                     # "PROMPT" masked
+    assert out["labels"][6:] == [ord(c) for c in "ANSWER"]     # "ANSWER" supervised
