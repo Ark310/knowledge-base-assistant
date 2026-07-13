@@ -20,3 +20,23 @@ def test_format_masks_prompt(monkeypatch):
     assert set(out) >= {"input_ids","labels"}
     assert any(l == -100 for l in out["labels"])   # prompt tokens masked
     assert any(l != -100 for l in out["labels"])   # assistant tokens kept
+
+
+def test_format_normalizes_dict_chat_template():
+    # Newer transformers' apply_chat_template(tokenize=True) returns a DICT, not a list.
+    # format_for_trainer must normalize it to a flat id list and still mask the prompt.
+    # (Runs without the GPU libs — format_for_trainer takes the tokenizer as an arg.)
+    from Dev.kb_chatbot.finetune.train_qlora import format_for_trainer
+
+    class _FakeTok:
+        def apply_chat_template(self, msgs, tokenize=True, add_generation_prompt=False):
+            n = 5 if add_generation_prompt else 8   # prompt_only(5) shorter than full(8)
+            return {"input_ids": list(range(n)), "attention_mask": [1] * n}
+
+    out = format_for_trainer(
+        {"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]},
+        _FakeTok())
+    assert out["input_ids"] == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert out["labels"][:5] == [-100] * 5   # prompt tokens masked
+    assert out["labels"][5:] == [5, 6, 7]    # assistant tokens supervised
+    assert len(out["attention_mask"]) == 8
