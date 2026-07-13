@@ -11,7 +11,7 @@ ADAPTER_DIR   = DATA_DIR / "adapter"
 MERGED_DIR    = DATA_DIR / "merged_fp16"
 GGUF_PATH     = DATA_DIR / "contoso-reasoning-qwen25-7b-Q4_K_M.gguf"
 
-BASE_MODEL_HF = "Qwen/Qwen2.5-7B-Instruct"
+BASE_MODEL_HF = "Qwen/Qwen2.5-3B-Instruct"   # 3B fits 8 GB comfortably (7B thrashed/froze)
 BASE_OLLAMA   = "qwen2.5:7b-instruct"
 TUNED_TAG     = "contoso-reasoning-qwen25-7b:v1"
 

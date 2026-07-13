@@ -52,7 +52,7 @@ def main(argv=None) -> None:
     ap.add_argument("--eval-set", required=True, help="held-out EvalCase json")
     ap.add_argument("--unsupported", required=True, help="newline file of out-of-scope questions")
     ap.add_argument("--tuned-model", default=config.LOCAL_MODEL)
-    ap.add_argument("--base-model", default="qwen2.5:7b-instruct")
+    ap.add_argument("--base-model", default="qwen2.5:3b-instruct")
     args = ap.parse_args(argv)
     retriever = Retriever(Path(args.chroma), confidence_floor=0.0)
     st = load_settings()

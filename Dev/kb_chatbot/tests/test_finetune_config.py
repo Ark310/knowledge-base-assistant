@@ -10,5 +10,5 @@ def test_paths_are_under_state_dir_finetune():
 
 def test_fits_8gb_config():
     assert fc.MICRO_BATCH == 1 and fc.SEQ_LEN in (1024, 2048)
-    assert 0 < fc.LORA_R <= 32 and fc.BASE_MODEL_HF == "Qwen/Qwen2.5-7B-Instruct"
+    assert 0 < fc.LORA_R <= 32 and fc.BASE_MODEL_HF == "Qwen/Qwen2.5-3B-Instruct"
     assert fc.TUNED_TAG == "contoso-reasoning-qwen25-7b:v1"
