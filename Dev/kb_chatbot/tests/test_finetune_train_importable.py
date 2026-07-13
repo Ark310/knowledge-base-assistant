@@ -42,3 +42,21 @@ def test_format_encodes_via_text_and_masks_prompt():
     assert all(isinstance(x, int) for x in out["input_ids"])   # ints, NOT char strings
     assert out["labels"][:6] == [-100] * 6                     # "PROMPT" masked
     assert out["labels"][6:] == [ord(c) for c in "ANSWER"]     # "ANSWER" supervised
+
+
+def test_format_tail_truncates_keeping_the_answer():
+    # Over-long examples keep the TAIL (answer + fitting context), not dropped/head-kept.
+    from Dev.kb_chatbot.finetune.train_qlora import format_for_trainer
+
+    class _FakeTok:
+        def apply_chat_template(self, msgs, tokenize=False, add_generation_prompt=False):
+            return "P" * 10 if add_generation_prompt else "P" * 10 + "A" * 6  # answer = last 6
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": [ord(c) for c in text]}
+
+    out = format_for_trainer(
+        {"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]},
+        _FakeTok(), max_len=8)
+    assert len(out["input_ids"]) == 8                       # truncated to max_len
+    assert out["input_ids"][-6:] == [ord("A")] * 6          # answer tokens survive at the tail
+    assert out["labels"][-6:] == [ord("A")] * 6             # answer still supervised

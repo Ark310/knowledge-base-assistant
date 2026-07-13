@@ -25,14 +25,21 @@ def _encode(tokenizer, msgs, add_generation_prompt: bool) -> list:
     return tokenizer(text, add_special_tokens=False)["input_ids"]
 
 
-def format_for_trainer(example: dict, tokenizer) -> dict:
-    """Qwen chat template; supervise ONLY the assistant turn (mask the rest to -100)."""
+def format_for_trainer(example: dict, tokenizer, max_len=None) -> dict:
+    """Qwen chat template; supervise ONLY the assistant turn (mask the rest to -100).
+    If max_len is set and the example is longer, keep the TAIL -- the answer plus as much
+    preceding context/question as fits -- so the supervised answer is never cut; the front
+    (system prompt / earliest context) is what's dropped. This keeps every example usable
+    on an 8 GB card instead of filtering long ones out entirely."""
     msgs = example["messages"]
     full = _encode(tokenizer, msgs, add_generation_prompt=False)
     prompt_only = _encode(tokenizer, msgs[:-1], add_generation_prompt=True)
     labels = list(full)
     for i in range(min(len(prompt_only), len(labels))):
         labels[i] = -100
+    if max_len and len(full) > max_len:
+        full = full[-max_len:]
+        labels = labels[-max_len:]
     return {"input_ids": list(full), "attention_mask": [1] * len(full), "labels": labels}
 
 def main(argv=None) -> None:
@@ -61,11 +68,10 @@ def main(argv=None) -> None:
         ds = ds.select(range(min(16, len(ds))))
     # load_from_cache_file=False: always re-map with the CURRENT code, so a stale
     # cache from an earlier (buggy) format_for_trainer can never be reused.
-    ds = ds.map(lambda e: format_for_trainer(e, tok), remove_columns=ds.column_names,
-                load_from_cache_file=False)
-    _before = len(ds)
-    ds = ds.filter(lambda e: len(e["input_ids"]) <= args.seq_len)
-    print(f"kept {len(ds)}/{_before} examples within seq_len={args.seq_len}")
+    # Long examples are tail-truncated to seq_len (keeps the answer) rather than dropped.
+    ds = ds.map(lambda e: format_for_trainer(e, tok, args.seq_len),
+                remove_columns=ds.column_names, load_from_cache_file=False)
+    print(f"prepared {len(ds)} examples (tail-truncated to seq_len={args.seq_len} where needed)")
 
     targs = TrainingArguments(
         output_dir=str(fc.ADAPTER_DIR), per_device_train_batch_size=fc.MICRO_BATCH,
