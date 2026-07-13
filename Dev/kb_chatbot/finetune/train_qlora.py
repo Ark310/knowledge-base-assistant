@@ -60,7 +60,10 @@ def main(argv=None) -> None:
     ds = load_dataset("json", data_files=str(fc.TRAIN_JSONL), split="train")
     if args.dry_run:
         ds = ds.select(range(min(16, len(ds))))
-    ds = ds.map(lambda e: format_for_trainer(e, tok), remove_columns=ds.column_names)
+    # load_from_cache_file=False: always re-map with the CURRENT code, so a stale
+    # cache from an earlier (buggy) format_for_trainer can never be reused.
+    ds = ds.map(lambda e: format_for_trainer(e, tok), remove_columns=ds.column_names,
+                load_from_cache_file=False)
     _before = len(ds)
     ds = ds.filter(lambda e: len(e["input_ids"]) <= args.seq_len)
     print(f"kept {len(ds)}/{_before} examples within seq_len={args.seq_len}")
