@@ -53,19 +53,27 @@ def main(argv=None) -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--seq-len", type=int, default=fc.SEQ_LEN)
     ap.add_argument("--epochs", type=int, default=fc.EPOCHS)
+    ap.add_argument("--max-examples", type=int, default=0,
+                    help="cap the dataset for a quick run (0 = use all)")
     args = ap.parse_args(argv)
 
     tok = AutoTokenizer.from_pretrained(fc.BASE_MODEL_HF)
     tok.pad_token = tok.pad_token or tok.eos_token
     bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                              bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
-    model = AutoModelForCausalLM.from_pretrained(fc.BASE_MODEL_HF, quantization_config=bnb, device_map="auto")
+    # device_map={"": 0}: load the WHOLE model onto GPU 0 (a 4-bit 3B fits in ~2 GB).
+    # "auto" can silently offload layers to CPU on a tight card, which makes each step
+    # crawl -- pin to the GPU so we get real speed (or a clean OOM if it truly won't fit).
+    model = AutoModelForCausalLM.from_pretrained(fc.BASE_MODEL_HF, quantization_config=bnb,
+                                                 device_map={"": 0})
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     model = get_peft_model(model, build_lora_config())
 
     ds = load_dataset("json", data_files=str(fc.TRAIN_JSONL), split="train")
     if args.dry_run:
         ds = ds.select(range(min(16, len(ds))))
+    elif args.max_examples:
+        ds = ds.select(range(min(args.max_examples, len(ds))))
     # load_from_cache_file=False: always re-map with the CURRENT code, so a stale
     # cache from an earlier (buggy) format_for_trainer can never be reused.
     # Long examples are tail-truncated to seq_len (keeps the answer) rather than dropped.
