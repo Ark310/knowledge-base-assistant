@@ -30,11 +30,12 @@ def main(argv=None) -> None:
     from datasets import load_dataset
     from transformers import (AutoTokenizer, AutoModelForCausalLM,
                               BitsAndBytesConfig, Trainer, TrainingArguments,
-                              DataCollatorForSeq2Seq, TrainerCallback)
+                              TrainerCallback)
     from peft import get_peft_model, prepare_model_for_kbit_training
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--seq-len", type=int, default=fc.SEQ_LEN)
+    ap.add_argument("--epochs", type=int, default=fc.EPOCHS)
     args = ap.parse_args(argv)
 
     tok = AutoTokenizer.from_pretrained(fc.BASE_MODEL_HF)
@@ -55,7 +56,7 @@ def main(argv=None) -> None:
 
     targs = TrainingArguments(
         output_dir=str(fc.ADAPTER_DIR), per_device_train_batch_size=fc.MICRO_BATCH,
-        gradient_accumulation_steps=fc.GRAD_ACCUM, num_train_epochs=(1 if args.dry_run else fc.EPOCHS),
+        gradient_accumulation_steps=fc.GRAD_ACCUM, num_train_epochs=(1 if args.dry_run else args.epochs),
         max_steps=(2 if args.dry_run else -1), learning_rate=fc.LR, lr_scheduler_type="cosine",
         warmup_ratio=0.03, bf16=True, gradient_checkpointing=True, logging_steps=5,
         save_strategy="epoch", report_to=[])
@@ -81,8 +82,22 @@ def main(argv=None) -> None:
             print(f"[train] done: {state.global_step} steps in "
                   f"{(time.time()-self._t0)/60:.1f}m", flush=True)
 
-    collator = DataCollatorForSeq2Seq(tok, label_pad_token_id=-100, padding=True)
-    Trainer(model=model, args=targs, train_dataset=ds, data_collator=collator,
+    # Explicit right-padding collator for our pre-tokenized (input_ids,
+    # attention_mask, labels) rows -- avoids DataCollatorForSeq2Seq / tokenizer.pad
+    # choking on dict features. Labels pad with -100 so padding is ignored by the loss.
+    pad_id = tok.pad_token_id
+    def _collate(features):
+        maxlen = max(len(f["input_ids"]) for f in features)
+        input_ids, attn, labels = [], [], []
+        for f in features:
+            k = maxlen - len(f["input_ids"])
+            input_ids.append(f["input_ids"] + [pad_id] * k)
+            attn.append(f["attention_mask"] + [0] * k)
+            labels.append(f["labels"] + [-100] * k)
+        return {"input_ids": torch.tensor(input_ids),
+                "attention_mask": torch.tensor(attn),
+                "labels": torch.tensor(labels)}
+    Trainer(model=model, args=targs, train_dataset=ds, data_collator=_collate,
             callbacks=[_Progress()]).train()
     model.save_pretrained(str(fc.ADAPTER_DIR)); tok.save_pretrained(str(fc.ADAPTER_DIR))
     print(f"adapter saved -> {fc.ADAPTER_DIR}")
