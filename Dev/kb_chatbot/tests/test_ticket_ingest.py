@@ -65,7 +65,7 @@ def test_chunk_text_has_no_pii(tmp_path):
     c = build_ticket_chunks(data, p)[0]
     assert "@" not in c.text
     assert "Sam" not in c.text
-    assert "fabrikam" not in c.text.lower()
+    assert "fabrikam.example" not in c.text.lower()   # email domain stripped
     assert "Client: Fabrikam Financial" in c.text     # client company surfaced (field-derived header)
 
 

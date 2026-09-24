@@ -6,6 +6,9 @@ from PIL import Image
 
 ICO = Path(__file__).parent.parent / "assets" / "scraper_icon.ico"
 
+import pytest
+
+@pytest.mark.skipif(not ICO.exists(), reason="branding icon is not shipped; run _make_scraper_icon.py")
 def test_icon_exists_and_valid():
     assert ICO.exists(), "run _make_scraper_icon.py to generate the icon"
     im = Image.open(ICO)

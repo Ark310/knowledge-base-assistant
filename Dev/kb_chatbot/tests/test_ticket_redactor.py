@@ -34,6 +34,9 @@ def test_real_sample_no_pii():
     import json
     from pathlib import Path
     base = Path("library/tickets/ticket_75100.json")
+    if not base.exists():
+        import pytest
+        pytest.skip("real ticket corpus (library/) is not part of the repo")
     data = json.loads(base.read_text(encoding="utf-8"))
     known = [data.get("organization",""), data.get("created_by",""), data.get("assignee","")]
     bodies = "\n".join(c.get("body","") for c in data.get("comments", []))

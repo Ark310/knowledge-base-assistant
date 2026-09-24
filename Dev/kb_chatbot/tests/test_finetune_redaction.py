@@ -6,7 +6,8 @@ from Dev.kb_chatbot.finetune.redaction import find_leaks, scan_records, assert_c
 def test_detects_real_email_and_phone_and_secret():
     assert "email" in find_leaks("contact john.doe@acme.com")
     assert "phone" in find_leaks("call +1 416 555 0134 today")
-    assert "secret" in find_leaks("key YOUR_ANTHROPIC_API_KEY_HERE leaked")
+    fake_key = "sk-" + "ant-" + "a1B2c3D4e5F6g7H8i9J0"  # built at runtime: synthetic, not a real key
+    assert "secret" in find_leaks(f"key {fake_key} leaked")
 
 def test_ignores_redacted_placeholders_and_iso_dates():
     assert find_leaks("emailed [redacted] on 2024-08-22 re ticket #54000") == []

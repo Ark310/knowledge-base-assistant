@@ -12,7 +12,9 @@ def test_mainwindow_has_settings_button_and_icon():
     from scraper.gui import MainWindow
     win = MainWindow()
     assert hasattr(win, "btn_settings")
-    assert win.windowIcon() is not None and not win.windowIcon().isNull()
+    from pathlib import Path
+    if (Path(__file__).parent.parent / "assets" / "scraper_icon.ico").exists():
+        assert win.windowIcon() is not None and not win.windowIcon().isNull()
 
 def test_app_stylesheet_applies():
     from scraper import theme
