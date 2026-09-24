@@ -13,12 +13,8 @@ Security:
 """
 from __future__ import annotations
 
-import html as _html
-import logging
-from datetime import datetime
-
 from PySide6.QtCore import Qt, QTimer, Slot
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,7 +24,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -43,10 +38,9 @@ import scraper.run_registry as run_registry
 import scraper.ticket_settings as ts
 from scraper.async_runner import AsyncTicketWorker
 from scraper.control import RunControl
+from scraper.log_pane import LogPane
 from scraper.settings_dialog import SettingsDialog
 from scraper.ticket_engine import parse_ticket_input
-
-log = logging.getLogger("scraper")
 
 _STATUS_COLORS = {
     "ok":        "#2e7d32",
@@ -83,12 +77,6 @@ class TicketTab(QWidget):
         self._run_name = f"Tickets — {portal_kind}"
         self._alert_box = None
         self._big_batch = False
-
-        self._log_buf: list[tuple[str, str, str]] = []   # (ts, level, msg)
-        self._log_timer = QTimer(self)
-        self._log_timer.setInterval(250)
-        self._log_timer.timeout.connect(self._flush_log)
-        self._log_timer.start()
 
         # Reapply process priority periodically while a run is active — Chrome
         # spawns new child processes over time and each needs the level applied.
@@ -271,12 +259,10 @@ class TicketTab(QWidget):
         self.table.setMaximumHeight(200)
         v.addWidget(self.table)
 
-        # Log pane (bottom half)
+        # Log pane (bottom half) — buffered/colorized widget shared with KBTab
+        # (bug-144 fix; see scraper/log_pane.py).
         v.addWidget(QLabel("<b>Log</b>"))
-        self.log_pane = QPlainTextEdit()
-        self.log_pane.setReadOnly(True)
-        self.log_pane.setMaximumBlockCount(self.MAX_LOG_LINES)
-        self.log_pane.setFont(QFont("Consolas", 9))
+        self.log_pane = LogPane(max_lines=self.MAX_LOG_LINES)
         v.addWidget(self.log_pane, stretch=1)
 
         return w
@@ -438,44 +424,21 @@ class TicketTab(QWidget):
 
     # ── Slot handlers ─────────────────────────────────────────────────────────
 
-    _LOG_COLORS = {"error": "#c62828", "warning": "#ef6c00", "info": "#212121"}
+    @property
+    def _log_buf(self) -> list[tuple[str, str, str]]:
+        """Exposes LogPane's internal buffer under the tab's original attribute
+        name — tests/test_ticket_tab.py asserts against this directly."""
+        return self.log_pane._buf
 
     @Slot(str, str)
     def _emit_log(self, level: str, msg: str):
-        """Buffer only — a 30k-ticket run at 10 workers emits log lines faster
-        than QPlainTextEdit can append+scroll one-by-one (bug-144 UI freeze).
-        A 250ms timer (_flush_log) drains the buffer as ONE insert."""
-        self._log_buf.append((datetime.now().strftime("%H:%M:%S"), level, msg))
-        getattr(log, level if level in ("debug", "info", "warning", "error") else "info")(msg)
+        """Delegates to the shared LogPane (bug-144 buffered-flush fix; see
+        scraper/log_pane.py). Kept as a thin wrapper so the worker's `log`
+        signal (str, str) still has somewhere to connect."""
+        self.log_pane.emit_log(level, msg)
 
     def _flush_log(self):
-        if not self._log_buf:
-            return
-        buf, self._log_buf = self._log_buf, []
-        # One appendHtml call PER LINE — each call opens its own QTextBlock, so
-        # setMaximumBlockCount(MAX_LOG_LINES) trims per LINE as the constant's
-        # name promises. A prior version joined the whole flush with "<br>"
-        # into a SINGLE appendHtml call, which put the entire flush in one
-        # block — MAX_LOG_LINES then capped FLUSHES, not lines. Wrapping the
-        # loop in setUpdatesEnabled(False) batches all of this flush's
-        # document changes into ONE repaint: bug-144's freeze came from
-        # per-line PAINT+SCROLL, not from per-line block insertion, so this
-        # keeps the perf fix while restoring the intended cap semantics.
-        self.log_pane.setUpdatesEnabled(False)
-        try:
-            for ts_str, level, msg in buf:
-                color = self._LOG_COLORS.get(level, "#616161")
-                # HTML collapses whitespace, so plain padding spaces would not keep
-                # the level column aligned — use &nbsp; to preserve it.
-                level_str = f"{level.upper():7s}".replace(" ", "&nbsp;")
-                self.log_pane.appendHtml(
-                    f'<span style="color:{color}">'
-                    f'{ts_str} {level_str} {_html.escape(msg)}</span>'
-                )
-        finally:
-            self.log_pane.setUpdatesEnabled(True)
-        self.log_pane.verticalScrollBar().setValue(
-            self.log_pane.verticalScrollBar().maximum())
+        self.log_pane.flush()
 
     @Slot(int, int)
     def _on_progress(self, current: int, total: int):
