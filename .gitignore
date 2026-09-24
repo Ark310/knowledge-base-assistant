@@ -1,15 +1,57 @@
-scraper/venv/
-library/
-scraper/state/
-.playwright-mcp/
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 .pytest_cache/
+venv/
+.venv/
+env/
 
-
-Dev/kb_chatbot/state/
+# Build output (PyInstaller)
 build/
+build_*/
+build-*/
 dist/
-*.spec
+dist-*/
+
+# Scraped content, indexes and runtime state (never commit)
+library/
+_legacy_out/
+scraper/state/
+Dev/kb_chatbot/state/
+chroma*/
+*.sqlite3
+*.log
+reindex_*.log
+
+# Fine-tuning data / model artefacts
+*.jsonl
+*.gguf
+*.safetensors
+adapters/
+
+# Eval outputs built from real queries
+Dev/kb_chatbot/eval/golden.jsonl
+Dev/kb_chatbot/eval/results/*.json
+
+# Captured real pages (tests skip when absent)
+tests/fixtures/*_real.html
+tests/fixtures/*_rest.json
+
+# Local config / secrets
+.env
+*.env
+!*.env.example
+ai_pc/reasoning_gateway/config/*
+!ai_pc/reasoning_gateway/config/.gitkeep
+
+# Branding assets
+assets/
+
+# Tooling
+.claude/
+.wolf/
+.superpowers/
+.playwright-mcp/
+.idea/
+.vscode/
 Imgs for Dev*/
