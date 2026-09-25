@@ -45,9 +45,9 @@ A support team's product knowledge was split between a Confluence help site (40+
 - One desktop assistant answers from both the help site and past ticket resolutions, with clickable citations that are verified before they are shown.
 - A measured retrieval overhaul lifted recall@8 from 0.816 to 0.920, and the trade-off against a 10× slower reranker was decided on data, not guesswork.
 - Ticket context is PII-redacted before it reaches any model, and an on-prem model option keeps confidential questions on the local network.
-- Grew from a release-notes scraper into two shipped apps over 338 commits in six weeks.
+- Grew from a release-notes scraper into two shipped apps over about 360 commits in six weeks.
 
-`recall@8 0.816 → 0.920` · `791 tests` · `338 commits` · `19+ design specs`
+`recall@8 0.816 → 0.920` · `812 tests` · `~360 commits` · `19+ design specs`
 <!-- showcase:why-impact:end -->
 
 ## Features
