@@ -13,6 +13,10 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-d97757?logo=anthropic)
 
+<!-- showcase:banner:start -->
+> 🧭 Part of **Abdul Raqeeb Khatri's portfolio**: [📂 Hub](https://github.com/Ark310/portfolio) · [🌐 Site](https://ark310.github.io) · [💼 Experience](https://github.com/Ark310/experience)
+<!-- showcase:banner:end -->
+
 ## Overview
 
 A support team had its product knowledge split across two places: a **Confluence help site**
@@ -30,6 +34,21 @@ and grew, over about 360 commits in six weeks, into two desktop apps:
 All product, company and people names in this repo are fictional placeholders (Contoso,
 TradeDesk, SalesHub, FormFlow, Fabrikam and so on). No scraped content, tickets, vector
 stores or real evaluation data are included.
+
+<!-- showcase:why-impact:start -->
+## 💡 Why I Built It
+
+A support team's product knowledge was split between a Confluence help site (40+ spaces, five product lines) and years of fixes buried in support-ticket resolutions. Answering one customer question meant searching both by hand.
+
+## 📈 Impact
+
+- One desktop assistant answers from both the help site and past ticket resolutions, with clickable citations that are verified before they are shown.
+- A measured retrieval overhaul lifted recall@8 from 0.816 to 0.920, and the trade-off against a 10× slower reranker was decided on data, not guesswork.
+- Ticket context is PII-redacted before it reaches any model, and an on-prem model option keeps confidential questions on the local network.
+- Grew from a release-notes scraper into two shipped apps over 338 commits in six weeks.
+
+`recall@8 0.816 → 0.920` · `791 tests` · `338 commits` · `19+ design specs`
+<!-- showcase:why-impact:end -->
 
 ## Features
 
@@ -197,6 +216,14 @@ This project was built by pairing with AI coding agents, mostly **Claude Code**,
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+<!-- showcase:footer:start -->
+---
+
+<p align="center"><a href="https://github.com/Ark310/portfolio">← Back to the portfolio hub</a> · <a href="https://ark310.github.io">Interactive site</a> · <a href="https://github.com/Ark310/experience">Experience</a></p>
+
+**Related projects:** [BLNS: Sanctions Screening RAG](https://github.com/Ark310/blns-sanctions-screening-rag) · [Local LLM Setup](https://github.com/Ark310/local-llm-setup) · [Enhancement Spec Generator](https://github.com/Ark310/enhancement-spec-generator)
+<!-- showcase:footer:end -->
 
 ## Author
 
